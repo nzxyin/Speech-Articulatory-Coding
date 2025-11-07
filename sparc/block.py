@@ -12,10 +12,6 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
-import torch
-from torch import nn, sin, pow
-from torch.nn import Parameter
 
 class Conv1d(torch.nn.Conv1d):
     """Conv1d module with customized initialization."""

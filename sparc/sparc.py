@@ -1,12 +1,11 @@
 import torch
 import numpy as np
-from .speech import BaseExtractor, SpeechWave
+from .speech import BaseExtractor
 from .inversion import Inversion
 from .src_extractor import SourceExtractor
 from .spk_encoder import SpeakerEncoder
 from .generator import HiFiGANGenerator
 import copy
-from pathlib import Path
 from huggingface_hub import hf_hub_download
 
 model_name_map = {"en": "model_english_1500k",
@@ -19,7 +18,6 @@ def download_huggingface(file_name):
 
 def load_model(model_name=None, config=None, ckpt=None, 
                device="cuda",
-               use_penn=False,
                **kwargs):
     
     if model_name is not None:
@@ -27,14 +25,14 @@ def load_model(model_name=None, config=None, ckpt=None,
         if config is None:
             config = download_huggingface(f"{model_name}.yaml")
         if model_name == "feature_extraction":
-            return load_model(config=config, ckpt=None, device=device, use_penn=use_penn,
+            return load_model(config=config, ckpt=None, device=device,
                               linear_model_path=download_huggingface("wavlm_large-9_cut-10_mngu_linear.pkl"),
                               **kwargs)
         else:
             ckpt = download_huggingface(f"{model_name}.ckpt")
-            return load_model(config=config, ckpt=ckpt, device=device, use_penn=use_penn,
+            return load_model(config=config, ckpt=ckpt, device=device,
                              **kwargs)
-    if config != None:
+    if config is not None:
         if not isinstance(config, dict):
             import yaml
             with open(config) as f:
@@ -44,9 +42,9 @@ def load_model(model_name=None, config=None, ckpt=None,
                 config['all_ckpt'] is not None):
                 ckpt = config['all_ckpt']
     else:
-        assert ckpt != None
+        assert ckpt is not None
 
-    if ckpt != None:
+    if ckpt is not None:
         ckpt = torch.load(ckpt)
         if config is None:
             config = ckpt['config']
@@ -59,7 +57,6 @@ def load_model(model_name=None, config=None, ckpt=None,
             config['linear_model_path'] = None
         
     config["device"] = device
-    config["use_penn"] = use_penn
     for key, value in kwargs.items():
         if key in config.keys():
             config[key] = value
@@ -77,7 +74,7 @@ class SPARC(BaseExtractor):
                  linear_model_state_dict=None,
                  speech_model='microsoft/wavlm-large', 
                  target_layer=9, freqcut=10, spk_target_layer=0, zero_pad=False,
-                 pitch_q=1, fmin=50, fmax=550, crepe_model="full", use_penn=False,
+                 pitch_q=1, fmin=50, fmax=550, crepe_model="full",
                  spk_ft_size=1024, spk_emb_size=64, 
                  device='cuda', normalize=True, sr=16000, ft_sr=50,
                  periodicity_threshold=0.0, reflect_loudness=False, loudness_threshold=0.1,
@@ -95,7 +92,6 @@ class SPARC(BaseExtractor):
                                                  periodicity_threshold=periodicity_threshold,
                                                  reflect_loudness=reflect_loudness,
                                                  loudness_threshold=loudness_threshold,
-                                                 use_penn=use_penn,
                                                  **common_configs)
         self.speaker_encoder = SpeakerEncoder(spk_ft_ckpt=spk_ft_ckpt, spk_ft_size=spk_ft_size,
                                               spk_emb_size=spk_emb_size, spk_target_layer=spk_target_layer,
@@ -179,7 +175,7 @@ class SPARC(BaseExtractor):
         elif self.pitch_shift_strategy == "mean_ratio":
             pitch = pitch/original_stats[0]*target_stats[0]
         else:
-            raise NotImplemented
+            raise NotImplementedError
         return pitch            
     
     

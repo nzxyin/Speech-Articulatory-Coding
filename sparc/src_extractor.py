@@ -1,16 +1,7 @@
 import torch
-from pathlib import Path
 import numpy as np
-import soundfile as sf
-import tqdm
-import pickle
-import librosa
 import torchcrepe
 from .speech import BaseExtractor, SpeechWave
-try: 
-    import penn
-except:
-    penn = None
 
 
 def normalize_pitch(self, pitch, periodicity, logratio=False):
@@ -20,7 +11,7 @@ def normalize_pitch(self, pitch, periodicity, logratio=False):
     weighted_std = weighted_var**.5
 
     if logratio:
-        return np.log(pitch/weigthed_mean)
+        return np.log(pitch/weighted_mean)
     else:
         return (pitch-weighted_mean)/weighted_std
             
@@ -41,7 +32,7 @@ class SourceExtractor(BaseExtractor):
     
     def __init__(self, device='cuda', normalize= True, pitch_q=1, ft_sr=50, fmin=50,
                 fmax=550, sr=16000, crepe_model="full", periodicity_threshold=0.0, reflect_loudness=False,
-                 loudness_threshold=0.1, min_points=5, use_penn=False):
+                 loudness_threshold=0.1, min_points=5):
         self.sr = sr
         self.normalize = normalize
         self.ft_sr = ft_sr
@@ -58,55 +49,10 @@ class SourceExtractor(BaseExtractor):
         self.min_points = min_points
         self.reflect_loudness = reflect_loudness
         self.loudness_threshold = loudness_threshold
-        self.use_penn = use_penn
-        if self.use_penn:
-            print("Using PENN for pitch tracking.")
 
     def to(self, device):
         self.device = device
         self.intensity_model = self.intensity_model.to(device)
-
-    def _run_penn(self, wavs):
-
-        def _reshape(arr,q):
-            b = arr.shape[0]
-            l = arr.shape[1]
-            arr = arr[:,:int(l//q)*q]
-            arr = arr.reshape(b,l//q,q)
-            arr = arr.mean(-1)
-            return arr
-            
-        if self.device == 'cpu':
-            gpu = None
-        elif self.device == 'cuda':
-            gpu = 0
-        else:
-            gpu = int(self.device.split("cuda:")[1])
-        pitches = []
-        periodicities = []
-        for wi in range(len(wavs)):
-            wav = wavs.input_values[wi][:wavs.input_lens[wi]].unsqueeze(0)
-            pitch, periodicity = penn.from_audio(
-                wav,
-                self.sr,
-                hopsize=self.pitch_hop_length/self.sr,
-                fmin=self.fmin,
-                fmax=self.fmax,
-                checkpoint=None,
-                batch_size=2048,
-                center='half-hop',
-                interp_unvoiced_at=0.2,
-                gpu=gpu)
-            pitch = _reshape(pitch, self.q) if self.q>1 else pitch
-            periodicity = _reshape(periodicity, self.q) if self.q>1 else periodicity
-            periodicity = self._threshold_periodicity(periodicity)
-            pitches.append(pitch[0])
-            periodicities.append(periodicity[0])
-        
-        pitches = torch.nn.utils.rnn.pad_sequence(pitches, batch_first=True, padding_value=0.0).cpu().numpy()
-        periodicities = torch.nn.utils.rnn.pad_sequence(periodicities, batch_first=True, padding_value=0.0).cpu().numpy()
-        return pitches, periodicities
-        
         
     def _run_crepe(self, wavs):
 
@@ -174,8 +120,6 @@ class SourceExtractor(BaseExtractor):
     def _extract_pitch(self, wavs, outputs={},):
         if not isinstance(wavs, SpeechWave):
             wavs = self.process_wavfiles(wavs)
-        if self.use_penn:
-            pitch, periodicity = self._run_penn(wavs)
         else: 
             pitch, periodicity = self._run_crepe(wavs)
         if "loudness" in outputs.keys():

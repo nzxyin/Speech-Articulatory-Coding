@@ -1,13 +1,7 @@
 import torch
-from pathlib import Path
-import numpy as np
-import soundfile as sf
-import tqdm
-import pickle
-import librosa
 from .speech import BaseExtractor, SpeechWave
 from .src_extractor import SourceExtractor
-from transformers import Wav2Vec2Processor, Wav2Vec2Model, HubertModel, WavLMModel
+from transformers import Wav2Vec2Model, WavLMModel
 
 class SpeakerEncodingLayer(torch.nn.Module):
     def __init__(self, spk_ft_size=1024, spk_emb_size=64):
@@ -57,9 +51,9 @@ class SpeakerEncoder(BaseExtractor):
         self.spk_emb_dim = spk_emb_size
 
     def to(self, device):
-        if self.speech_model != None:
+        if self.speech_model is not None:
             self.speech_model = self.speech_model.to(device)
-        if self.spk_enc != None:
+        if self.spk_enc is not None:
             self.spk_enc = self.spk_enc.to(device)
         self.device = device
         

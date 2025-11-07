@@ -6,16 +6,13 @@ This code is based on https://github.com/jik876/hifi-gan.
 
 """
 
-import copy
 import logging
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .block import HiFiGANResidualBlock as ResidualBlock
 from .block import HiFiGANResidualFiLMBlock as ResidualFiLMBlock
-from transformers import Wav2Vec2Model, HubertModel, WavLMModel
+from transformers import Wav2Vec2Model, WavLMModel
 import torchaudio
 
 

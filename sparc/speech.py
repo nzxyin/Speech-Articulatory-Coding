@@ -2,8 +2,6 @@ import torch
 from pathlib import Path
 import numpy as np
 import soundfile as sf
-import tqdm
-import pickle
 import librosa
 
 class SpeechWave(object):

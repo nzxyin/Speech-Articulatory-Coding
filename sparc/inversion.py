@@ -1,9 +1,7 @@
 import torch
-import numpy as np
-import tqdm
 import pickle
-from scipy.signal import butter, lfilter, filtfilt, resample
-from transformers import Wav2Vec2Processor, Wav2Vec2Model, HubertModel, WavLMModel
+from scipy.signal import butter, filtfilt
+from transformers import Wav2Vec2Model, WavLMModel
 from .speech import BaseExtractor, SpeechWave
 import torch.nn as nn
 
