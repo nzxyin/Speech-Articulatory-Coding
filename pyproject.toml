@@ -1,7 +1,7 @@
 [project]
 name = "sparc"
 version = "0.1.0"
-description = "Add your description here"
+description = "Unofficial fork of Speech Articulatory Coding (SPARC), modernized for Python 3.13+ and uv"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -16,6 +16,10 @@ dependencies = [
     "tqdm>=4.67.1",
     "transformers>=4.57.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/nzxyin/Speech-Articulatory-Coding"
+Upstream = "https://github.com/Berkeley-Speech-Group/Speech-Articulatory-Coding"
 
 [build-system]
 requires = ["uv_build>=0.9.15,<0.10.0"]

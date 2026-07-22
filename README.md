@@ -1,17 +1,24 @@
-# Speech Articulatory Coding (SPARC)
+# Speech Articulatory Coding (SPARC) — Unofficial Fork
 [Paper](https://arxiv.org/abs/2406.12998) | [Audio Samples](https://berkeley-speech-group.github.io/sparc-demo) | [Colab Demo](https://colab.research.google.com/drive/1TVGJJpOzPiesLPo46gZNCQLMl-y_QIKe#scrollTo=uBemLVlk-s7W)
 
 <div align="center">
     <img src="images/articulatory_coding.png" alt="drawing" width="600"/>
 </div>
 
-This is the official code base for [Coding Speech through Vocal Tract Kinematics](https://arxiv.org/abs/2406.12998).
+This is an **unofficial fork** of the official code base for [Coding Speech through Vocal Tract Kinematics](https://arxiv.org/abs/2406.12998), maintained independently at [nzxyin/Speech-Articulatory-Coding](https://github.com/nzxyin/Speech-Articulatory-Coding). It is not affiliated with or endorsed by the original authors. For the official release, see [Berkeley-Speech-Group/Speech-Articulatory-Coding](https://github.com/Berkeley-Speech-Group/Speech-Articulatory-Coding).
+
+This fork modernizes the packaging (Python 3.13+, `uv`-managed environment, `src/` layout) and trims unused code; the model code and checkpoints are unchanged from upstream.
 
 ## Installation
 
-Install `uv`
-Then:
+Install `uv`, then either install directly from this fork:
 ```
+uv add git+https://github.com/nzxyin/Speech-Articulatory-Coding.git
+```
+or clone and set up a local environment:
+```
+git clone https://github.com/nzxyin/Speech-Articulatory-Coding.git
+cd Speech-Articulatory-Coding
 uv venv --python 3.13
 source .venv/bin/activate
 uv sync
