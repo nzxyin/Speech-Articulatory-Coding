@@ -3,6 +3,8 @@ name = "sparc"
 version = "0.1.0"
 description = "Unofficial fork of Speech Articulatory Coding (SPARC), modernized for Python 3.13+ and uv"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "huggingface-hub>=0.36.0",

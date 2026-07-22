@@ -103,3 +103,24 @@ Check `scripts/encode_audio.py` and an example script for extracting LibriTTS, `
 
 - Add training codes.
 
+## License
+
+This fork's modifications are released under the [MIT License](LICENSE). The underlying SPARC model code and checkpoints are used with permission from the original authors; see the LICENSE file for details.
+
+## Citation
+
+If you use this code, please cite the original paper:
+
+```bibtex
+@article{cho2024coding,
+  title={Coding Speech through Vocal Tract Kinematics},
+  author={Cho, Cheol Jun and Wu, Peter and Prabhune, Tejas S. and Agarwal, Dhruv and Anumanchipalli, Gopala K.},
+  journal={IEEE Journal of Selected Topics in Signal Processing},
+  volume={18},
+  number={8},
+  pages={1427--1440},
+  year={2024},
+  publisher={IEEE}
+}
+```
+
