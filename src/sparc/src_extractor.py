@@ -4,17 +4,6 @@ import torchcrepe
 from .speech import BaseExtractor, SpeechWave
 
 
-def normalize_pitch(self, pitch, periodicity, logratio=False):
-        
-    weighted_mean = (pitch*periodicity).sum()/periodicity.sum()
-    weighted_var = (((pitch-weighted_mean)**2)*periodicity).sum()/periodicity.sum()
-    weighted_std = weighted_var**.5
-
-    if logratio:
-        return np.log(pitch/weighted_mean)
-    else:
-        return (pitch-weighted_mean)/weighted_std
-            
 class AmplitudeHistogram(torch.nn.Module):
     
     def __init__(self, hop_length):

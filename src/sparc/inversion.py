@@ -33,7 +33,12 @@ class Inversion(BaseExtractor):
         self.speech_model = self.speech_model.eval().to(device)
         self.sr = sr
         if linear_model_state_dict is None:
-            linear_model = pickle.load(open(linear_model_path,'rb'))
+            # linear_model_path is a scikit-learn model pickled by the model authors and
+            # fetched via hf_hub_download's content-addressed, pinned repo — not
+            # user-controlled input, so pickle deserialization here is a trusted-source
+            # load, not an arbitrary-file load.
+            with open(linear_model_path, 'rb') as f:
+                linear_model = pickle.load(f)
             linear_model_state_dict ={"weight":torch.Tensor(linear_model.coef_),
                  "bias":torch.Tensor(linear_model.intercept_)}
         output_dim, input_dim = linear_model_state_dict['weight'].shape

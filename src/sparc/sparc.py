@@ -45,7 +45,7 @@ def load_model(model_name=None, config=None, ckpt=None,
         assert ckpt is not None
 
     if ckpt is not None:
-        ckpt = torch.load(ckpt)
+        ckpt = torch.load(ckpt, map_location="cpu", weights_only=True)
         if config is None:
             config = ckpt['config']
         if config['spk_ft_ckpt'] is None:
@@ -55,7 +55,8 @@ def load_model(model_name=None, config=None, ckpt=None,
         if config['linear_model_path'] is None:
             config['linear_model_state_dict'] = ckpt['state_dict']['linear_model']
             config['linear_model_path'] = None
-        
+    
+    assert config is not None
     config["device"] = device
     for key, value in kwargs.items():
         if key in config.keys():
@@ -102,7 +103,7 @@ class SPARC(BaseExtractor):
             generator_configs["spk_emb_size"] = spk_emb_size
             self.generator = HiFiGANGenerator(**generator_configs)
             if isinstance(generator_ckpt, str):
-                generator_ckpt = torch.load(generator_ckpt, map_location="cpu")
+                generator_ckpt = torch.load(generator_ckpt, map_location="cpu", weights_only=True)
             self.generator.load_state_dict(generator_ckpt)
             self.generator.remove_weight_norm()
             self.generator = self.generator.eval().to(self.device)

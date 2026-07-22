@@ -20,10 +20,10 @@ if __name__ == "__main__":
     wav_dir = Path(args.wav_dir)
     save_dir = Path(args.save_dir)
     spk_emb_save_dir = save_dir/"spk_emb"
-    spk_emb_save_dir.mkdir(exist_ok=True)
+    spk_emb_save_dir.mkdir(parents=True, exist_ok=True)
     ft_save_dir = save_dir/"emasrc"
-    ft_save_dir.mkdir(exist_ok=True)
-    coder = load_model("feature_extraction",
+    ft_save_dir.mkdir(parents=True, exist_ok=True)
+    coder = load_model("en+",
                        config=args.config_path, 
                        device=device) 
     
@@ -56,10 +56,10 @@ if __name__ == "__main__":
         
         try:
             outputs = coder.encode(wav_file, concat=True)
+            np.save(ft_save_path, outputs["features"])
+            np.save(spk_emb_save_path, outputs["spk_emb"])
         except:
             continue
-        np.save(ft_save_path, outputs["features"])
-        np.save(spk_emb_save_path, outputs["spk_emb"])
         
             
             

@@ -32,7 +32,7 @@ class SpeakerEncoder(BaseExtractor):
         if spk_ft_ckpt is not None:
             self.spk_enc = SpeakerEncodingLayer(spk_ft_size, spk_emb_size)
             if isinstance(spk_ft_ckpt, str):
-                ckpt = torch.load(spk_ft_ckpt, map_location="cpu")
+                ckpt = torch.load(spk_ft_ckpt, map_location="cpu", weights_only=True)
             else:
                 ckpt = spk_ft_ckpt
             self.spk_enc.load_state_dict(ckpt)

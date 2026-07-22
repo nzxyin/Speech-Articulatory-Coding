@@ -61,11 +61,6 @@ class BaseExtractor(object):
             split_outputs.append(single_outputs)
         return split_outputs
 
-    
-    def _merge_batch(self, split_outputs):
-        pass
-    
-    
     def _load_wav(self, wav):
         if isinstance(wav, np.ndarray):
             assert len(wav.shape)==1

@@ -9,8 +9,12 @@ This is the official code base for [Coding Speech through Vocal Tract Kinematics
 
 ## Installation
 
+Install `uv`
+Then:
 ```
-pip install speech-articulatory-coding
+uv venv --python 3.13
+source .venv/bin/activate
+uv sync
 ```
 
 ## Usage
@@ -23,12 +27,7 @@ coder = load_model("en", device= "cpu")     # For using CPU
 coder = load_model("en", device= "cuda:0")  # For using GPU
 ```
 
-For pitch tracker, we found [PENN](https://github.com/interactiveaudiolab/penn) is fast at inference. You can activate that with `use_penn=True`. The default is using [torchcrepe](https://github.com/maxrmorrison/torchcrepe).
-
-```python
-coder = load_model("en", device= "cpu", use_penn=True)    # Use PENN for pitch tracker
-
-```
+Pitch tracking uses [torchcrepe](https://github.com/maxrmorrison/torchcrepe).
 
 For inversion only, you can use the following,
 

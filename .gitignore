@@ -2,6 +2,11 @@ dist
 .ipynb_checkpoints
 **/*/.ipynb_checkpoints
 */.ipynb_checkpoints
-*/__pycache__
+**/__pycache__
 outputs
 *.egg-info
+scripts/err
+scripts/out
+scripts/*.sh
+.venv
+uv.lock
