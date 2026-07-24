@@ -66,7 +66,10 @@ def main(cfg: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=str(tb_dir.parent), name=tb_dir.name)
     checkpoint_cb = ModelCheckpoint(
-        dirpath=str(ckpt_dir), save_last=True, every_n_train_steps=1000, save_top_k=-1,
+        dirpath=str(ckpt_dir),
+        save_last=True,
+        every_n_train_steps=cfg.checkpoint_every_n_steps,
+        save_top_k=cfg.keep_last_n_checkpoints,
     )
 
     trainer = pl.Trainer(

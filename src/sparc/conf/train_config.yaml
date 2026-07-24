@@ -25,5 +25,7 @@ log_audio_every_n_steps: 500
 val_check_interval: null
 checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt
 tb_log_dir: null           # defaults to <dataset.save_dir>/tb_logs
+checkpoint_every_n_steps: 1000
+keep_last_n_checkpoints: 5  # + last.ckpt always kept; -1 keeps every checkpoint (grows unbounded on long runs)
 resume_from_checkpoint: null
 seed: 0
