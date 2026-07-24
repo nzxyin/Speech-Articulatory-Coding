@@ -1,6 +1,6 @@
 [project]
 name = "sparc"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unofficial fork of Speech Articulatory Coding (SPARC), modernized for Python 3.13+ and uv"
 readme = "README.md"
 license = "MIT"
