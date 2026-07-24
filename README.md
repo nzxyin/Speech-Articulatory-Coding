@@ -109,9 +109,102 @@ the same CLIs — see the usage comments at the top of each script for single-da
 array-job invocations.
 
 
+## Vocoder Training (Reproduction)
+
+This reproduces the trainable part of the SPARC paper's methodology (Section III-B / Appendix
+B): a HiFi-GAN generator and small speaker-encoder FFN, trained adversarially against
+multi-period/multi-scale discriminators. Everything else in the pipeline (WavLM feature
+extraction, the linear EMA-inversion head, CREPE pitch tracking, loudness) stays frozen, exactly
+as in the paper.
+
+#### 1. Prepare training data
+
+Encode a dataset first (see [CLI Inference](#cli-inference) above), then precompute the raw
+(pre-FFN) speaker feature training needs — this is separate from the `spk_emb` that
+`sparc-encode` already caches, since that one already has the *pretrained* FFN applied:
+
+```
+uv run sparc-encode dataset=librittsr_train_clean_100
+uv run python -m sparc.training.prepare_spk_raw <wav_dir> <sparc_dir>
+```
+
+#### 2. Train
+
+```
+uv run sparc-train dataset=librittsr_train_clean_100
+```
+
+Optimizer, LR schedule, loss weights, and 320ms random-crop batching default to the paper's
+Appendix B values. See `src/sparc/conf/train_config.yaml` for the full list, and override any of
+them on the command line, e.g.:
+
+```
+uv run sparc-train dataset=librittsr_train_clean_100 batch_size=64 max_steps=1500000
+```
+
+On SLURM, `scripts/prepare_spk_raw_slurm.sh` and `scripts/train_slurm.sh` wrap the same
+commands — see the usage comments at the top of `scripts/train_slurm.sh` for single-run and
+long-run (`preempt` partition) invocations.
+
+#### 3. Monitor with TensorBoard and/or Weights & Biases
+
+Both logging backends are supported, individually or together:
+
+```
+uv run sparc-train dataset=librittsr_train_clean_100 logger_backends='[tensorboard]'       # default
+uv run sparc-train dataset=librittsr_train_clean_100 logger_backends='[wandb]'
+uv run sparc-train dataset=librittsr_train_clean_100 logger_backends='[tensorboard,wandb]'  # both
+```
+
+TensorBoard logs go to `<dataset.save_dir>/tb_logs` by default:
+
+```
+tensorboard --logdir <dataset.save_dir>/tb_logs
+```
+
+wandb defaults to `wandb_mode=offline` (no API key required) with logs under
+`<dataset.save_dir>/wandb_logs`; sync them later with `wandb sync <run_dir>`, or set
+`wandb_mode=online` after `wandb login` to stream live. Override the destination project/entity/
+run name via `wandb_project`, `wandb_entity`, `wandb_run_name`.
+
+Both scalars (losses, learning rate) and periodic audio/mel-spectrogram samples
+(`log_audio_every_n_steps`) are logged to every enabled backend.
+
+#### 4. Checkpoints and resuming
+
+Checkpoints save to `<dataset.save_dir>/vocoder_ckpt` every `checkpoint_every_n_steps` (default
+1000), keeping the `keep_last_n_checkpoints` most recent plus `last.ckpt`. Resume a run with:
+
+```
+uv run sparc-train dataset=librittsr_train_clean_100 resume_from_checkpoint=<path-to>/last.ckpt
+```
+
+#### 5. Listen to samples
+
+```
+uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples]
+```
+
+Synthesizes standalone wav files from a trained checkpoint for qualitative listening outside
+the logging UI.
+
+#### Scope
+
+Full reproduction (paper: 1.5M steps, batch 64, ~555h of LibriTTS-R) is well beyond a single
+run's practical scope here; the pipeline has been verified end-to-end — correct architecture,
+losses, and data pipeline, with loss curves behaving as expected — but not run to paper-matching
+scale or quality. The linear EMA-inversion head is reused from the shipped checkpoint rather
+than refit from scratch, since that requires the MNGU0 corpus (manual dataset-owner approval, no
+automated access) — this matches what the paper itself treats as a fixed component when
+describing vocoder training.
+
 ## TODO
 
-- Add training codes.
+- Refit the linear EMA-inversion head from scratch on MNGU0 (currently reused from the shipped
+  checkpoint; blocked on manual dataset access approval).
+- Scale vocoder training to the paper's full schedule and evaluate against the paper's reported
+  metrics (WER/CER/MOS/UTMOS).
+- Multilingual fine-tuning.
 
 ## License
 
