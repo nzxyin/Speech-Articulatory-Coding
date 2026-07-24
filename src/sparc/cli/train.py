@@ -70,6 +70,10 @@ def main(cfg: DictConfig) -> None:
         save_last=True,
         every_n_train_steps=cfg.checkpoint_every_n_steps,
         save_top_k=cfg.keep_last_n_checkpoints,
+        # no validation loss to rank by -- rank by recency instead (see
+        # SparcVocoderTraining.training_step's step_metric log call).
+        monitor="step_metric" if cfg.keep_last_n_checkpoints not in (-1, 1) else None,
+        mode="max",
     )
 
     trainer = pl.Trainer(

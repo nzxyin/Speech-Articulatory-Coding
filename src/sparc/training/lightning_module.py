@@ -142,6 +142,10 @@ class SparcVocoderTraining(pl.LightningModule):
             prog_bar=True,
             on_step=True,
         )
+        # monitored by ModelCheckpoint (save_top_k>1 requires a ranked
+        # quantity; there's no validation loss here, so rank by recency
+        # instead -- see cli/train.py).
+        self.log("step_metric", float(self.global_step), prog_bar=False, on_step=True)
 
         if batch_idx % self.hparams.log_audio_every_n_steps == 0:
             tb = self.logger.experiment
