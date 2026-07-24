@@ -7,7 +7,9 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
+    "datasets>=5.0.0",
     "huggingface-hub>=0.36.0",
+    "hydra-core>=1.3.4",
     "ipykernel>=7.1.0",
     "librosa>=0.11.0",
     "matplotlib>=3.10.7",
@@ -22,6 +24,10 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/nzxyin/Speech-Articulatory-Coding"
 Upstream = "https://github.com/Berkeley-Speech-Group/Speech-Articulatory-Coding"
+
+[project.scripts]
+sparc-encode = "sparc.cli.encode:main"
+sparc-decode = "sparc.cli.decode:main"
 
 [build-system]
 requires = ["uv_build>=0.9.15,<0.10.0"]
