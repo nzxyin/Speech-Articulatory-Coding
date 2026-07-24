@@ -24,6 +24,10 @@ def main(cfg: DictConfig) -> None:
 
     for feat_path, spk_emb_path in tqdm.tqdm(list(zip(feats, spk_embs))):
         save_name = save_dir / (Path(str(feat_path).replace(str(ft_dir), "")).stem + ".wav")
+
+        if save_name.exists():
+            continue
+
         save_name.parent.mkdir(parents=True, exist_ok=True)
 
         try:
