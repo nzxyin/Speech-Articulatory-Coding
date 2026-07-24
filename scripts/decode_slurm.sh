@@ -24,6 +24,14 @@
 #   Array over multiple datasets (one dataset name per array index):
 #     sbatch --partition=array --array=0-1 scripts/decode_slurm.sh \
 #         librittsr_dev_clean librittsr_test_clean
+#
+#   Large datasets that may run past the general/cpu partitions' 2-day cap:
+#   use the preempt partition instead (up to 31 days, but jobs there can be
+#   killed and requeued from the start of the script at any time by higher-
+#   priority partitions -- this is safe here because the per-file skip-if-
+#   exists check below makes a requeued run resume rather than redo work):
+#     sbatch --partition=preempt --gres=gpu:1 --time=6-00:00:00 \
+#         scripts/decode_slurm.sh dataset=globe_v2
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
