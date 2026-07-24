@@ -92,9 +92,7 @@ sr = coder.sr
 Please check `notebooks/demo.ipynb` for a demonstration of the functions.
 
 
-### Training
-
-#### Feature extraction
+## CLI Inference
 
 Feature extraction and resynthesis are exposed as Hydra-configured CLIs, installed as console scripts:
 
