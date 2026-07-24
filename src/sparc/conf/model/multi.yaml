@@ -1,0 +1,3 @@
+# Multilingual model, trained on LibriTTS-R, Multilingual LibriSpeech, AISHELL, JVS, KSS
+model_name: multi
+config_path: null

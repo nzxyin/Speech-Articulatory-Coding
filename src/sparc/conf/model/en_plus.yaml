@@ -1,0 +1,3 @@
+# English model, trained on LibriTTS-R + LibriTTS + EXPRESSO
+model_name: en+
+config_path: null

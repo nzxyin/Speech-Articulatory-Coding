@@ -1,0 +1,3 @@
+wav_dir: /data/group_data/UTD-NAS/Databases/VCTK/VCTK-Corpus
+save_dir: /data/user_data/xoy/VCTK/VCTK-Corpus
+decode_dir: /data/user_data/xoy/VCTK/VCTK-Corpus-resynth

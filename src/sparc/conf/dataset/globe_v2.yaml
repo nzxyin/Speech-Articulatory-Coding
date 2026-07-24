@@ -1,0 +1,5 @@
+format: parquet
+data_dir: /data/group_data/UTD-NAS/Databases/GLOBE_V2/data
+glob: "*.parquet"
+save_dir: /data/user_data/xoy/GLOBE_V2
+decode_dir: /data/user_data/xoy/GLOBE_V2-resynth

@@ -1,0 +1,6 @@
+defaults:
+  - dataset: ???
+  - model: en_plus
+  - _self_
+
+device: cuda:0

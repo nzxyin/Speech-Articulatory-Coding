@@ -1,0 +1,3 @@
+wav_dir: /data/user_data/xoy/LibriTTS_R/test-clean
+save_dir: /data/user_data/xoy/LibriTTS_R/test-clean-sparc
+decode_dir: /data/user_data/xoy/LibriTTS_R/test-clean-sparc-resynth
