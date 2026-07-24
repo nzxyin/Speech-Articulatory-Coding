@@ -1,0 +1,3 @@
+wav_dir: /data/user_data/xoy/LJSpeech-1.1/wavs
+save_dir: /data/user_data/xoy/LJSpeech-1.1/preprocessed
+decode_dir: /data/user_data/xoy/LJSpeech-1.1/preprocessed-resynth

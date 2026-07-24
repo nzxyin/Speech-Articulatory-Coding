@@ -1,0 +1,3 @@
+wav_dir: /data/group_data/UTD-NAS/Databases/ESD/ESD
+save_dir: /data/user_data/xoy/ESD
+decode_dir: /data/user_data/xoy/ESD-resynth
