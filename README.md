@@ -96,7 +96,19 @@ Please check `notebooks/demo.ipynb` for a demonstration of the functions.
 
 #### Feature extraction
 
-Check `scripts/encode_audio.py` and an example script for extracting LibriTTS, `scripts/extract_libritts.sh`
+Feature extraction and resynthesis are exposed as Hydra-configured CLIs, installed as console scripts:
+
+```
+uv run sparc-encode dataset=vctk                 # uses the en+ model by default
+uv run sparc-encode dataset=vctk model=en         # override the model
+uv run sparc-decode dataset=vctk                  # resynthesize wavs from extracted features
+```
+
+`dataset` and `model` are Hydra config groups defined in `src/sparc/conf/dataset` and
+`src/sparc/conf/model`; add a new YAML file there (with `wav_dir`, `save_dir`, `decode_dir`) to
+support another dataset. On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
+the same CLIs — see the usage comments at the top of each script for single-dataset and
+array-job invocations.
 
 
 ## TODO
