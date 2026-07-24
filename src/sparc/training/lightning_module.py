@@ -10,6 +10,7 @@
 import lightning as pl
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
 from ..generator import HiFiGANGenerator
 from ..spk_encoder import SpeakerEncodingLayer
@@ -148,13 +149,42 @@ class SparcVocoderTraining(pl.LightningModule):
         self.log("step_metric", float(self.global_step), prog_bar=False, on_step=True)
 
         if batch_idx % self.hparams.log_audio_every_n_steps == 0:
-            tb = self.logger.experiment
-            tb.add_audio("train/real", audio[0].detach().cpu(), self.global_step, sample_rate=16000)
-            tb.add_audio("train/generated", wav_hat[0].detach().cpu().clamp(-1, 1), self.global_step, sample_rate=16000)
-            tb.add_image("train/mel_real", _mel_to_image(mel_real[0]), self.global_step, dataformats="HW")
-            tb.add_image("train/mel_generated", _mel_to_image(mel_fake[0]), self.global_step, dataformats="HW")
+            self._log_media(
+                real_audio=audio[0].detach().cpu(),
+                gen_audio=wav_hat[0].detach().cpu().clamp(-1, 1),
+                mel_real_img=_mel_to_image(mel_real[0]),
+                mel_gen_img=_mel_to_image(mel_fake[0]),
+            )
 
         return loss_g
+
+    def _log_media(self, real_audio, gen_audio, mel_real_img, mel_gen_img):
+        """Log audio/mel-spectrogram samples to every attached logger.
+
+        `self.log`/`self.log_dict` already dispatch scalars to all loggers
+        via Lightning's common Logger interface -- this only exists because
+        audio/image logging has no such common interface across backends,
+        so each logger's own native API has to be called directly.
+        """
+        for logger in self.loggers:
+            if isinstance(logger, TensorBoardLogger):
+                exp = logger.experiment
+                exp.add_audio("train/real", real_audio, self.global_step, sample_rate=16000)
+                exp.add_audio("train/generated", gen_audio, self.global_step, sample_rate=16000)
+                exp.add_image("train/mel_real", mel_real_img, self.global_step, dataformats="HW")
+                exp.add_image("train/mel_generated", mel_gen_img, self.global_step, dataformats="HW")
+            elif isinstance(logger, WandbLogger):
+                import wandb
+
+                logger.experiment.log(
+                    {
+                        "train/real": wandb.Audio(real_audio.numpy(), sample_rate=16000),
+                        "train/generated": wandb.Audio(gen_audio.numpy(), sample_rate=16000),
+                        "train/mel_real": wandb.Image(mel_real_img.numpy()),
+                        "train/mel_generated": wandb.Image(mel_gen_img.numpy()),
+                    },
+                    step=self.global_step,
+                )
 
     def configure_optimizers(self):
         opt_g = torch.optim.Adam(

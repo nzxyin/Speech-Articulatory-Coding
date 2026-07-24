@@ -18,7 +18,7 @@ import hydra
 import lightning as pl
 import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.plugins.environments import LightningEnvironment
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
@@ -27,15 +27,51 @@ from sparc.training.dataset import VocoderDataset, collate
 from sparc.training.lightning_module import SparcVocoderTraining
 
 
+def _build_loggers(cfg, save_dir: Path):
+    """Builds every logger named in cfg.logger_backends. Multiple backends
+    can run simultaneously -- Lightning dispatches self.log/self.log_dict
+    scalars to all of them automatically; SparcVocoderTraining._log_media
+    handles audio/image logging per-backend since there's no common API
+    for that across loggers.
+    """
+    loggers = []
+    backends = list(cfg.logger_backends)
+    if not backends:
+        raise ValueError("cfg.logger_backends is empty -- need at least one logger")
+
+    if "tensorboard" in backends:
+        tb_dir = Path(cfg.tb_log_dir) if cfg.tb_log_dir else save_dir / "tb_logs"
+        tb_dir.mkdir(parents=True, exist_ok=True)
+        loggers.append(TensorBoardLogger(save_dir=str(tb_dir.parent), name=tb_dir.name))
+
+    if "wandb" in backends:
+        wandb_dir = Path(cfg.wandb_dir) if cfg.wandb_dir else save_dir / "wandb_logs"
+        wandb_dir.mkdir(parents=True, exist_ok=True)
+        loggers.append(
+            WandbLogger(
+                project=cfg.wandb_project,
+                entity=cfg.wandb_entity,
+                name=cfg.wandb_run_name,
+                save_dir=str(wandb_dir),
+                # Compute nodes have internet access, but wandb "online" mode
+                # needs an API key (`wandb login` / WANDB_API_KEY) that isn't
+                # configured for this user by default. "offline" writes logs
+                # locally with no auth required; run `wandb sync <run_dir>`
+                # later to upload, or set wandb_mode=online once logged in.
+                mode=cfg.wandb_mode,
+            )
+        )
+
+    return loggers
+
+
 @hydra.main(version_base=None, config_path="../conf", config_name="train_config")
 def main(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     save_dir = Path(cfg.dataset.save_dir)
     ckpt_dir = Path(cfg.checkpoint_dir) if cfg.checkpoint_dir else save_dir / "vocoder_ckpt"
-    tb_dir = Path(cfg.tb_log_dir) if cfg.tb_log_dir else save_dir / "tb_logs"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    tb_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = VocoderDataset(
         wav_dir=cfg.dataset.wav_dir,
@@ -64,7 +100,7 @@ def main(cfg: DictConfig) -> None:
         log_audio_every_n_steps=cfg.log_audio_every_n_steps,
     )
 
-    logger = TensorBoardLogger(save_dir=str(tb_dir.parent), name=tb_dir.name)
+    loggers = _build_loggers(cfg, save_dir)
     checkpoint_cb = ModelCheckpoint(
         dirpath=str(ckpt_dir),
         save_last=True,
@@ -87,7 +123,7 @@ def main(cfg: DictConfig) -> None:
         # doesn't correspond to this process, raising
         # "CUDA-capable device(s) is/are busy or unavailable".
         plugins=[LightningEnvironment()],
-        logger=logger,
+        logger=loggers,
         callbacks=[checkpoint_cb],
         log_every_n_steps=cfg.log_every_n_steps,
         enable_progress_bar=True,

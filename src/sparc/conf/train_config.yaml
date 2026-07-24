@@ -24,8 +24,18 @@ log_every_n_steps: 10
 log_audio_every_n_steps: 500
 val_check_interval: null
 checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt
-tb_log_dir: null           # defaults to <dataset.save_dir>/tb_logs
 checkpoint_every_n_steps: 1000
 keep_last_n_checkpoints: 5  # + last.ckpt always kept; -1 keeps every checkpoint (grows unbounded on long runs)
 resume_from_checkpoint: null
 seed: 0
+
+# Logging backends -- any combination of "tensorboard"/"wandb". Both can run
+# at once (e.g. [tensorboard, wandb]); scalars go to every backend listed,
+# audio/mel-spectrogram samples too (see SparcVocoderTraining._log_media).
+logger_backends: [tensorboard]
+tb_log_dir: null           # defaults to <dataset.save_dir>/tb_logs
+wandb_dir: null             # defaults to <dataset.save_dir>/wandb_logs
+wandb_project: sparc-vocoder
+wandb_entity: null
+wandb_run_name: null
+wandb_mode: offline        # "online" needs `wandb login` / WANDB_API_KEY set first

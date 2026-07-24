@@ -37,6 +37,7 @@
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export HF_HOME=/data/user_data/xoy/.cache/huggingface
+export WANDB_CACHE_DIR=/data/user_data/xoy/.cache/wandb
 cd "$SLURM_SUBMIT_DIR/.."
 
 uv run sparc-train "$@"
