@@ -1,0 +1,29 @@
+defaults:
+  - dataset: ???
+  - _self_
+
+device: cuda:0
+
+# Data
+segment_frames: 16      # 16 frames @ 50Hz = 320ms, matching paper Appendix B.7
+batch_size: 64
+num_workers: 8
+
+# Optimization (paper Appendix B.7)
+lr: 1e-4
+betas: [0.5, 0.9]
+lr_halve_every: 8000
+lr_static_after: 320000
+mel_weight: 45.0
+fm_weight: 2.0
+gan_weight: 1.0
+
+# Trainer / logging
+max_steps: 5000
+log_every_n_steps: 10
+log_audio_every_n_steps: 500
+val_check_interval: null
+checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt
+tb_log_dir: null           # defaults to <dataset.save_dir>/tb_logs
+resume_from_checkpoint: null
+seed: 0
