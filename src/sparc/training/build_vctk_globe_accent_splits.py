@@ -189,6 +189,35 @@ def write_split(name, rows_, out_dir):
             f.write(f"{r['stem']}\t{r['source']}\t{r['speaker']}\t{r['accent']}\n")
 
 
+def select_val_speakers(remaining_speakers, spk_map, remaining_pool_size, val_fraction):
+    """Greedily assigns whole speakers to val (random order) until val's
+    accumulated *utterance* count reaches val_fraction of the remaining
+    pool, rather than picking a fraction of the *speaker headcount*.
+
+    The naive speaker-count version breaks down for accents with both few
+    unique speakers and a power-law-skewed per-speaker utterance count
+    (e.g. GLOBE_V2's NorthernIrish: only 17 speakers -- round(17*0.10)=2
+    speakers picked for val was very likely to land on two low-volume
+    speakers by chance, producing a val set with single-digit utterances
+    while train got the rest. Targeting utterance count instead keeps val
+    genuinely close to val_fraction of the data while still keeping every
+    speaker's utterances entirely on one side of the train/val boundary
+    (no speaker split across both, which would leak speaker-specific
+    characteristics into val and inflate its usefulness as a held-out
+    estimate).
+    """
+    random.shuffle(remaining_speakers)
+    val_target = max(1, round(remaining_pool_size * val_fraction)) if remaining_pool_size > 0 else 0
+    val_speakers, val_count = set(), 0
+    for spk in remaining_speakers:
+        if val_count >= val_target:
+            break
+        val_speakers.add(spk)
+        val_count += len(spk_map[spk])
+    train_speakers = set(remaining_speakers) - val_speakers
+    return val_speakers, train_speakers
+
+
 # =====================================================================
 # Strategy A: "holdout" -- speaker-level test holdout from the combined
 # VCTK+GLOBE pool per accent (same approach as before, just with the
@@ -220,10 +249,10 @@ def build_holdout_strategy():
         test.extend(test_part)
 
         remaining_speakers = speakers[i:]
-        random.shuffle(remaining_speakers)
-        n_val_speakers = max(1, round(len(remaining_speakers) * VAL_FRACTION)) if len(remaining_speakers) > 1 else 0
-        val_speakers = set(remaining_speakers[:n_val_speakers])
-        train_speakers = set(remaining_speakers[n_val_speakers:])
+        remaining_pool_size = sum(len(spk_map[spk]) for spk in remaining_speakers)
+        val_speakers, train_speakers = select_val_speakers(
+            remaining_speakers, spk_map, remaining_pool_size, VAL_FRACTION
+        )
 
         val_part = [u for spk in val_speakers for u in spk_map[spk]]
         train_part = [u for spk in train_speakers for u in spk_map[spk]]
@@ -266,10 +295,9 @@ def build_vctk_train_globe_test_strategy():
         for r in remainder:
             spk_map[r["speaker"]].append(r)
         remaining_speakers = list(spk_map.keys())
-        random.shuffle(remaining_speakers)
-        n_val_speakers = max(1, round(len(remaining_speakers) * VAL_FRACTION)) if len(remaining_speakers) > 1 else 0
-        val_speakers = set(remaining_speakers[:n_val_speakers])
-        train_speakers = set(remaining_speakers[n_val_speakers:])
+        val_speakers, train_speakers = select_val_speakers(
+            remaining_speakers, spk_map, len(remainder), VAL_FRACTION
+        )
 
         val_part = [u for spk in val_speakers for u in spk_map[spk]]
         train_part = [u for spk in train_speakers for u in spk_map[spk]]
