@@ -193,15 +193,91 @@ the logging UI.
 Full reproduction (paper: 1.5M steps, batch 64, ~555h of LibriTTS-R) is well beyond a single
 run's practical scope here; the pipeline has been verified end-to-end — correct architecture,
 losses, and data pipeline, with loss curves behaving as expected — but not run to paper-matching
-scale or quality. The linear EMA-inversion head is reused from the shipped checkpoint rather
-than refit from scratch, since that requires the MNGU0 corpus (manual dataset-owner approval, no
-automated access) — this matches what the paper itself treats as a fixed component when
-describing vocoder training.
+scale or quality. The linear EMA-inversion head is a separately frozen component, refit from
+scratch below rather than trained jointly with the vocoder — matching how the paper itself
+treats it.
+
+## Linear AAI Head Refit (MNGU0)
+
+This reproduces the paper's Section III-A1 / Appendix A.1 methodology: WavLM Large layer-9
+features → 12-dim EMA (tongue dorsum/blade/tip, jaw, upper lip, lower lip × X/Y) via ordinary
+least squares, fit on MNGU0. Requires the MNGU0 "day1"/"s1" release (manual dataset-owner
+approval) laid out as:
+
+```
+<mngu0_root>/ema_norm/<release>/*.ema   # head-corrected EMA, EST_Track binary format, 200Hz
+<mngu0_root>/wav_16kHz/<release>/*.wav  # matching audio, 16kHz
+```
+
+Set `MNGU0_ROOT` at the top of `src/sparc/training/refit_mngu0_linear_aai.py` (and the other
+scripts below, which import their paths from it) to point at your copy.
+
+#### 1. Verify the layer choice
+
+`mngu0_layer_sweep.py` probes every WavLM Large transformer layer (not just 9) with a single
+held-out split per layer, to check the paper's Fig. 7 finding that layer 9 is the peak before
+committing to it:
+
+```
+uv run python -m sparc.training.mngu0_layer_sweep [cuda:0]
+```
+
+Layers 9–10 come out statistically tied for the peak, matching the paper's rise → plateau →
+decline curve shape — confirming layer 9 is the right (or an indistinguishable-from-optimal)
+choice.
+
+#### 2. Correct the EMA/audio sync lag, then fit
+
+MNGU0's EMA capture and audio recording aren't triggered at the same instant despite both
+files' internal clocks nominally starting at t=0 — there's a hardware/software sync lag between
+the two subsystems that must be corrected before pairing frames, and it isn't perfectly
+constant across utterances. Two variants are provided:
+
+```
+uv run python -m sparc.training.refit_mngu0_linear_aai [cuda:0]   # single global offset
+uv run python -m sparc.training.mngu0_peralign_refit [cuda:0]     # per-utterance offset (recommended)
+```
+
+`refit_mngu0_linear_aai.py` uses one fixed offset (`EMA_AUDIO_OFFSET_FRAMES`), found once via
+cross-correlation against the shipped model's predictions on a handful of utterances.
+`mngu0_peralign_refit.py` instead computes that offset per utterance: cross-correlating each
+utterance's ground-truth EMA against the *shipped model's own prediction for that utterance*
+(audio-locked by construction, since it's computed directly from that utterance's audio) over a
+search window, and taking the shift that maximizes mean per-channel correlation. This uses the
+shipped model only as a timing reference, never as a value target — the EMA values fit against
+are always the real measured ground truth.
+
+`mngu0_peralign_control_test.py` validates that the per-utterance result isn't a search/leakage
+artifact: it repeats the identical procedure but aligns each utterance against a *different,
+randomly assigned* utterance's shipped prediction, where no genuine temporal correspondence
+should exist:
+
+```
+uv run python -m sparc.training.mngu0_peralign_control_test [cuda:0]
+```
+
+#### Results
+
+5-fold cross-validated mean Pearson correlation, matching the paper's evaluation protocol:
+
+| Method | Mean PCC |
+|---|---|
+| Global offset (`refit_mngu0_linear_aai.py`) | 0.7021 ± 0.0090 |
+| Shipped checkpoint's own head, evaluated against this ground truth | 0.6855 ± 0.278 |
+| **Per-utterance offset (`mngu0_peralign_refit.py`)** | **0.9186 ± 0.0010** |
+| Mismatched-pairing control | 0.0590 ± 0.0053 |
+| Paper (Appendix A.1) | 0.878 ± 0.012 |
+
+The mismatched-pairing control collapsing to near-zero shows the per-utterance result requires
+genuine matched alignment, not an artifact of searching over many candidate shifts. The found
+offsets are also tightly and physically plausibly distributed around the global-offset method's
+constant (mean 23.2 frames, std 3.2, both at a 50Hz frame rate), consistent with correcting real
+per-utterance timing drift rather than fitting noise. 143 of 1189 utterances are excluded from
+the per-utterance variant — MNGU0's shortest utterances, under the 50-frame (~1s) minimum needed
+to estimate a reliable per-utterance offset.
 
 ## TODO
 
-- Refit the linear EMA-inversion head from scratch on MNGU0 (currently reused from the shipped
-  checkpoint; blocked on manual dataset access approval).
 - Scale vocoder training to the paper's full schedule and evaluate against the paper's reported
   metrics (WER/CER/MOS/UTMOS).
 - Multilingual fine-tuning.
