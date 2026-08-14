@@ -41,12 +41,18 @@ Two split strategies are built and both written out (see STRATEGY below):
   "vctk_train_globe_test": all of VCTK goes into train/val untouched (no
   VCTK held out for test at all); the balanced per-accent test set is
   drawn exclusively from GLOBE_V2. Per instruction, speaker identity is
-  *not* held exclusive to test here -- SPARC features are assumed
-  speaker-invariant (accent/rate carry the signal, not voice identity),
-  so a GLOBE speaker can appear in both test and train/val as long as no
-  single utterance is used in more than one split. Val still gets a
-  speaker-disjoint split from train (ordinary best practice, unrelated to
-  the test-speaker-overlap relaxation above).
+  *not* held exclusive to any split here -- SPARC features are assumed
+  speaker-invariant (accent/rate carry the signal, not voice identity), so
+  a speaker can appear in test, val, AND train as long as no single
+  utterance is used in more than one split. Both test and val are sampled
+  at the utterance level, not the speaker level (see select_val_utterances
+  below) -- applying the same speaker-invariance assumption uniformly
+  rather than only to test avoids the sizing problems a "keep every
+  speaker whole" constraint causes for accents with few, unevenly-sized
+  speakers (e.g. GLOBE_V2's NorthernIrish, only 17 unique speakers with a
+  power-law-skewed utterance count -- val had been landing at ~40% of the
+  remaining pool instead of the ~10% target, because whichever early
+  speaker the greedy speaker-level fill picked first dominated the count).
 """
 
 import json
@@ -189,33 +195,34 @@ def write_split(name, rows_, out_dir):
             f.write(f"{r['stem']}\t{r['source']}\t{r['speaker']}\t{r['accent']}\n")
 
 
-def select_val_speakers(remaining_speakers, spk_map, remaining_pool_size, val_fraction):
-    """Greedily assigns whole speakers to val (random order) until val's
-    accumulated *utterance* count reaches val_fraction of the remaining
-    pool, rather than picking a fraction of the *speaker headcount*.
+def select_val_utterances(remaining_pool, val_fraction):
+    """Utterance-level train/val split: shuffle and take exactly
+    round(len(remaining_pool) * val_fraction) utterances for val, the rest
+    for train. No speaker-disjointness constraint between the two sides.
 
-    The naive speaker-count version breaks down for accents with both few
-    unique speakers and a power-law-skewed per-speaker utterance count
-    (e.g. GLOBE_V2's NorthernIrish: only 17 speakers -- round(17*0.10)=2
-    speakers picked for val was very likely to land on two low-volume
-    speakers by chance, producing a val set with single-digit utterances
-    while train got the rest. Targeting utterance count instead keeps val
-    genuinely close to val_fraction of the data while still keeping every
-    speaker's utterances entirely on one side of the train/val boundary
-    (no speaker split across both, which would leak speaker-specific
-    characteristics into val and inflate its usefulness as a held-out
-    estimate).
+    Earlier versions kept every speaker's utterances entirely on one side
+    of the train/val boundary (speaker-disjoint, "keep speakers whole"),
+    first via a speaker-COUNT fraction (broke down badly: GLOBE_V2's
+    NorthernIrish has only 17 speakers, so round(17*0.10)=2 speakers
+    picked for val landed on two low-volume ones by chance, giving a
+    single-digit-utterance val set), then via a greedy per-speaker
+    utterance-count target (fixed the sizing on average, but still
+    overshoot for NorthernIrish specifically -- ~40% instead of ~10% --
+    since with only 17 speakers and a power-law-skewed distribution, the
+    first speaker or two the random order happens to pick can dominate the
+    count on their own).
+
+    Speaker-disjointness is dropped entirely here, applying the same
+    speaker-invariance assumption already used to let test share speakers
+    with train/val (SPARC features are assumed to encode accent/rate, not
+    voice identity) -- so there's no principled reason to hold it for val
+    specifically. This gives every accent an exact val_fraction split,
+    regardless of how few or how skewed its speaker pool is.
     """
-    random.shuffle(remaining_speakers)
-    val_target = max(1, round(remaining_pool_size * val_fraction)) if remaining_pool_size > 0 else 0
-    val_speakers, val_count = set(), 0
-    for spk in remaining_speakers:
-        if val_count >= val_target:
-            break
-        val_speakers.add(spk)
-        val_count += len(spk_map[spk])
-    train_speakers = set(remaining_speakers) - val_speakers
-    return val_speakers, train_speakers
+    pool = list(remaining_pool)
+    random.shuffle(pool)
+    n_val = round(len(pool) * val_fraction)
+    return pool[:n_val], pool[n_val:]
 
 
 # =====================================================================
@@ -249,13 +256,8 @@ def build_holdout_strategy():
         test.extend(test_part)
 
         remaining_speakers = speakers[i:]
-        remaining_pool_size = sum(len(spk_map[spk]) for spk in remaining_speakers)
-        val_speakers, train_speakers = select_val_speakers(
-            remaining_speakers, spk_map, remaining_pool_size, VAL_FRACTION
-        )
-
-        val_part = [u for spk in val_speakers for u in spk_map[spk]]
-        train_part = [u for spk in train_speakers for u in spk_map[spk]]
+        remaining_pool = [u for spk in remaining_speakers for u in spk_map[spk]]
+        val_part, train_part = select_val_utterances(remaining_pool, VAL_FRACTION)
         val.extend(val_part)
         train.extend(train_part)
 
@@ -266,11 +268,10 @@ def build_holdout_strategy():
 
 # =====================================================================
 # Strategy B: "vctk_train_globe_test" -- all VCTK stays in train/val;
-# balanced test drawn only from GLOBE_V2. Test utterances are sampled
-# directly per accent (no whole-speaker reservation) since a GLOBE speaker
-# is allowed to also appear in train/val -- only the literal sampled
-# utterances are excluded from the train/val remainder. Val is still a
-# speaker-disjoint split of what's left, same as before.
+# balanced test drawn only from GLOBE_V2. Both test and val are sampled
+# directly at the utterance level (no whole-speaker reservation) since a
+# GLOBE speaker is allowed to appear in more than one split -- only the
+# literal sampled utterances are excluded from the remaining pool.
 # =====================================================================
 def build_vctk_train_globe_test_strategy():
     globe_by_accent = defaultdict(list)
@@ -291,16 +292,7 @@ def build_vctk_train_globe_test_strategy():
         remainder = pool[n_test:]
         test.extend(test_part)
 
-        spk_map = defaultdict(list)
-        for r in remainder:
-            spk_map[r["speaker"]].append(r)
-        remaining_speakers = list(spk_map.keys())
-        val_speakers, train_speakers = select_val_speakers(
-            remaining_speakers, spk_map, len(remainder), VAL_FRACTION
-        )
-
-        val_part = [u for spk in val_speakers for u in spk_map[spk]]
-        train_part = [u for spk in train_speakers for u in spk_map[spk]]
+        val_part, train_part = select_val_utterances(remainder, VAL_FRACTION)
         val.extend(val_part)
         train.extend(train_part)
 
