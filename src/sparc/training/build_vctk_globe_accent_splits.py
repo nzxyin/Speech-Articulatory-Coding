@@ -1,26 +1,32 @@
 """
-Builds train/val/test manifests combining VCTK (10 native accent labels --
-Welsh dropped, see below) and GLOBE_V2 (its own self-reported, often
-multi-tag accent field), mapped onto the same accent taxonomy:
+Builds train/val/test manifests combining VCTK (native accent labels) and
+GLOBE_V2 (its own self-reported, often multi-tag accent field), mapped
+onto the same accent taxonomy:
 
     VCTK label      <-> GLOBE_V2 exact tag(s)
     English         <-> "England English"
     American        <-> "United States English"
-    Scottish        <-> "Scottish English"
-    Irish           <-> "Irish English"
+    Scottish        <-> "Scottish English"                                 [dropped, see below]
+    Irish           <-> "Irish English"                                    [dropped, see below]
     Canadian        <-> "Canadian English"
     NorthernIrish   <-> "Northern Irish"
     SouthAfrican    <-> "Southern African (South Africa, Zimbabwe, Namibia)",
-                        "South African English"
+                        "South African English"                            [dropped, see below]
     Indian          <-> "India and South Asia (India, Pakistan, Sri Lanka)"
     Australian      <-> "Australian English"
-    NewZealand      <-> "New Zealand English"
+    NewZealand      <-> "New Zealand English"                              [dropped, see below]
 
-Welsh is dropped entirely (VCTK: 1 speaker/375 utterances; GLOBE: 316
-utterances) -- it was the thinnest category by a wide margin and set the
-ceiling on how large a balanced test set could be. Dropping it raises that
-ceiling to Irish's 2,658 GLOBE utterances (the new smallest category),
-which is what N_TEST_PER_ACCENT below is sized against.
+Currently scoped to 6 accents -- American, English, Canadian, Australian,
+NorthernIrish, Indian -- dropping Welsh (thinnest by a wide margin: VCTK 1
+speaker/375 utterances, GLOBE 316 utterances), Scottish (GLOBE 2,762),
+Irish (GLOBE 2,658), NewZealand (GLOBE 2,685), and SouthAfrican (GLOBE
+1,194). This is a deliberate trade for a larger balanced test set: since
+N_TEST_PER_ACCENT is bounded above by the smallest kept category's GLOBE
+total, keeping all 10 accents bounded it at Irish's 2,658; dropping down to
+6 raises that ceiling to Indian's 10,770 (now the smallest of the 6 kept),
+a ~4x increase. N_TEST_PER_ACCENT is set well below that ceiling (see
+below) so the smallest category still keeps the large majority of its data
+for train/val.
 
 GLOBE_V2's accent field is a comma-separated list of self-reported tags
 (Common Voice convention), and some individual tags themselves contain
@@ -64,7 +70,7 @@ import pyarrow.parquet as pq
 
 random.seed(0)
 
-N_TEST_PER_ACCENT = 300  # see module docstring: bounded by Irish's 2,658 GLOBE utterances
+N_TEST_PER_ACCENT = 1000  # see module docstring: bounded above by Indian's 10,770 GLOBE utterances
 VAL_FRACTION = 0.10
 
 VCTK_WAV_ROOT = Path("/data/group_data/UTD-NAS/Databases/VCTK/VCTK-Corpus/wav48")
@@ -73,7 +79,7 @@ GLOBE_DATA_DIR = Path("/data/group_data/UTD-NAS/Databases/GLOBE_V2/data")
 OUT_DIR = Path("/data/user_data/xoy/vctk_globe_accent_splits")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DROPPED_ACCENTS = {"Welsh"}
+DROPPED_ACCENTS = {"Welsh", "Scottish", "Irish", "NewZealand", "SouthAfrican"}
 
 GLOBE_TAG_TO_ACCENT = {
     "England English": "English",
@@ -141,7 +147,7 @@ print(f"VCTK rows (accent known, not dropped): {len(vctk_rows)}")
 
 # ------------------------------------------------------------ GLOBE_V2 ----
 globe_rows = []
-excluded_ambiguous = excluded_unmatched = 0
+excluded_ambiguous = excluded_unmatched = excluded_dropped = 0
 for shard in sorted(GLOBE_DATA_DIR.glob("*.parquet")):
     tbl = pq.read_table(shard, columns=["accent", "speaker_id"])
     accents = tbl.column("accent").to_pylist()
@@ -156,6 +162,9 @@ for shard in sorted(GLOBE_DATA_DIR.glob("*.parquet")):
             else:
                 excluded_unmatched += 1
             continue
+        if cat in DROPPED_ACCENTS:
+            excluded_dropped += 1
+            continue
         globe_rows.append({
             "stem": f"{shard.stem}-{row_idx:06d}",
             "source": "globe_v2",
@@ -163,10 +172,11 @@ for shard in sorted(GLOBE_DATA_DIR.glob("*.parquet")):
             "accent": cat,
         })
 
-print(f"GLOBE_V2 rows matched to a single category: {len(globe_rows)}")
+print(f"GLOBE_V2 rows matched to a single kept category: {len(globe_rows)}")
+print(f"GLOBE_V2 rows excluded (dropped accent): {excluded_dropped}")
 print(f"GLOBE_V2 rows excluded (ambiguous multi-accent tags): {excluded_ambiguous}")
 print(f"GLOBE_V2 rows excluded (no matching tag): {excluded_unmatched}")
-print(f"GLOBE_V2 total scanned: {len(globe_rows) + excluded_ambiguous + excluded_unmatched}")
+print(f"GLOBE_V2 total scanned: {len(globe_rows) + excluded_dropped + excluded_ambiguous + excluded_unmatched}")
 
 combined_rows = vctk_rows + globe_rows
 print(f"combined rows: {len(combined_rows)}")
