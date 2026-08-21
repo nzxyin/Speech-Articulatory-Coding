@@ -38,7 +38,7 @@ category only if EXACTLY ONE of the mapped tags appears among its
 "England English,United States English", a self-reported mixed accent)
 are excluded, to avoid contaminating one category's data with another's.
 
-Two split strategies are built and both written out (see STRATEGY below):
+Three split strategies are built and all written out (see STRATEGY below):
 
   "holdout": test is a fixed N utterances per accent, held out at the
   speaker level from the *combined* VCTK+GLOBE pool per accent; train/val
@@ -59,6 +59,15 @@ Two split strategies are built and both written out (see STRATEGY below):
   power-law-skewed utterance count -- val had been landing at ~40% of the
   remaining pool instead of the ~10% target, because whichever early
   speaker the greedy speaker-level fill picked first dominated the count).
+
+  "vctk_only": VCTK exclusively, no GLOBE_V2 at all -- for comparing
+  against a GLOBE-augmented split on the same 6 accents. VCTK is much
+  smaller than GLOBE per accent, so its own balanced test-set ceiling is
+  far tighter: the smallest of the 6 kept accents in VCTK is Australian at
+  823 utterances (vs. Indian's 10,770 in GLOBE), which is what
+  N_TEST_PER_ACCENT_VCTK_ONLY below is sized against. Same utterance-level,
+  non-speaker-exclusive methodology as "vctk_train_globe_test", applied to
+  VCTK alone.
 """
 
 import json
@@ -71,6 +80,7 @@ import pyarrow.parquet as pq
 random.seed(0)
 
 N_TEST_PER_ACCENT = 1000  # see module docstring: bounded above by Indian's 10,770 GLOBE utterances
+N_TEST_PER_ACCENT_VCTK_ONLY = 150  # see module docstring: bounded above by Australian's 823 VCTK utterances
 VAL_FRACTION = 0.10
 
 VCTK_WAV_ROOT = Path("/data/group_data/UTD-NAS/Databases/VCTK/VCTK-Corpus/wav48")
@@ -315,9 +325,44 @@ def build_vctk_train_globe_test_strategy():
     return train, val, test, stats
 
 
+# =====================================================================
+# Strategy C: "vctk_only" -- VCTK exclusively, no GLOBE_V2. Same
+# utterance-level, non-speaker-exclusive methodology as Strategy B, just
+# applied to VCTK's own (much smaller) per-accent pools.
+# =====================================================================
+def build_vctk_only_strategy():
+    vctk_by_accent = defaultdict(list)
+    for r in vctk_rows:
+        vctk_by_accent[r["accent"]].append(r)
+
+    train, val, test = [], [], []
+    stats = {}
+
+    for accent, pool in vctk_by_accent.items():
+        pool = list(pool)
+        random.shuffle(pool)
+        vctk_total = len(pool)
+
+        n_test = min(N_TEST_PER_ACCENT_VCTK_ONLY, vctk_total)
+        test_part = pool[:n_test]
+        remainder = pool[n_test:]
+        test.extend(test_part)
+
+        val_part, train_part = select_val_utterances(remainder, VAL_FRACTION)
+        val.extend(val_part)
+        train.extend(train_part)
+
+        stats[accent] = dict(vctk_total=vctk_total,
+                              n_speakers=len({r["speaker"] for r in pool}),
+                              test=len(test_part), val=len(val_part), train=len(train_part),
+                              short_of_target=max(0, N_TEST_PER_ACCENT_VCTK_ONLY - vctk_total))
+    return train, val, test, stats
+
+
 for strategy_name, builder in [
     ("holdout", build_holdout_strategy),
     ("vctk_train_globe_test", build_vctk_train_globe_test_strategy),
+    ("vctk_only", build_vctk_only_strategy),
 ]:
     train, val, test, stats = builder()
     out_dir = OUT_DIR / strategy_name
