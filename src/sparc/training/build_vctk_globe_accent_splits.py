@@ -60,14 +60,15 @@ Three split strategies are built and all written out (see STRATEGY below):
   remaining pool instead of the ~10% target, because whichever early
   speaker the greedy speaker-level fill picked first dominated the count).
 
-  "vctk_only": VCTK exclusively, no GLOBE_V2 at all -- for comparing
-  against a GLOBE-augmented split on the same 6 accents. VCTK is much
-  smaller than GLOBE per accent, so its own balanced test-set ceiling is
-  far tighter: the smallest of the 6 kept accents in VCTK is Australian at
-  823 utterances (vs. Indian's 10,770 in GLOBE), which is what
-  N_TEST_PER_ACCENT_VCTK_ONLY below is sized against. Same utterance-level,
-  non-speaker-exclusive methodology as "vctk_train_globe_test", applied to
-  VCTK alone.
+  "vctk_only": VCTK exclusively, no GLOBE_V2 at all, and covering ALL 11
+  raw VCTK accent labels (not just the 6 kept by the other two
+  strategies) -- for comparing against a GLOBE-augmented split with no
+  restriction on either data source or accent coverage. Unlike the other
+  two strategies, this one IS speaker exclusive: no speaker's utterances
+  appear in more than one split. This is deliberately the opposite
+  methodology from "vctk_train_globe_test" -- see build_vctk_only_strategy
+  below for why VCTK's much more uniform per-speaker utterance counts make
+  whole-speaker reservation practical here in a way it wasn't for GLOBE_V2.
 """
 
 import json
@@ -80,8 +81,7 @@ import pyarrow.parquet as pq
 random.seed(0)
 
 N_TEST_PER_ACCENT = 1000  # see module docstring: bounded above by Indian's 10,770 GLOBE utterances
-N_TEST_PER_ACCENT_VCTK_ONLY = 150  # see module docstring: bounded above by Australian's 823 VCTK utterances
-VAL_FRACTION = 0.10
+VAL_FRACTION = 0.10  # used by select_val_utterances (holdout, vctk_train_globe_test); vctk_only reserves whole speakers instead
 
 VCTK_WAV_ROOT = Path("/data/group_data/UTD-NAS/Databases/VCTK/VCTK-Corpus/wav48")
 VCTK_SPK_INFO = Path("/data/group_data/UTD-NAS/Databases/VCTK/VCTK-Corpus/speaker-info.txt")
@@ -146,14 +146,19 @@ with open(VCTK_SPK_INFO) as f:
         spk_accent["p" + parts[0]] = parts[3]
 
 vctk_rows = []
+vctk_rows_all_accents = []  # unfiltered by DROPPED_ACCENTS -- used only by the vctk_only strategy
 for spk_dir in sorted(VCTK_WAV_ROOT.iterdir()):
     spk = spk_dir.name
     accent = spk_accent.get(spk)
-    if accent is None or accent in DROPPED_ACCENTS:
-        continue  # p280 (no accent info), or a dropped accent (Welsh)
+    if accent is None:
+        continue  # p280 has no accent info in speaker-info.txt
     for wav in spk_dir.glob("*.wav"):
-        vctk_rows.append({"stem": wav.stem, "source": "vctk", "speaker": spk, "accent": accent})
+        row = {"stem": wav.stem, "source": "vctk", "speaker": spk, "accent": accent}
+        vctk_rows_all_accents.append(row)
+        if accent not in DROPPED_ACCENTS:
+            vctk_rows.append(row)
 print(f"VCTK rows (accent known, not dropped): {len(vctk_rows)}")
+print(f"VCTK rows (accent known, all accents incl. dropped): {len(vctk_rows_all_accents)}")
 
 # ------------------------------------------------------------ GLOBE_V2 ----
 globe_rows = []
@@ -326,36 +331,54 @@ def build_vctk_train_globe_test_strategy():
 
 
 # =====================================================================
-# Strategy C: "vctk_only" -- VCTK exclusively, no GLOBE_V2. Same
-# utterance-level, non-speaker-exclusive methodology as Strategy B, just
-# applied to VCTK's own (much smaller) per-accent pools.
+# Strategy C: "vctk_only" -- VCTK exclusively, no GLOBE_V2, ALL 11 raw VCTK
+# accent labels (not just the 6 kept elsewhere in this file), and SPEAKER
+# EXCLUSIVE: no speaker's utterances appear in more than one of
+# train/val/test. VCTK's per-speaker utterance counts are fairly uniform
+# ("each speaker reads out about 400 sentences" per the corpus README),
+# unlike GLOBE_V2's crowdsourced power-law skew, so a whole-speaker
+# reservation is well-behaved here in a way it wasn't for GLOBE -- no need
+# for the utterance-count-targeted greedy accumulation select_val_utterances
+# uses elsewhere in this file.
+#
+# Reserves exactly 1 speaker for test and 1 more for val, wherever enough
+# speakers exist; the rest of each accent's speakers go to train. Some of
+# the 11 accents are too thin in speakers for a full 3-way split: Welsh and
+# NewZealand have only 1 VCTK speaker each (all of it goes to train, no
+# test/val possible without breaking speaker exclusivity), and Australian
+# has only 2 (1 test, 1 train, no val). This means test/val set sizes vary
+# per accent by whichever single speaker was reserved (~350-450 utterances
+# each, given VCTK's ~400/speaker average) rather than being a fixed,
+# balanced N_TEST_PER_ACCENT_VCTK_ONLY target -- an unavoidable trade-off
+# of enforcing speaker exclusivity on accents this thin.
 # =====================================================================
 def build_vctk_only_strategy():
-    vctk_by_accent = defaultdict(list)
-    for r in vctk_rows:
-        vctk_by_accent[r["accent"]].append(r)
+    vctk_by_accent_speaker = defaultdict(lambda: defaultdict(list))
+    for r in vctk_rows_all_accents:
+        vctk_by_accent_speaker[r["accent"]][r["speaker"]].append(r)
 
     train, val, test = [], [], []
     stats = {}
 
-    for accent, pool in vctk_by_accent.items():
-        pool = list(pool)
-        random.shuffle(pool)
-        vctk_total = len(pool)
+    for accent, spk_map in vctk_by_accent_speaker.items():
+        speakers = list(spk_map.keys())
+        random.shuffle(speakers)
+        vctk_total = sum(len(v) for v in spk_map.values())
 
-        n_test = min(N_TEST_PER_ACCENT_VCTK_ONLY, vctk_total)
-        test_part = pool[:n_test]
-        remainder = pool[n_test:]
+        test_speakers = speakers[:1] if len(speakers) >= 2 else []
+        val_speakers = speakers[1:2] if len(speakers) >= 3 else []
+        train_speakers = speakers[len(test_speakers) + len(val_speakers):]
+
+        test_part = [u for spk in test_speakers for u in spk_map[spk]]
+        val_part = [u for spk in val_speakers for u in spk_map[spk]]
+        train_part = [u for spk in train_speakers for u in spk_map[spk]]
         test.extend(test_part)
-
-        val_part, train_part = select_val_utterances(remainder, VAL_FRACTION)
         val.extend(val_part)
         train.extend(train_part)
 
-        stats[accent] = dict(vctk_total=vctk_total,
-                              n_speakers=len({r["speaker"] for r in pool}),
-                              test=len(test_part), val=len(val_part), train=len(train_part),
-                              short_of_target=max(0, N_TEST_PER_ACCENT_VCTK_ONLY - vctk_total))
+        stats[accent] = dict(vctk_total=vctk_total, n_speakers=len(speakers),
+                              test_speakers=test_speakers, val_speakers=val_speakers,
+                              test=len(test_part), val=len(val_part), train=len(train_part))
     return train, val, test, stats
 
 
