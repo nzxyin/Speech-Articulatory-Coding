@@ -60,11 +60,15 @@ Three split strategies are built and all written out (see STRATEGY below):
   remaining pool instead of the ~10% target, because whichever early
   speaker the greedy speaker-level fill picked first dominated the count).
 
-  "vctk_only": VCTK exclusively, no GLOBE_V2 at all, and covering ALL 11
-  raw VCTK accent labels (not just the 6 kept by the other two
-  strategies) -- for comparing against a GLOBE-augmented split with no
-  restriction on either data source or accent coverage. Unlike the other
-  two strategies, this one IS speaker exclusive: no speaker's utterances
+  "vctk_only": VCTK exclusively, no GLOBE_V2 at all, scoped to its own
+  top 6 accents BY VCTK VOLUME (English, American, Scottish, Irish,
+  Canadian, NorthernIrish) -- a different 6 from the other two strategies'
+  GLOBE-ceiling-driven set, chosen so every kept accent has enough VCTK
+  speakers (6+) to support this strategy's speaker-exclusive constraint
+  below without degenerate zero-val/zero-test cases (which an earlier
+  all-11-accent version of this strategy hit for Welsh, NewZealand,
+  Australian, and Indian -- all under 6 speakers). Unlike the other two
+  strategies, this one IS speaker exclusive: no speaker's utterances
   appear in more than one split. This is deliberately the opposite
   methodology from "vctk_train_globe_test" -- see build_vctk_only_strategy
   below for why VCTK's much more uniform per-speaker utterance counts make
@@ -331,31 +335,38 @@ def build_vctk_train_globe_test_strategy():
 
 
 # =====================================================================
-# Strategy C: "vctk_only" -- VCTK exclusively, no GLOBE_V2, ALL 11 raw VCTK
-# accent labels (not just the 6 kept elsewhere in this file), and SPEAKER
-# EXCLUSIVE: no speaker's utterances appear in more than one of
-# train/val/test. VCTK's per-speaker utterance counts are fairly uniform
-# ("each speaker reads out about 400 sentences" per the corpus README),
-# unlike GLOBE_V2's crowdsourced power-law skew, so a whole-speaker
-# reservation is well-behaved here in a way it wasn't for GLOBE -- no need
-# for the utterance-count-targeted greedy accumulation select_val_utterances
-# uses elsewhere in this file.
+# Strategy C: "vctk_only" -- VCTK exclusively, no GLOBE_V2, scoped to the
+# TOP 6 raw VCTK accent labels BY VCTK's OWN VOLUME (English, American,
+# Scottish, Irish, Canadian, NorthernIrish) -- a different 6 from the
+# other two strategies' GLOBE-ceiling-driven set (which includes
+# Australian and Indian, both too speaker-thin for this strategy's
+# speaker-exclusive constraint below; see the reasoning that replaced an
+# earlier all-11-accent version of this strategy). SPEAKER EXCLUSIVE: no
+# speaker's utterances appear in more than one of train/val/test. VCTK's
+# per-speaker utterance counts are fairly uniform ("each speaker reads out
+# about 400 sentences" per the corpus README), unlike GLOBE_V2's
+# crowdsourced power-law skew, so a whole-speaker reservation is
+# well-behaved here in a way it wasn't for GLOBE -- no need for the
+# utterance-count-targeted greedy accumulation select_val_utterances uses
+# elsewhere in this file.
 #
-# Reserves exactly 1 speaker for test and 1 more for val, wherever enough
-# speakers exist; the rest of each accent's speakers go to train. Some of
-# the 11 accents are too thin in speakers for a full 3-way split: Welsh and
-# NewZealand have only 1 VCTK speaker each (all of it goes to train, no
-# test/val possible without breaking speaker exclusivity), and Australian
-# has only 2 (1 test, 1 train, no val). This means test/val set sizes vary
-# per accent by whichever single speaker was reserved (~350-450 utterances
-# each, given VCTK's ~400/speaker average) rather than being a fixed,
-# balanced N_TEST_PER_ACCENT_VCTK_ONLY target -- an unavoidable trade-off
-# of enforcing speaker exclusivity on accents this thin.
+# Reserves exactly 1 speaker for test and 1 more for val; the rest of each
+# accent's speakers go to train. All 6 top-by-volume accents have at least
+# 6 speakers (NorthernIrish, the smallest), so every accent gets a full
+# 3-way split with no degenerate zero-val/zero-test cases. Test/val sizes
+# still vary per accent by whichever single speaker was reserved
+# (~350-450 utterances each, given VCTK's ~400/speaker average) rather
+# than being a fixed, balanced target, since whole speakers can't be split
+# to hit an exact count.
 # =====================================================================
+TOP6_VCTK_ONLY_ACCENTS = {"English", "American", "Scottish", "Irish", "Canadian", "NorthernIrish"}
+
+
 def build_vctk_only_strategy():
     vctk_by_accent_speaker = defaultdict(lambda: defaultdict(list))
     for r in vctk_rows_all_accents:
-        vctk_by_accent_speaker[r["accent"]][r["speaker"]].append(r)
+        if r["accent"] in TOP6_VCTK_ONLY_ACCENTS:
+            vctk_by_accent_speaker[r["accent"]][r["speaker"]].append(r)
 
     train, val, test = [], [], []
     stats = {}
