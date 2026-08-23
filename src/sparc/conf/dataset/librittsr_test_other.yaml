@@ -1,0 +1,3 @@
+wav_dir: /data/group_data/UTD-NAS/Databases/LibriTTS-R/LibriTTS_R/test-other
+save_dir: /data/user_data/xoy/LibriTTS_R/test-other-sparc
+decode_dir: /data/user_data/xoy/LibriTTS_R/test-other-sparc-resynth
