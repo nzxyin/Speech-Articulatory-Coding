@@ -12,21 +12,34 @@ num_workers: 8
 # Optimization (paper Appendix B.7)
 lr: 1e-4
 betas: [0.5, 0.9]
-lr_halve_every: 8000
-lr_static_after: 320000
+# lr multiplier = 0.5 ** (step // lr_halve_every), i.e. MultiStepLR(gamma=0.5) as in the
+# ParallelWaveGAN HiFi-GAN recipe. lr_static_after (null = never) freezes the multiplier
+# from that step on. A warning is emitted if the multiplier at max_steps is below 1e-3.
+lr_halve_every: 200000
+lr_static_after: null
 mel_weight: 45.0
 fm_weight: 2.0
 gan_weight: 1.0
 
 # Trainer / logging
+# max_steps / checkpoint_every_n_steps count batches (one discriminator + one generator update),
+# matching the LR schedule; they are converted to Lightning's global_step (2 per batch) in cli/train.py.
 max_steps: 5000
 log_every_n_steps: 10
 log_audio_every_n_steps: 500
 val_check_interval: null
-checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt
+checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt (explicit dirs are not run-keyed: auto-resume there needs run_name)
 checkpoint_every_n_steps: 1000
 keep_last_n_checkpoints: 5  # + last.ckpt always kept; -1 keeps every checkpoint (grows unbounded on long runs)
-resume_from_checkpoint: null
+resume_from_checkpoint: null  # explicit path; overrides auto-resume
+# run_name keys the checkpoint dir (<save_dir>/vocoder_ckpt/<run_name>) and enables auto-resume
+# from its newest last.ckpt/hpc_ckpt_*.ckpt. Under sbatch it defaults to slurm_<SLURM_JOB_ID>,
+# which survives a requeue; set it explicitly to continue a run across separate submissions.
+run_name: null
+slurm_requeue: true         # under sbatch: SIGUSR1 -> checkpoint + `scontrol requeue` (needs --signal=B:USR1@120)
+devices: 1                  # GPUs per node; >1 uses ddp_find_unused_parameters_true unless strategy is set
+                            # (under single-task sbatch, >1 disables SIGUSR1 auto-requeue; see README)
+strategy: auto
 seed: 0
 
 # Logging backends -- any combination of "tensorboard"/"wandb". Both can run

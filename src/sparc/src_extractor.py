@@ -43,7 +43,7 @@ class SourceExtractor(BaseExtractor):
         self.device = device
         self.intensity_model = self.intensity_model.to(device)
         
-    def _run_crepe(self, wavs):
+    def _run_crepe(self, wavs, seed=None):
 
         def _reshape(arr,q):
             b = arr.shape[0]
@@ -55,9 +55,14 @@ class SourceExtractor(BaseExtractor):
 
         pitches = []
         periodicities = []
+        # torchcrepe dithers decoded pitch with the global numpy RNG; a given seed makes each
+        # utterance's pitch reproducible (the RNG state is restored afterwards).
+        rng_state = np.random.get_state() if seed is not None else None
         with torch.no_grad():
             for wi in range(len(wavs)):
                 wav = wavs.input_values[wi][:wavs.input_lens[wi]].unsqueeze(0)
+                if seed is not None:
+                    np.random.seed(seed)
                 pitch, periodicity = torchcrepe.predict(wav,
                                                self.sr,
                                                self.pitch_hop_length,
@@ -73,6 +78,8 @@ class SourceExtractor(BaseExtractor):
                 pitches.append(pitch[0])
                 periodicities.append(periodicity[0])
         
+        if rng_state is not None:
+            np.random.set_state(rng_state)
         pitches = torch.nn.utils.rnn.pad_sequence(pitches, batch_first=True, padding_value=0.0).cpu().numpy()
         periodicities = torch.nn.utils.rnn.pad_sequence(periodicities, batch_first=True, padding_value=0.0).cpu().numpy()
         return pitches, periodicities
@@ -106,11 +113,10 @@ class SourceExtractor(BaseExtractor):
 
     
 
-    def _extract_pitch(self, wavs, outputs={},):
+    def _extract_pitch(self, wavs, outputs={}, seed=None):
         if not isinstance(wavs, SpeechWave):
             wavs = self.process_wavfiles(wavs)
-        else: 
-            pitch, periodicity = self._run_crepe(wavs)
+        pitch, periodicity = self._run_crepe(wavs, seed=seed)
         if "loudness" in outputs.keys():
             periodicity = self._filter_low_loudness(periodicity, outputs["loudness"])
         
@@ -129,10 +135,10 @@ class SourceExtractor(BaseExtractor):
         outputs["loudness"] = intensity[...,None]
         return outputs
 
-    def __call__(self, wavfiles, outputs={}, split_batch=False):
+    def __call__(self, wavfiles, outputs={}, split_batch=False, seed=None):
         wavs = self.process_wavfiles(wavfiles)
         outputs = self._extract_intensity(wavs, outputs)
-        outputs = self._extract_pitch(wavs, outputs)
+        outputs = self._extract_pitch(wavs, outputs, seed=seed)
         if split_batch:
             outputs = self._split_batch(outputs)
         return outputs

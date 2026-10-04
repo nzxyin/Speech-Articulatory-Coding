@@ -104,8 +104,9 @@ class MultiScaleDiscriminator(torch.nn.Module):
         self.discriminators = torch.nn.ModuleList([
             ScaleDiscriminator(use_spectral_norm=(i == 0)) for i in range(len(scales))
         ])
+        # Pools are applied cumulatively in forward, so stride 2 each gives 1x/2x/4x.
         self.meanpools = torch.nn.ModuleList([
-            torch.nn.AvgPool1d(4, scale, padding=2) for scale in scales[1:]
+            torch.nn.AvgPool1d(4, 2, padding=2) for _ in scales[1:]
         ])
 
     def forward(self, y, y_hat):

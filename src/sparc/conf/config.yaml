@@ -4,3 +4,7 @@ defaults:
   - _self_
 
 device: cuda:0
+
+# Seed numpy per utterance (stable hash of the utterance id) right before CREPE pitch decoding so
+# that re-running encoding reproduces the pitch exactly (torchcrepe adds random dither otherwise).
+deterministic_pitch: true

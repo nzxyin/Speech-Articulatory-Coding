@@ -99,6 +99,7 @@ Feature extraction and resynthesis are exposed as Hydra-configured CLIs, install
 ```
 uv run sparc-encode dataset=vctk                 # uses the en+ model by default
 uv run sparc-encode dataset=vctk model=en         # override the model
+uv run sparc-encode dataset=vctk model.linear_model_path=<head.pkl>  # replace the checkpoint's linear AAI head
 uv run sparc-decode dataset=vctk                  # resynthesize wavs from extracted features
 ```
 
@@ -172,12 +173,26 @@ Both scalars (losses, learning rate) and periodic audio/mel-spectrogram samples
 
 #### 4. Checkpoints and resuming
 
-Checkpoints save to `<dataset.save_dir>/vocoder_ckpt` every `checkpoint_every_n_steps` (default
-1000), keeping the `keep_last_n_checkpoints` most recent plus `last.ckpt`. Resume a run with:
+`max_steps` and `checkpoint_every_n_steps` count batches (one discriminator + one generator
+update each), matching the LR schedule; the CLI converts them to Lightning's `global_step`, which
+advances twice per batch. Checkpoints save to `<dataset.save_dir>/vocoder_ckpt` every
+`checkpoint_every_n_steps` (default 1000), keeping the `keep_last_n_checkpoints` most recent plus
+`last.ckpt`, and include python/numpy/torch/CUDA RNG state. Resume a run with:
 
 ```
 uv run sparc-train dataset=librittsr_train_clean_100 resume_from_checkpoint=<path-to>/last.ckpt
 ```
+
+Setting `run_name=<name>` keys the checkpoint dir (`vocoder_ckpt/<name>`) and makes `sparc-train`
+auto-resume from the newest `last.ckpt`/`hpc_ckpt_*.ckpt` there. Under `sbatch` the run name
+defaults to `slurm_<SLURM_JOB_ID>`, which a requeued job keeps. `scripts/train_slurm.sh` requests
+`--requeue --signal=B:USR1@120`: on preemption Lightning saves a checkpoint and requeues the job,
+which then resumes by itself; SIGTERM also saves a checkpoint. Multi-GPU: `devices=N` (uses
+`ddp_find_unused_parameters_true`). `train_slurm.sh` runs one SLURM task, so with `devices>1` Lightning
+spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned into SIGTERM,
+which saves a checkpoint); launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
+only happens if `run_name` is also set. Known gap: the DataLoader is not stateful, so a resumed run
+restarts the epoch's shuffle (RNG-restored, but not the same samples as an uninterrupted run).
 
 #### 5. Listen to samples
 
