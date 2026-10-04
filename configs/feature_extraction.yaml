@@ -5,7 +5,7 @@ normalize: true # zscore input waveforms
 sr: 16000
 ft_sr: 50
 ## Source feature configs
-crepe_model: tiny
+crepe_model: full
 device: cuda
 fmax: 550
 fmin: 50
@@ -19,9 +19,6 @@ speech_model: microsoft/wavlm-large
 spk_ft_size: 1024
 target_layer: 9
 freqcut: 10
-zero_pad: true
-## Speaker encoder
-spk_target_layer: 0
 ## Hifi-GAN configs
 generator_configs: null
 ## Checkpoint Info
@@ -29,4 +26,3 @@ all_ckpt: null
 linear_model_path: null
 generator_ckpt: null
 spk_ft_ckpt: null
-

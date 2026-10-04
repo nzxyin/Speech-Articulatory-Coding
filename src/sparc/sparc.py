@@ -6,12 +6,16 @@ from .src_extractor import SourceExtractor
 from .spk_encoder import SpeakerEncoder
 from .generator import HiFiGANGenerator
 import copy
+import logging
+import warnings
 from huggingface_hub import hf_hub_download
 
 model_name_map = {"en": "model_english_1500k",
                   "multi": "model_multiling",
                   "en+": "model_englishplus_2M",
                   "feature_extraction": "feature_extraction"}
+
+logger = logging.getLogger(__name__)
 
 def download_huggingface(file_name):
     return hf_hub_download(repo_id="cheoljun95/Speech-Articulatory-Coding", filename=file_name,)
@@ -20,13 +24,18 @@ def load_model(model_name=None, config=None, ckpt=None,
                device="cuda",
                **kwargs):
     
+    if kwargs.get("linear_model_path") is not None and kwargs.get("linear_model_state_dict") is not None:
+        raise ValueError("Pass either linear_model_path or linear_model_state_dict, not both.")
     if model_name is not None:
         model_name = model_name_map[model_name]
         if config is None:
             config = download_huggingface(f"{model_name}.yaml")
         if model_name == "feature_extraction":
+            if kwargs.get("linear_model_state_dict") is None:
+                kwargs.setdefault("linear_model_path", None)
+                if kwargs["linear_model_path"] is None:
+                    kwargs["linear_model_path"] = download_huggingface("wavlm_large-9_cut-10_mngu_linear.pkl")
             return load_model(config=config, ckpt=None, device=device,
-                              linear_model_path=download_huggingface("wavlm_large-9_cut-10_mngu_linear.pkl"),
                               **kwargs)
         else:
             ckpt = download_huggingface(f"{model_name}.ckpt")
@@ -52,15 +61,33 @@ def load_model(model_name=None, config=None, ckpt=None,
             config['spk_ft_ckpt'] = ckpt['state_dict']['spk_ft']
         if config['generator_ckpt'] is None:
             config['generator_ckpt'] = ckpt['state_dict']['generator']
-        if config['linear_model_path'] is None:
+        # An explicitly passed head takes precedence over the checkpoint's embedded one.
+        if (config['linear_model_path'] is None and
+            kwargs.get("linear_model_path") is None and
+            kwargs.get("linear_model_state_dict") is None):
             config['linear_model_state_dict'] = ckpt['state_dict']['linear_model']
             config['linear_model_path'] = None
+            logger.info("Using the linear AAI head embedded in the checkpoint.")
     
     assert config is not None
     config["device"] = device
+    linear_path = kwargs.pop("linear_model_path", None)
+    linear_sd = kwargs.pop("linear_model_state_dict", None)
     for key, value in kwargs.items():
         if key in config.keys():
             config[key] = value
+    if linear_path is not None:
+        config['linear_model_path'] = linear_path
+        config['linear_model_state_dict'] = None
+        logger.warning("Using linear AAI head from %s (overrides any head in the checkpoint/config).",
+                       linear_path)
+    elif linear_sd is not None:
+        config['linear_model_path'] = None
+        config['linear_model_state_dict'] = linear_sd
+        logger.warning("Using the explicitly passed linear AAI state dict "
+                       "(overrides any head in the checkpoint/config).")
+    elif config.get('linear_model_path') is not None:
+        logger.info("Using linear AAI head from %s.", config['linear_model_path'])
     model = SPARC(**config)
     return model
 
@@ -80,8 +107,11 @@ class SPARC(BaseExtractor):
                  device='cuda', normalize=True, sr=16000, ft_sr=50,
                  periodicity_threshold=0.0, reflect_loudness=False, loudness_threshold=0.1,
                  pitch_shift_strategy="standard",
-                 output_sr=16000, **kwargs):
-        
+                 output_sr=16000, use_penn=False, **kwargs):
+        if use_penn:
+            warnings.warn("use_penn is not implemented and has no effect; torchcrepe is always used "
+                          "for pitch extraction.")
+
         common_configs = {"device":device, "normalize":normalize, "sr":sr,
                           "ft_sr":ft_sr}
         self.inverter = Inversion(linear_model_path, linear_model_state_dict=linear_model_state_dict,
@@ -125,12 +155,14 @@ class SPARC(BaseExtractor):
     
     
     def encode(self, wavs, split_batch=True, reduce=True, 
-               concat=False):
+               concat=False, seed=None):
+        # seed: if given, numpy is seeded with it right before CREPE decoding of each utterance,
+        # making the (dithered) pitch reproducible. None leaves the global RNG untouched.
         wavs = self.process_wavfiles(wavs)
         outputs = {}
         include_acoustics=True
         outputs = self.inverter(wavs, outputs, include_acoustics=include_acoustics)
-        outputs = self.source_extractor(wavs, outputs)
+        outputs = self.source_extractor(wavs, outputs, seed=seed)
         outputs = self.speaker_encoder(wavs, outputs)
         outputs['ft_len'] = np.round(wavs.input_lens/320).astype(int)
         if 'acoustics' in outputs:

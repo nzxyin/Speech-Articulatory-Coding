@@ -25,7 +25,7 @@
 #   sbatch scripts/train_slurm.sh dataset=vctk max_steps=1500000
 #
 #   Full reproduction (paper: 1.5M steps, batch 64, ~555h LibriTTS-R) will
-#   run well past the general/cpu partitions' 2-day cap -- use preempt
+#   run well past the general partition's 2-day cap -- use preempt
 #   instead (it can kill and requeue the job from the start of the script
 #   at any time, so pass --resume_from_checkpoint pointing at the last
 #   Lightning checkpoint under <dataset.save_dir>/vocoder_ckpt/last.ckpt to

@@ -1,3 +1,6 @@
 # English model, trained on LibriTTS-R
 model_name: en
 config_path: null
+# Optional: override the linear AAI head with a scikit-learn pickle (takes precedence over the
+# head embedded in the checkpoint). Leave null to use the checkpoint head.
+linear_model_path: null

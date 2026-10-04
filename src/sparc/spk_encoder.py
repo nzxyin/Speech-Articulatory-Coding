@@ -1,3 +1,5 @@
+import warnings
+import numpy as np
 import torch
 from .speech import BaseExtractor, SpeechWave
 from .src_extractor import SourceExtractor
@@ -69,11 +71,13 @@ class SpeakerEncoder(BaseExtractor):
             outputs["wav"] = wavs
             outputs["acoustics"] = low_acoustics_
         if "periodicity" in outputs.keys():
-            outputs['spk_emb'] = self._get_spk_emb(outputs["acoustics"], outputs['periodicity'], axis=1)
+            lens = np.round(wavs.input_lens/320).astype(int)
+            outputs['spk_emb'] = self._get_spk_emb(outputs["acoustics"], outputs['periodicity'], axis=1,
+                                                   lengths=lens)
 
         return outputs
     
-    def _get_spk_emb(self, acoustics, weights, axis=1):
+    def _get_spk_emb(self, acoustics, weights, axis=1, lengths=None):
         min_len_ = min(acoustics.shape[axis], weights.shape[axis])
         if axis==0:
             acoustics = acoustics[:min_len_]
@@ -81,7 +85,23 @@ class SpeakerEncoder(BaseExtractor):
         else: #axis=1
             acoustics = acoustics[:,:min_len_]
             weights = weights[:,:min_len_]
-        spk_emb= (acoustics*weights).sum(axis)/weights.sum(axis)
+        weight_sum = weights.sum(axis)
+        empty = np.atleast_1d(weight_sum == 0).reshape(-1)
+        if empty.any():
+            # Every periodicity weight is 0 (e.g. fully unvoiced/thresholded utterance): fall back
+            # to uniform weights over the valid frames instead of dividing by zero.
+            warnings.warn("All periodicity weights are zero; using uniform weights for the "
+                          "speaker embedding pooling.")
+            weights = np.array(weights, copy=True)
+            T = weights.shape[axis]
+            for bi in np.nonzero(empty)[0]:
+                n = T if lengths is None else int(max(1, min(T, lengths[bi])))
+                if axis == 1:
+                    weights[bi, :n] = 1.0
+                else:
+                    weights[:n] = 1.0
+            weight_sum = weights.sum(axis)
+        spk_emb= (acoustics*weights).sum(axis)/weight_sum
         
         if self.spk_enc is not None:
             spk_emb = torch.from_numpy(spk_emb).to(self.device)
