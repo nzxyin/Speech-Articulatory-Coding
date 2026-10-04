@@ -7,6 +7,8 @@
 # CREPE pitch tracking, loudness -- those targets/conditioning come
 # pre-computed from the dataset (see dataset.py).
 
+import warnings
+
 import lightning as pl
 import torch
 import torch.nn.functional as F
@@ -44,9 +46,27 @@ DEFAULT_GENERATOR_CONFIG = dict(
 )
 
 
-def lr_lambda(step, halve_every=8000, static_after=320000):
-    step = min(step, static_after)
+def lr_lambda(step, halve_every=200000, static_after=None):
+    # Step-halving multiplier (MultiStepLR(gamma=0.5) with a milestone every
+    # `halve_every` steps, as in the ParallelWaveGAN HiFi-GAN recipe).
+    # `static_after` optionally freezes the multiplier from that step on.
+    if static_after is not None:
+        step = min(step, static_after)
     return 0.5 ** (step // halve_every)
+
+
+def lr_decay_warning(max_steps, halve_every, static_after=None, floor=1e-3):
+    """Message if the lr multiplier at `max_steps` is below `floor`, else None."""
+    if max_steps is None or max_steps <= 0:
+        return None
+    mult = lr_lambda(max_steps, halve_every, static_after)
+    if mult >= floor:
+        return None
+    return (
+        f"lr schedule decays to {mult:.2e} x base lr by max_steps={max_steps} "
+        f"(halve every {halve_every} steps, static after {static_after}); "
+        f"training will effectively stall. Increase lr_halve_every."
+    )
 
 
 class SparcVocoderTraining(pl.LightningModule):
@@ -57,8 +77,8 @@ class SparcVocoderTraining(pl.LightningModule):
         spk_emb_size=64,
         lr=1e-4,
         betas=(0.5, 0.9),
-        lr_halve_every=8000,
-        lr_static_after=320000,
+        lr_halve_every=200000,
+        lr_static_after=None,
         mel_weight=45.0,
         fm_weight=2.0,
         gan_weight=1.0,
@@ -80,6 +100,15 @@ class SparcVocoderTraining(pl.LightningModule):
         self.mpd = MultiPeriodDiscriminator()
         self.msd = MultiScaleDiscriminator()
         self.mel = MelSpectrogram()
+
+    def setup(self, stage=None):
+        if stage != "fit":
+            return
+        msg = lr_decay_warning(
+            self.trainer.max_steps, self.hparams.lr_halve_every, self.hparams.lr_static_after
+        )
+        if msg:
+            warnings.warn(msg)
 
     def forward(self, art, spk_raw):
         spk_emb = self.speaker_ffn(spk_raw)

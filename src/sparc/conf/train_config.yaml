@@ -12,8 +12,11 @@ num_workers: 8
 # Optimization (paper Appendix B.7)
 lr: 1e-4
 betas: [0.5, 0.9]
-lr_halve_every: 8000
-lr_static_after: 320000
+# lr multiplier = 0.5 ** (step // lr_halve_every), i.e. MultiStepLR(gamma=0.5) as in the
+# ParallelWaveGAN HiFi-GAN recipe. lr_static_after (null = never) freezes the multiplier
+# from that step on. A warning is emitted if the multiplier at max_steps is below 1e-3.
+lr_halve_every: 200000
+lr_static_after: null
 mel_weight: 45.0
 fm_weight: 2.0
 gan_weight: 1.0

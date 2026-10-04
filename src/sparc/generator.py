@@ -44,6 +44,12 @@ class HiFiGANGenerator(torch.nn.Module):
     ):
         """Initialize HiFiGANGenerator module.
 
+        Note:
+            The defaults for in_channels, upsample_scales and upsample_kernel_sizes
+            are not the SPARC values; SPARC configs always override them.
+            paddings/output_paddings accept None or a list of "default" only;
+            anything else raises NotImplementedError.
+
         Args:
             in_channels (int): Number of input channels.
             out_channels (int): Number of output channels.
@@ -82,8 +88,9 @@ class HiFiGANGenerator(torch.nn.Module):
                 if s == "default":
                     new_paddings.append(upsample_scales[i] // 2 + upsample_scales[i] % 2)
                 else:
-                    print("not implemented")
-                    exit()
+                    raise NotImplementedError(
+                        f"Unsupported paddings entry {s!r}; only 'default' is implemented."
+                    )
             paddings = new_paddings
         if output_paddings is None:
             output_paddings = []
@@ -98,8 +105,9 @@ class HiFiGANGenerator(torch.nn.Module):
                 if s == "default":
                     new_output_paddings.append(upsample_scales[i] % 2)
                 else:
-                    print("not implemented")
-                    exit()
+                    raise NotImplementedError(
+                        f"Unsupported output_paddings entry {s!r}; only 'default' is implemented."
+                    )
             output_paddings = new_output_paddings
             
         # define modules
@@ -204,12 +212,12 @@ class HiFiGANGenerator(torch.nn.Module):
                 ),
             )
     
+        # reset parameters (before weight norm, so the init lands in weight_g/weight_v)
+        self.reset_parameters()
+
         # apply weight norm
         if use_weight_norm:
             self.apply_weight_norm()
-
-        # reset parameters
-        self.reset_parameters()
 
         self.pitch_offset=pitch_offset
         self.pitch_rescale=pitch_rescale
@@ -225,7 +233,9 @@ class HiFiGANGenerator(torch.nn.Module):
             Tensor: Output tensor (B, out_channels, T).
 
         """
-        c[:,self.pitch_axis] = (c[:,self.pitch_axis]-self.pitch_offset)*self.pitch_rescale
+        # out of place: do not mutate the caller's tensor
+        pitch = (c[:, self.pitch_axis] - self.pitch_offset) * self.pitch_rescale
+        c = torch.cat([c[:, :self.pitch_axis], pitch.unsqueeze(1), c[:, self.pitch_axis + 1:]], dim=1)
         c = self.input_conv(c)
         # print('after input_conv', c.shape)
         for i in range(self.num_upsamples):
