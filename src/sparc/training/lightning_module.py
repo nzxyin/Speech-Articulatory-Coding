@@ -7,7 +7,10 @@
 # CREPE pitch tracking, loudness -- those targets/conditioning come
 # pre-computed from the dataset (see dataset.py).
 
+import random
+
 import lightning as pl
+import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
@@ -42,6 +45,17 @@ DEFAULT_GENERATOR_CONFIG = dict(
     pitch_rescale=0.01,
     pitch_axis=12,
 )
+
+
+# With manual optimization Lightning's trainer.global_step advances once per
+# optimizer.step() call, i.e. twice per batch (discriminator + generator).
+# Config values (max_steps, checkpoint_every_n_steps) are expressed in batches;
+# use batches_to_global_steps() when handing them to Lightning.
+OPTIMIZERS_PER_BATCH = 2
+
+
+def batches_to_global_steps(n_batches):
+    return None if n_batches is None else n_batches * OPTIMIZERS_PER_BATCH
 
 
 def lr_lambda(step, halve_every=8000, static_after=320000):
@@ -81,6 +95,40 @@ class SparcVocoderTraining(pl.LightningModule):
         self.msd = MultiScaleDiscriminator()
         self.mel = MelSpectrogram()
 
+    @property
+    def batch_step(self):
+        """Number of completed batches (each = one discriminator + one generator update)."""
+        return self.global_step // OPTIMIZERS_PER_BATCH
+
+    def on_save_checkpoint(self, checkpoint):
+        # Lightning does not checkpoint RNG state; store it so a resumed run
+        # continues the same random stream (dropout, DataLoader shuffling and
+        # worker seeds are all derived from these generators).
+        # (numpy's state is converted to plain ints/tensors so the checkpoint
+        # still loads under torch.load(weights_only=True).)
+        name, keys, pos, has_gauss, cached = np.random.get_state()
+        checkpoint["sparc_rng_state"] = {
+            "python": random.getstate(),
+            "numpy": (name, torch.from_numpy(keys.astype(np.int64)), int(pos), int(has_gauss), float(cached)),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
+
+    def on_load_checkpoint(self, checkpoint):
+        state = checkpoint.get("sparc_rng_state")
+        # The checkpoint holds rank 0's state only; restoring it on every rank
+        # would give all DDP ranks identical dropout/crops, so only restore
+        # in single-process runs.
+        if state is None or self.trainer.world_size > 1:
+            return
+        random.setstate(state["python"])
+        name, keys, pos, has_gauss, cached = state["numpy"]
+        np.random.set_state((name, keys.numpy().astype(np.uint32), pos, has_gauss, cached))
+        torch.set_rng_state(state["torch"].cpu())
+        if state.get("cuda") is not None and torch.cuda.is_available():
+            if len(state["cuda"]) == torch.cuda.device_count():
+                torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
+
     def forward(self, art, spk_raw):
         spk_emb = self.speaker_ffn(spk_raw)
         c = art.transpose(1, 2)  # (B, T, 14) -> (B, 14, T)
@@ -99,6 +147,10 @@ class SparcVocoderTraining(pl.LightningModule):
         audio = audio[..., :min_len]
 
         # --- discriminator step ---
+        # toggle_optimizer freezes every parameter outside this optimizer, so
+        # the generator step below doesn't compute gradients for the
+        # discriminators (and vice versa).
+        self.toggle_optimizer(opt_d)
         opt_d.zero_grad()
         y_dp_r, y_dp_g, _, _ = self.mpd(audio.unsqueeze(1), wav_hat.detach().unsqueeze(1))
         loss_d_p, _, _ = discriminator_loss(y_dp_r, y_dp_g)
@@ -108,8 +160,10 @@ class SparcVocoderTraining(pl.LightningModule):
         self.manual_backward(loss_d)
         opt_d.step()
         sched_d.step()
+        self.untoggle_optimizer(opt_d)
 
         # --- generator + speaker-FFN step ---
+        self.toggle_optimizer(opt_g)
         opt_g.zero_grad()
         mel_real = self.mel(audio)
         mel_fake = self.mel(wav_hat)
@@ -130,6 +184,7 @@ class SparcVocoderTraining(pl.LightningModule):
         self.manual_backward(loss_g)
         opt_g.step()
         sched_g.step()
+        self.untoggle_optimizer(opt_g)
 
         self.log_dict(
             {
@@ -169,10 +224,10 @@ class SparcVocoderTraining(pl.LightningModule):
         for logger in self.loggers:
             if isinstance(logger, TensorBoardLogger):
                 exp = logger.experiment
-                exp.add_audio("train/real", real_audio, self.global_step, sample_rate=16000)
-                exp.add_audio("train/generated", gen_audio, self.global_step, sample_rate=16000)
-                exp.add_image("train/mel_real", mel_real_img, self.global_step, dataformats="HW")
-                exp.add_image("train/mel_generated", mel_gen_img, self.global_step, dataformats="HW")
+                exp.add_audio("train/real", real_audio, self.batch_step, sample_rate=16000)
+                exp.add_audio("train/generated", gen_audio, self.batch_step, sample_rate=16000)
+                exp.add_image("train/mel_real", mel_real_img, self.batch_step, dataformats="HW")
+                exp.add_image("train/mel_generated", mel_gen_img, self.batch_step, dataformats="HW")
             elif isinstance(logger, WandbLogger):
                 import wandb
 
@@ -183,7 +238,7 @@ class SparcVocoderTraining(pl.LightningModule):
                         "train/mel_real": wandb.Image(mel_real_img.numpy()),
                         "train/mel_generated": wandb.Image(mel_gen_img.numpy()),
                     },
-                    step=self.global_step,
+                    step=self.batch_step,
                 )
 
     def configure_optimizers(self):
