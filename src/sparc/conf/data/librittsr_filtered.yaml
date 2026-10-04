@@ -1,0 +1,13 @@
+# Filtered LibriTTS-R (parler-tts/libritts_r_filtered), decision D3.
+train_splits: [train.clean.100, train.clean.360, train.other.500]
+val_split: dev.clean
+val_subset_size: 200
+logging_subset_size: 20
+predict_split: test.clean
+predict_conditions: [T1, T2, T3]
+crop_frames: 64
+batch_size: 16
+num_workers: 8
+gain_db_range: [-6.0, -1.0]
+eval_gain_db: -3.0
+ref_min_dur: 3.0

@@ -1,0 +1,5 @@
+# Locations come from environment variables, so no machine-specific path is committed.
+cache_root: ${oc.env:SPARC_VOC_CACHE}
+runs_root: ${oc.env:SPARC_VOC_RUNS}
+libritts_r_raw: ${oc.env:LIBRITTSR_RAW}
+refit_npz: ${oc.env:SPARC_REFIT_NPZ}

@@ -9,4 +9,3 @@ scripts/err
 scripts/out
 scripts/*.sh
 .venv
-uv.lock

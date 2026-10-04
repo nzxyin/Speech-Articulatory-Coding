@@ -1,0 +1,39 @@
+# Root config of the 24 kHz vocoder comparison (`uv run sparc-train vocoder=<name> experiment=<name>`).
+# See docs/vocoders/INTERFACES.md.
+defaults:
+  - paths: default
+  - vocoder: hifigan
+  - data: librittsr_filtered
+  - loss: shared
+  - trainer: default
+  - experiment: null
+  - _self_
+
+experiment_name: default
+seed: 0
+stats_path: ${paths.cache_root}/stats/train_stats.json
+run_dir: ${paths.runs_root}/${experiment_name}/${vocoder.name}
+
+optim:
+  lr: 2.0e-4
+  betas: [0.8, 0.9]
+  weight_decay: 0.01
+  warmup_steps: 1000
+
+train:
+  max_g_steps: 400000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+  checkpoint_every_minutes: 20
+
+speaker:
+  layer: l6        # l6 (en+ layer, decision D5) or l0
+  p_cross: 0.5     # probability of a cross-utterance reference in training (decision D4)
+  dropout: 0.2
+
+hydra:
+  run:
+    dir: ${run_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

@@ -15,6 +15,8 @@ dependencies = [
     "lightning>=2.6.5",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
+    "pandas>=2.2",
+    "pyarrow>=17",
     "soundfile>=0.13.1",
     "tensorboard>=2.21.0",
     "torch>=2.9.0",
@@ -32,7 +34,14 @@ Upstream = "https://github.com/Berkeley-Speech-Group/Speech-Articulatory-Coding"
 sparc-encode = "sparc.cli.encode:main"
 sparc-decode = "sparc.cli.decode:main"
 sparc-train = "sparc.cli.train:main"
+sparc-cache = "sparc.cli.cache_features:main"
+sparc-predict = "sparc.cli.predict_vocoder:main"
 
 [build-system]
 requires = ["uv_build>=0.9.15,<0.10.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
