@@ -14,8 +14,15 @@
 # identical regardless of which trained speaker-FFN/generator checkpoint
 # was used (those don't affect the frozen Inversion/SourceExtractor path),
 # so the existing emasrc/*.npy caches remain valid training targets.
+#
+# WARNING: load_model("feature_extraction") is NOT the en+ feature definition. It pools WavLM
+# layer 0 with different periodicity settings (pitch_q 4, no threshold, no loudness gate), whereas
+# en+ pools hidden_states[6] with thresholded periodicity. Features from that default path cannot
+# be fed to the pretrained en+ speaker FFN. Pass --en-plus-compatible to compute the en+ pooled
+# feature instead (written to spk_raw_enplus/ so it never mixes with an existing spk_raw/).
 
-import sys
+import argparse
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -24,14 +31,22 @@ import tqdm
 from sparc import load_model
 
 
-def main(wav_dir, sparc_dir, device="cuda:0", limit=None):
+def main(wav_dir, sparc_dir, device="cuda:0", limit=None, en_plus_compatible=False):
     wav_dir = Path(wav_dir)
     sparc_dir = Path(sparc_dir)
     ft_dir = sparc_dir / "emasrc"
-    out_dir = sparc_dir / "spk_raw"
+    out_dir = sparc_dir / ("spk_raw_enplus" if en_plus_compatible else "spk_raw")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    extractor = load_model("feature_extraction", device=device)
+    if en_plus_compatible:
+        extractor = load_model("en+", device=device)
+        # Drop the pretrained speaker FFN so the pooled 1024-dim layer-6 feature is returned raw.
+        extractor.speaker_encoder.spk_enc = None
+    else:
+        warnings.warn("Computing the feature_extraction speaker feature (WavLM layer 0), which is "
+                      "not compatible with the pretrained en+ speaker FFN; "
+                      "use --en-plus-compatible for the en+ feature.")
+        extractor = load_model("feature_extraction", device=device)
 
     stems = [p.stem for p in ft_dir.glob("*.npy")]
     if limit is not None:
@@ -57,5 +72,14 @@ def main(wav_dir, sparc_dir, device="cuda:0", limit=None):
 
 
 if __name__ == "__main__":
-    limit = int(sys.argv[4]) if len(sys.argv) > 4 else None
-    main(sys.argv[1], sys.argv[2], device=sys.argv[3] if len(sys.argv) > 3 else "cuda:0", limit=limit)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("wav_dir")
+    parser.add_argument("sparc_dir")
+    parser.add_argument("device", nargs="?", default="cuda:0")
+    parser.add_argument("limit", nargs="?", type=int, default=None)
+    parser.add_argument("--en-plus-compatible", action="store_true",
+                        help="pool WavLM layer 6 with en+'s thresholded periodicity (the feature the "
+                             "pretrained en+ speaker FFN expects); output goes to spk_raw_enplus/")
+    args = parser.parse_args()
+    main(args.wav_dir, args.sparc_dir, device=args.device, limit=args.limit,
+         en_plus_compatible=args.en_plus_compatible)

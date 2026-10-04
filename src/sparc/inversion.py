@@ -1,5 +1,6 @@
 import torch
 import pickle
+import numpy as np
 from scipy.signal import butter, filtfilt
 from transformers import Wav2Vec2Model, WavLMModel
 from .speech import BaseExtractor, SpeechWave
@@ -15,6 +16,26 @@ def butter_bandpass(cut, fs, order=5):
 def butter_bandpass_filter(data, cut, fs, axis=1, order=5):
     b, a = butter_bandpass(cut, fs, order=order)
     y = filtfilt(b, a, data,axis=axis)
+    return y
+
+def butter_bandpass_filter_padded(data, lengths, cut, fs, axis=1, order=5):
+    """Zero-phase filter each item of a padded batch over its own valid length.
+
+    data: (B, T, D) array whose item b is valid on [:lengths[b]] along `axis` (=1); frames
+    beyond that are padding and are returned unfiltered. filtfilt needs more samples than its
+    default padlen (3 * max(len(a), len(b))); shorter items use padlen = n - 1 instead, which
+    gives a slightly different edge treatment but keeps the utterance usable.
+    """
+    assert axis == 1
+    b, a = butter_bandpass(cut, fs, order=order)
+    default_padlen = 3 * max(len(a), len(b))
+    y = data.copy()
+    for bi, n in enumerate(lengths):
+        n = int(min(n, data.shape[axis]))
+        if n < 1:
+            continue
+        padlen = min(default_padlen, n - 1)
+        y[bi, :n] = filtfilt(b, a, data[bi, :n], axis=0, padlen=padlen)
     return y
 
 class Inversion(BaseExtractor):
@@ -86,7 +107,10 @@ class Inversion(BaseExtractor):
         states=speech_outputs.hidden_states
         states=states[self.tgt_layer].cpu().numpy()
         if self.freqcut>0:
-            states=butter_bandpass_filter(states,self.freqcut,self.ft_sr,axis=1)
+            # Filter each utterance over its own valid frames, not over the zero padding.
+            valid_lens = self.speech_model._get_feat_extract_output_lengths(
+                torch.as_tensor(np.asarray(input_lens))).cpu().numpy()
+            states=butter_bandpass_filter_padded(states,valid_lens,self.freqcut,self.ft_sr)
         state_shape = states.shape
         states = states.reshape(-1,state_shape[-1])
         with torch.no_grad():

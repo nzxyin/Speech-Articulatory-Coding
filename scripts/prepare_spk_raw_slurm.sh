@@ -20,6 +20,7 @@
 #
 # Usage:
 #   sbatch scripts/prepare_spk_raw_slurm.sh <wav_dir> <sparc_dir> [limit]
+#   (append --en-plus-compatible to pool the en+ speaker feature; see prepare_spk_raw.py)
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
