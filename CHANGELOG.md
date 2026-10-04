@@ -24,6 +24,10 @@ All notable changes to this fork. Earlier history is in `git log`.
   `encode(seed=...)` and `deterministic_pitch` (default on in `sparc-encode`, seed `crc32(id)`) make CREPE pitch
   reproducible; `use_penn` warns; `SourceExtractor._extract_pitch` works with file paths;
   `prepare_spk_raw.py --en-plus-compatible`; `configs/feature_extraction.yaml` matches the hub copy.
+- `SPARC.encode(..., concat=True)` works for multi-utterance batches and returns one `{features, spk_emb}` dict per
+  utterance; `SourceExtractor` pitch statistics fall back to uniform weights over the valid frames when every
+  periodicity weight is 0 (were NaN); `scripts/prepare_spk_raw_slurm.sh` usage text lists the `[device]` argument
+  that precedes `[limit]` (#16).
 - Download scripts (gitignored, local only) moved off the removed `cpu` partition to `msp-cpu`/`msp_cpu_qos` and from
   `huggingface-cli` to `hf download` (#8).
 - Regression tests under `tests/` for all of the above.

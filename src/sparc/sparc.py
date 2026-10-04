@@ -172,17 +172,23 @@ class SPARC(BaseExtractor):
             if len(outputs) ==1 and reduce:
                 outputs = outputs[0]
         if concat:
-            outputs = {'features':self._match_and_cat([outputs['ema'],
-                                                       outputs['pitch'],
-                                                       outputs['loudness'],
-                                                       outputs['periodicity']]),
-                       'spk_emb': outputs['spk_emb']}
+            if isinstance(outputs, list):
+                outputs = [self._concat_features(o) for o in outputs]
+            else:
+                outputs = self._concat_features(outputs)
         
         return outputs
     
     
     
     
+    def _concat_features(self, outputs):
+        return {'features':self._match_and_cat([outputs['ema'],
+                                                outputs['pitch'],
+                                                outputs['loudness'],
+                                                outputs['periodicity']]),
+                'spk_emb': outputs['spk_emb']}
+
     def decode(self, ema, pitch, loudness, spk_emb, **kwargs):
         assert self.generator is not None, "Synthesizer is not loaded!"
         is_batch = len(ema.shape)==3

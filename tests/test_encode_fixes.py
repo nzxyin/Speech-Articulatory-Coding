@@ -133,6 +133,31 @@ def test_load_model_rejects_both_heads():
     raise AssertionError("expected ValueError")
 
 
+def test_batched_concat_returns_per_utterance():
+    # Issue #16: concat=True on a multi-utterance batch indexed a list with a string key.
+    coder = _get_coder()
+    short, long = _load_wav(1.0), _load_wav(3.0)
+    batched = coder.encode([short, long], concat=True, seed=1)
+    assert isinstance(batched, list) and len(batched) == 2
+    for wav, out in zip([short, long], batched):
+        single = coder.encode(wav, concat=True, seed=1)
+        n = single["features"].shape[0]
+        assert out["features"].shape[1] == single["features"].shape[1]
+        np.testing.assert_allclose(out["features"][:n], single["features"], atol=1e-3)
+        np.testing.assert_allclose(out["spk_emb"], single["spk_emb"], atol=1e-3)
+
+
+def test_zero_weight_pitch_stats_is_finite():
+    # Issue #16: all-zero periodicity weights made the pitch statistics NaN.
+    from sparc.src_extractor import SourceExtractor
+    ext = SourceExtractor(device="cpu")
+    pitch = np.array([100.0, 200.0, 300.0, 0.0, 0.0])
+    stats = ext._pitch_stats(pitch, np.zeros(5), length=3)  # last two frames are batch padding
+    np.testing.assert_allclose(stats, [200.0, np.std([100.0, 200.0, 300.0])])
+    weights = np.array([1.0, 1.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(ext._pitch_stats(pitch, weights, length=3), [150.0, 50.0])
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
