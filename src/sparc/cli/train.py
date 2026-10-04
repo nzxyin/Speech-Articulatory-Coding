@@ -44,6 +44,37 @@ def _find_resume_ckpt(cfg, ckpt_dir: Path, run_name: str | None) -> str | None:
     return str(max(candidates, key=lambda p: p.stat().st_mtime)) if candidates else None
 
 
+def _num_devices(devices) -> int:
+    """Device count implied by cfg.devices (int, list of ids, or "auto"/-1 = all visible GPUs)."""
+    if isinstance(devices, int) and devices > 0:
+        return devices
+    if isinstance(devices, str) and devices.isdigit():
+        return int(devices)
+    if not isinstance(devices, (int, str)):  # list/ListConfig of device ids
+        return len(devices)
+    return max(torch.cuda.device_count(), 1)
+
+
+def _cluster_plugins(cfg) -> list:
+    """SLURMEnvironment (SIGUSR1 -> hpc checkpoint + requeue) needs one SLURM task per device,
+    since it takes the world size from SLURM_NTASKS and never spawns processes itself.
+    scripts/train_slurm.sh runs a single task, so with devices>1 fall back to
+    LightningEnvironment (Lightning spawns the DDP processes); SIGTERM still saves a
+    checkpoint through ModelCheckpoint(save_on_exception=True)."""
+    if not (_under_slurm_batch() and cfg.slurm_requeue):
+        return [LightningEnvironment()]
+    n_devices = _num_devices(cfg.devices)
+    n_tasks = int(os.environ.get("SLURM_NTASKS", "1"))
+    if n_devices > 1 and n_tasks != n_devices:
+        print(
+            f"WARNING: devices={n_devices} but SLURM_NTASKS={n_tasks}; using LightningEnvironment so "
+            "Lightning spawns the DDP processes. SIGUSR1 auto-requeue is disabled (SIGTERM still "
+            "saves a checkpoint); launch with srun --ntasks-per-node=<devices> to keep it."
+        )
+        return [LightningEnvironment()]
+    return [SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR1)]
+
+
 def _build_loggers(cfg, save_dir: Path, run_name: str | None = None):
     """Builds every logger named in cfg.logger_backends. Multiple backends
     can run simultaneously -- Lightning dispatches self.log/self.log_dict
@@ -137,11 +168,7 @@ def main(cfg: DictConfig) -> None:
         mode="max",
     )
 
-    if _under_slurm_batch() and cfg.slurm_requeue:
-        # SIGUSR1 (sbatch --signal=B:USR1@120) -> save hpc checkpoint and `scontrol requeue`
-        plugins = [SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR1)]
-    else:
-        plugins = [LightningEnvironment()]
+    plugins = _cluster_plugins(cfg)
     devices = cfg.devices
     strategy = cfg.strategy
     if strategy == "auto" and devices != 1:
@@ -160,7 +187,11 @@ def main(cfg: DictConfig) -> None:
         log_every_n_steps=cfg.log_every_n_steps,
         enable_progress_bar=True,
     )
-    resume_path = _find_resume_ckpt(cfg, ckpt_dir, run_name)
+    # An explicit checkpoint_dir is not keyed by run name, so only auto-resume there when the
+    # run name was given explicitly; otherwise a fresh sbatch submission reusing that dir
+    # would silently resume another run's last.ckpt.
+    resume_run = run_name if (not cfg.checkpoint_dir or cfg.run_name) else None
+    resume_path = _find_resume_ckpt(cfg, ckpt_dir, resume_run)
     if resume_path:
         print(f"Resuming from {resume_path}")
     trainer.fit(model, train_dataloaders=loader, ckpt_path=resume_path)

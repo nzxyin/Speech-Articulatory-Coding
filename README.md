@@ -187,7 +187,10 @@ auto-resume from the newest `last.ckpt`/`hpc_ckpt_*.ckpt` there. Under `sbatch` 
 defaults to `slurm_<SLURM_JOB_ID>`, which a requeued job keeps. `scripts/train_slurm.sh` requests
 `--requeue --signal=B:USR1@120`: on preemption Lightning saves a checkpoint and requeues the job,
 which then resumes by itself; SIGTERM also saves a checkpoint. Multi-GPU: `devices=N` (uses
-`ddp_find_unused_parameters_true`). Known gap: the DataLoader is not stateful, so a resumed run
+`ddp_find_unused_parameters_true`). `train_slurm.sh` runs one SLURM task, so with `devices>1` Lightning
+spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGTERM still saves a checkpoint);
+launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
+only happens if `run_name` is also set. Known gap: the DataLoader is not stateful, so a resumed run
 restarts the epoch's shuffle (RNG-restored, but not the same samples as an uninterrupted run).
 
 #### 5. Listen to samples

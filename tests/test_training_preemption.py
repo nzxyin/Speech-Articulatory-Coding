@@ -145,6 +145,32 @@ def test_resume_discovery_and_run_name():
         os.environ.update(saved)
 
 
+def _plugin_cfg(devices, slurm_requeue=True):
+    return SimpleNamespace(devices=devices, slurm_requeue=slurm_requeue)
+
+
+def test_cluster_plugins_multi_device_under_sbatch():
+    from lightning.pytorch.plugins.environments import LightningEnvironment, SLURMEnvironment
+
+    keys = ("SLURM_JOB_ID", "SLURM_JOB_NAME", "SLURM_NTASKS", "SLURM_NTASKS_PER_NODE")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        os.environ.update(SLURM_JOB_ID="123", SLURM_JOB_NAME="sparc_train", SLURM_NTASKS="1", SLURM_NTASKS_PER_NODE="1")
+        assert isinstance(train_cli._cluster_plugins(_plugin_cfg(1))[0], SLURMEnvironment)
+        # one task, two devices: SLURMEnvironment would silently run a single process
+        assert isinstance(train_cli._cluster_plugins(_plugin_cfg(2))[0], LightningEnvironment)
+        assert isinstance(train_cli._cluster_plugins(_plugin_cfg([0, 1]))[0], LightningEnvironment)
+        os.environ.update(SLURM_NTASKS="2", SLURM_NTASKS_PER_NODE="2")  # srun --ntasks-per-node=2
+        assert isinstance(train_cli._cluster_plugins(_plugin_cfg(2))[0], SLURMEnvironment)
+        assert isinstance(train_cli._cluster_plugins(_plugin_cfg(2, slurm_requeue=False))[0], LightningEnvironment)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

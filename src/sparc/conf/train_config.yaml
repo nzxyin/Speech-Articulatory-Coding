@@ -28,7 +28,7 @@ max_steps: 5000
 log_every_n_steps: 10
 log_audio_every_n_steps: 500
 val_check_interval: null
-checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt
+checkpoint_dir: null       # defaults to <dataset.save_dir>/vocoder_ckpt (explicit dirs are not run-keyed: auto-resume there needs run_name)
 checkpoint_every_n_steps: 1000
 keep_last_n_checkpoints: 5  # + last.ckpt always kept; -1 keeps every checkpoint (grows unbounded on long runs)
 resume_from_checkpoint: null  # explicit path; overrides auto-resume
@@ -38,6 +38,7 @@ resume_from_checkpoint: null  # explicit path; overrides auto-resume
 run_name: null
 slurm_requeue: true         # under sbatch: SIGUSR1 -> checkpoint + `scontrol requeue` (needs --signal=B:USR1@120)
 devices: 1                  # GPUs per node; >1 uses ddp_find_unused_parameters_true unless strategy is set
+                            # (under single-task sbatch, >1 disables SIGUSR1 auto-requeue; see README)
 strategy: auto
 seed: 0
 
