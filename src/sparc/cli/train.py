@@ -46,6 +46,8 @@ def _find_resume_ckpt(cfg, ckpt_dir: Path, run_name: str | None) -> str | None:
 
 def _num_devices(devices) -> int:
     """Device count implied by cfg.devices (int, list of ids, or "auto"/-1 = all visible GPUs)."""
+    if devices is None:
+        return 1
     if isinstance(devices, int) and devices > 0:
         return devices
     if isinstance(devices, str) and devices.isdigit():
@@ -53,6 +55,10 @@ def _num_devices(devices) -> int:
     if not isinstance(devices, (int, str)):  # list/ListConfig of device ids
         return len(devices)
     return max(torch.cuda.device_count(), 1)
+
+
+def _usr1_to_sigterm(signum, frame):
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _cluster_plugins(cfg) -> list:
@@ -68,9 +74,12 @@ def _cluster_plugins(cfg) -> list:
     if n_devices > 1 and n_tasks != n_devices:
         print(
             f"WARNING: devices={n_devices} but SLURM_NTASKS={n_tasks}; using LightningEnvironment so "
-            "Lightning spawns the DDP processes. SIGUSR1 auto-requeue is disabled (SIGTERM still "
-            "saves a checkpoint); launch with srun --ntasks-per-node=<devices> to keep it."
+            "Lightning spawns the DDP processes. SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned "
+            "into SIGTERM, which saves a checkpoint); launch with srun --ntasks-per-node=<devices> to keep it."
         )
+        # Lightning only handles SIGUSR1 for SLURMEnvironment; unhandled, the --signal=B:USR1@120
+        # warning forwarded by train_slurm.sh would kill training without a checkpoint.
+        signal.signal(signal.SIGUSR1, _usr1_to_sigterm)
         return [LightningEnvironment()]
     return [SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR1)]
 

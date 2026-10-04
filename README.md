@@ -99,6 +99,7 @@ Feature extraction and resynthesis are exposed as Hydra-configured CLIs, install
 ```
 uv run sparc-encode dataset=vctk                 # uses the en+ model by default
 uv run sparc-encode dataset=vctk model=en         # override the model
+uv run sparc-encode dataset=vctk model.linear_model_path=<head.pkl>  # replace the checkpoint's linear AAI head
 uv run sparc-decode dataset=vctk                  # resynthesize wavs from extracted features
 ```
 
@@ -188,8 +189,8 @@ defaults to `slurm_<SLURM_JOB_ID>`, which a requeued job keeps. `scripts/train_s
 `--requeue --signal=B:USR1@120`: on preemption Lightning saves a checkpoint and requeues the job,
 which then resumes by itself; SIGTERM also saves a checkpoint. Multi-GPU: `devices=N` (uses
 `ddp_find_unused_parameters_true`). `train_slurm.sh` runs one SLURM task, so with `devices>1` Lightning
-spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGTERM still saves a checkpoint);
-launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
+spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned into SIGTERM,
+which saves a checkpoint); launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
 only happens if `run_name` is also set. Known gap: the DataLoader is not stateful, so a resumed run
 restarts the epoch's shuffle (RNG-restored, but not the same samples as an uninterrupted run).
 

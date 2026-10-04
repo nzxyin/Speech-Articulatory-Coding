@@ -1,6 +1,7 @@
 """Regression tests for #15: step counting, RNG checkpointing, resume, requeue plumbing, toggle_optimizer."""
 import os
 import random
+import signal
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,10 +161,13 @@ def test_cluster_plugins_multi_device_under_sbatch():
         # one task, two devices: SLURMEnvironment would silently run a single process
         assert isinstance(train_cli._cluster_plugins(_plugin_cfg(2))[0], LightningEnvironment)
         assert isinstance(train_cli._cluster_plugins(_plugin_cfg([0, 1]))[0], LightningEnvironment)
+        # the fallback turns SIGUSR1 into SIGTERM instead of leaving it fatal
+        assert signal.getsignal(signal.SIGUSR1) is train_cli._usr1_to_sigterm
         os.environ.update(SLURM_NTASKS="2", SLURM_NTASKS_PER_NODE="2")  # srun --ntasks-per-node=2
         assert isinstance(train_cli._cluster_plugins(_plugin_cfg(2))[0], SLURMEnvironment)
         assert isinstance(train_cli._cluster_plugins(_plugin_cfg(2, slurm_requeue=False))[0], LightningEnvironment)
     finally:
+        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
