@@ -19,8 +19,9 @@
 # pipeline (see src/sparc/training/prepare_spk_raw.py).
 #
 # Usage:
-#   sbatch scripts/prepare_spk_raw_slurm.sh <wav_dir> <sparc_dir> [limit]
-#   (append --en-plus-compatible to pool the en+ speaker feature; see prepare_spk_raw.py)
+#   sbatch scripts/prepare_spk_raw_slurm.sh <wav_dir> <sparc_dir> [device] [limit]
+#   (device defaults to cuda:0 and must be given before a limit, e.g. `... cuda:0 100`;
+#   append --en-plus-compatible to pool the en+ speaker feature; see prepare_spk_raw.py)
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
