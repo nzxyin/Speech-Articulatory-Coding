@@ -14,8 +14,11 @@ and the same training recipe and budget. The EMA comes from the per-utterance MN
 Status (2026-10-05): Phase 1 approved in full (decisions D1-D10). Phase 2 code is complete on branch
 `vocoder-comparison` (contract: `docs/vocoders/INTERFACES.md`; 304 tests). All three vocoders pass an end-to-end GPU
 smoke run (train, validate, preempt/resume, predict) and an overfit check on 4 utterances (aligned within 0.6 ms by
-envelope cross-correlation; Whisper transcripts match the reference audio). The full feature cache is being built on
-the `preempt` partition (tracking issue #18). Next: pack and statistics, then the three primary runs (one GPU each).
+envelope cross-correlation; Whisper transcripts match the reference audio). The feature cache is complete: 358,332
+utterances in all 7 splits (171 too short to encode), training statistics over 339,007 utterances (97.2 M frames).
+All training is fp32; the bf16 precision pilot was dropped. Running on `preempt` (tracking issue #19): the HiFi-GAN and
+DDSP primary runs (400k generator steps) and the Vocos option A and B pilots (25k steps). The Vocos primary run uses
+the pilot winner (lower dev mel L1 at 25k; option B wins within 2 %).
 
 ## Measurements so far
 
