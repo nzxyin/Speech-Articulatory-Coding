@@ -18,6 +18,7 @@ from sparc.vocoders.training.module import VocoderGANModule
 
 STATUS_FILE = "status.json"
 MULTI_DEVICE_STRATEGY = "ddp_find_unused_parameters_true"
+CUBLAS_DETERMINISTIC_CONFIG = ":4096:8"
 
 
 def build_loggers(cfg: DictConfig, run_dir: Path) -> list[Logger]:
@@ -100,6 +101,9 @@ def run(
     """
     run_dir = Path(cfg.run_dir)
     (run_dir / "ckpt").mkdir(parents=True, exist_ok=True)
+    if cfg.trainer.trainer.get("deterministic"):
+        # the sbatch script exports it too; this covers other launchers as long as no CUDA work has happened yet
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", CUBLAS_DETERMINISTIC_CONFIG)
     pl.seed_everything(cfg.seed)
     module = VocoderGANModule(cfg, stats=stats)
     if datamodule is None:

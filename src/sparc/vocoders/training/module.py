@@ -16,20 +16,11 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 
 from sparc.vocoders.constants import HOP, SAMPLE_RATE
-from sparc.vocoders.losses.losses import (
-    feature_matching_loss,
-    hinge_d_loss,
-    hinge_g_loss,
-    lsgan_d_loss,
-    lsgan_g_loss,
-    mr_stft_distance,
-)
+from sparc.vocoders.losses.losses import ADVERSARIAL_LOSSES, feature_matching_loss, mr_stft_distance
 from sparc.vocoders.models.frontend import load_stats
 from sparc.vocoders.models.speaker import SpeakerFFN
-from sparc.vocoders.training.callbacks import capture_rng_state, restore_rng_state
+from sparc.vocoders.training.callbacks import EVAL_SEED, capture_rng_state, fixed_torch_rng, restore_rng_state
 from sparc.vocoders.training.schedules import WarmupCosine
-
-ADVERSARIAL_LOSSES = {"hinge": (hinge_d_loss, hinge_g_loss), "lsgan": (lsgan_d_loss, lsgan_g_loss)}
 
 
 def render_mel(log_mel: torch.Tensor, vmin: float, vmax: float) -> np.ndarray:
@@ -252,9 +243,10 @@ class VocoderGANModule(pl.LightningModule):
 
         The first items of the validation loader are the logging subset (``datamodule.logging_ids``, else
         ``data.logging_subset_size`` of them); rank 0 handles those and the remaining items are split over the ranks.
-        The global RNG states are restored afterwards: iterating a validation loader draws from the torch generator,
-        which would otherwise make a run that validated differ from one that resumed from a checkpoint written
-        before the validation.
+        Every synthesis runs under ``fixed_torch_rng`` (the DDSP noise branch draws from the global torch generator), so
+        the validation numbers do not depend on the training RNG stream. The global RNG states are restored afterwards:
+        iterating a validation loader draws from the torch generator, which would otherwise make a run that validated
+        differ from one that resumed from a checkpoint written before the validation.
         """
         rng_state = capture_rng_state(self.device)
         was_training = self.training
@@ -278,7 +270,8 @@ class VocoderGANModule(pl.LightningModule):
                     continue
                 batch = self.transfer_batch_to_device(batch, self.device, 0)
                 audio = batch["audio"]
-                wav_hat = self.synthesize(batch).float()
+                with fixed_torch_rng(self.device, EVAL_SEED):
+                    wav_hat = self.synthesize(batch).float()
                 sums += torch.stack(
                     [
                         self.mel_loss(wav_hat, audio),
@@ -308,5 +301,6 @@ class VocoderGANModule(pl.LightningModule):
         self._log_media(f"val/{utt_id}", wav_hat.cpu(), render_mel(self.mel_loss.log_mel(wav_hat)[0], vmin, vmax))
 
     def predict_step(self, batch: dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> dict[str, Any]:
-        wav = self.synthesize(batch)
+        with fixed_torch_rng(self.device, EVAL_SEED):
+            wav = self.synthesize(batch)
         return {"wav": wav.float().cpu(), "id": list(batch["id"]), "condition": list(batch["condition"])}

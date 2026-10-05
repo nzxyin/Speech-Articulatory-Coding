@@ -1,7 +1,8 @@
 # Keyword arguments of lightning.Trainer (one GPU per vocoder, decision D7b) and the logging backends.
 # `precision` is 32-true until the precision pilot (D7a) has passed; strategy `auto` becomes
 # ddp_find_unused_parameters_true when more than one device is requested. `deterministic: true` makes a resumed GPU run
-# bit-exact (cuDNN/atomics are otherwise non-deterministic) at some cost in speed.
+# bit-exact (cuDNN/atomics are otherwise non-deterministic) at some cost in speed. `benchmark: false` because cuDNN
+# autotuning reserves 37-42 GiB of workspace in fp32 at the main batch shape (7 GiB without), for about 7 % speed.
 trainer:
   accelerator: gpu
   devices: 1
@@ -9,7 +10,7 @@ trainer:
   strategy: auto
   precision: 32-true
   deterministic: false
-  benchmark: true
+  benchmark: false
   log_every_n_steps: 50
   num_sanity_val_steps: 0
   limit_val_batches: 0

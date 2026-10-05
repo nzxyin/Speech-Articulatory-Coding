@@ -36,3 +36,6 @@ All notable changes to this fork. Earlier history is in `git log`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
+- Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);
+  `CUBLAS_WORKSPACE_CONFIG` is set for deterministic runs; the Slurm training step passes `--cpus-per-task` to srun;
+  committed Slurm scripts default to relative log paths; `cudnn.benchmark` is off by default.

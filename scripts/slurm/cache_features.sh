@@ -16,7 +16,7 @@
 #SBATCH --requeue
 #SBATCH --open-mode=append
 #SBATCH --signal=USR1@120
-#SBATCH --output=/data/user_data/xoy/sparc-vocoders/slurm_logs/%x_%A_%a.out
+#SBATCH --output=slurm_logs/%x_%A_%a.out
 
 source "${SPARC_ENV_FILE:-$HOME/sparc-vocoders-work/env.sh}"
 export REQUEUE_CMD="scontrol requeue $SLURM_JOB_ID"

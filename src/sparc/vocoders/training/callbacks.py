@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,7 @@ CHECKPOINT_NAME = re.compile(r"step(\d+)\.ckpt")
 PREEMPTION_SIGNALS = (signal.SIGUSR1, signal.SIGTERM)
 REQUEUE_VAR = "REQUEUE_CMD"
 TEMPORARY_SUFFIX = ".tmp"
+EVAL_SEED = 0
 
 
 def checkpoint_path(ckpt_dir: str | Path, step: int) -> Path:
@@ -163,6 +165,22 @@ class PreemptionCheckpoint(Callback):
     def on_train_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if self.max_g_steps is not None and pl_module.g_step >= self.max_g_steps:
             self._save(trainer, pl_module.g_step)
+
+
+@contextmanager
+def fixed_torch_rng(device: torch.device | None, seed: int = EVAL_SEED):
+    """Seeds the torch CPU generator (and the CUDA generator of ``device``) and restores both states on exit.
+
+    Validation and prediction run inside it: the DDSP noise branch draws from the global generator, so without it the
+    synthesized audio would depend on how many random numbers training had consumed before.
+    """
+    cuda = device is not None and device.type == "cuda"
+    index = (device.index if device.index is not None else torch.cuda.current_device()) if cuda else None
+    with torch.random.fork_rng(devices=[index] if cuda else [], device_type="cuda"):
+        torch.default_generator.manual_seed(seed)
+        if cuda:
+            torch.cuda.default_generators[index].manual_seed(seed)
+        yield
 
 
 def _numpy_state_to_tensors(state: tuple) -> dict:

@@ -560,3 +560,107 @@ def test_final_step_signal_does_not_requeue(tmp_path, stats, monkeypatch):
     _, module = train(make_cfg(tmp_path / "run", max_g_steps=4, mel_warmup=2), stats, SignalAt(3))
     assert module.g_step == 4 and not marker.exists()
     assert (tmp_path / "run" / "status.json").read_text() == '{"finished": true, "g_step": 4}'
+
+
+class NoisyGenerator(TinyGenerator):
+    """TinyGenerator plus noise drawn from the global generator, like the DDSP noise branch."""
+
+    def forward(self, features, spk):
+        wav = super().forward(features, spk)
+        return wav + 0.1 * torch.randn_like(wav)
+
+
+def test_fixed_torch_rng_is_reproducible_and_restores_the_global_state():
+    from sparc.vocoders.training.callbacks import fixed_torch_rng
+
+    torch.manual_seed(1)
+    before = torch.get_rng_state()
+    with fixed_torch_rng(torch.device("cpu"), 5):
+        a = torch.randn(4)
+    assert torch.equal(torch.get_rng_state(), before)
+    torch.manual_seed(2)
+    with fixed_torch_rng(torch.device("cpu"), 5):
+        b = torch.randn(4)
+    assert torch.equal(a, b)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_fixed_torch_rng_covers_the_cuda_generator():
+    from sparc.vocoders.training.callbacks import fixed_torch_rng
+
+    device = torch.device("cuda")
+    torch.cuda.manual_seed(1)
+    before = torch.cuda.get_rng_state()
+    with fixed_torch_rng(device, 5):
+        a = torch.randn(4, device=device)
+    assert torch.equal(torch.cuda.get_rng_state(), before)
+    torch.cuda.manual_seed(2)
+    with fixed_torch_rng(device, 5):
+        b = torch.randn(4, device=device)
+    assert torch.equal(a, b)
+
+
+def test_validation_and_predict_do_not_depend_on_the_global_rng(tmp_path, stats):
+    cfg = make_cfg(tmp_path, max_g_steps=2, mel_warmup=1, val_every_g_steps=1000)
+    cfg.vocoder.generator._target_ = f"{__name__}.NoisyGenerator"
+    _, module = train(cfg, stats)
+    torch.manual_seed(1)
+    first = dict(module.run_validation())
+    torch.manual_seed(2)
+    second = dict(module.run_validation())
+    assert first == second
+    module.eval()
+    batch = next(iter(FakeDataModule().predict_dataloader()))
+    torch.manual_seed(3)
+    state = torch.get_rng_state()
+    wav_a = module.predict_step(batch, 0)["wav"]
+    assert torch.equal(torch.get_rng_state(), state)
+    torch.manual_seed(4)
+    assert torch.equal(wav_a, module.predict_step(batch, 0)["wav"])
+
+
+def test_module_uses_the_shared_adversarial_loss_table():
+    from sparc.vocoders.losses import losses
+    from sparc.vocoders.training import module
+
+    assert module.ADVERSARIAL_LOSSES is losses.ADVERSARIAL_LOSSES
+
+
+def test_deterministic_run_sets_the_cublas_workspace_config(tmp_path, stats, monkeypatch):
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    cfg = make_cfg(tmp_path, max_g_steps=1, mel_warmup=1)
+    cfg.trainer.trainer.deterministic = True
+    try:
+        train(cfg, stats)
+    finally:
+        torch.use_deterministic_algorithms(False)
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG")
+
+
+def test_train_script_detects_deterministic_in_the_resolved_config(monkeypatch):
+    """scripts/slurm/train_vocoder.sh greps the output of ``--cfg job --resolve`` (``OmegaConf.to_yaml``)."""
+    import re
+
+    from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf
+
+    for var in ("SPARC_VOC_CACHE", "SPARC_VOC_RUNS", "LIBRITTSR_RAW", "SPARC_REFIT_NPZ"):
+        monkeypatch.setenv(var, f"/env/{var}")
+    script = (CONF.parents[2] / "scripts" / "slurm" / "train_vocoder.sh").read_text()
+    pattern = re.search(r"grep -qE '([^']*deterministic[^']*)'", script).group(1)
+    with initialize_config_dir(config_dir=str(CONF), version_base=None):
+        on = compose("vocoder_config", overrides=["experiment=main", "trainer.trainer.deterministic=true"])
+        off = compose("vocoder_config", overrides=["experiment=main"])
+    assert re.search(pattern, OmegaConf.to_yaml(on, resolve=True), re.MULTILINE)
+    assert not re.search(pattern, OmegaConf.to_yaml(off, resolve=True), re.MULTILINE)
+    assert "CUBLAS_WORKSPACE_CONFIG=:4096:8" in script
+
+
+@pytest.mark.parametrize("name", ["train_vocoder.sh", "cache_features.sh"])
+def test_sbatch_output_default_is_a_relative_path(name):
+    scripts = CONF.parents[2] / "scripts" / "slurm"
+    lines = [line for line in (scripts / name).read_text().splitlines() if line.startswith("#SBATCH --output=")]
+    assert len(lines) == 1 and not lines[0].split("=", 1)[1].startswith(("/", "~", "$"))
+    for script in scripts.glob("*.sh"):
+        assert "/home/" not in script.read_text() and "/data/user_data/" not in script.read_text(), script.name

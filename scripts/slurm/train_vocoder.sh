@@ -4,7 +4,9 @@
 # a requeued job keeps its id, re-runs this script and truncates --output unless --open-mode=append (set below).
 # Cluster facts (compute.md, Part A): preempt sends USR1 at preemption (send_user_signal, GraceTime 120 s, KillWait 120 s);
 # --signal without B: reaches the srun tasks (python), not this shell.
+# The default --output is relative (the submit script overrides it with a path under $SV_ROOT/slurm_logs).
 #SBATCH --job-name=sv_train
+#SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --partition=preempt
 #SBATCH --qos=preempt_qos
 #SBATCH --nodes=1
@@ -26,8 +28,11 @@ GPUS=${SLURM_NTASKS_PER_NODE:-1}
 ARGS=(vocoder="$VOCODER" experiment="$EXPERIMENT" "$@")
 
 cd "$SV_REPO" || exit 1
-RUN=$(uv run --no-sync sparc-train "${ARGS[@]}" --cfg job --resolve | sed -n 's/^run_dir: //p')
+CFG=$(uv run --no-sync sparc-train "${ARGS[@]}" --cfg job --resolve)
+RUN=$(printf '%s\n' "$CFG" | sed -n 's/^run_dir: //p')
 [ -n "$RUN" ] || { echo "could not resolve run_dir"; exit 1; }
+# Bit-exact GPU resume needs deterministic cuBLAS workspaces (set before any process touches cuBLAS).
+if printf '%s\n' "$CFG" | grep -qE '^    deterministic: true$'; then export CUBLAS_WORKSPACE_CONFIG=:4096:8; fi
 mkdir -p "$RUN/ckpt"
 echo "=== attempt start $(date -Is) job=$SLURM_JOB_ID restart_count=${SLURM_RESTART_COUNT:-0} node=$SLURMD_NODENAME run=$RUN"
 
@@ -61,7 +66,7 @@ export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export NODE_RANK=0
 
 # One task per GPU; LOCAL_RANK makes Lightning's LightningEnvironment treat the processes as externally launched.
-srun --kill-on-bad-exit=1 --ntasks="$GPUS" --ntasks-per-node="$GPUS" bash -c '
+srun --kill-on-bad-exit=1 --ntasks="$GPUS" --ntasks-per-node="$GPUS" --cpus-per-task="${SLURM_CPUS_PER_TASK:-1}" bash -c '
     export LOCAL_RANK=$SLURM_LOCALID
     exec uv run --no-sync sparc-train "$@"
 ' _ "${ARGS[@]}" trainer.trainer.devices="$GPUS" trainer.trainer.num_nodes=1
