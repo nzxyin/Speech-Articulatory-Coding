@@ -1,0 +1,15 @@
+# Vocos option B (primary): backbone at 100 Hz, iSTFT n_fft 960, hop 240; about 13.78 M parameters.
+name: vocos
+generator:
+  _target_: sparc.vocoders.models.vocos.VocosVocoder
+  option: B
+  dim: 512
+  intermediate_dim: 1536
+  num_layers: 8
+  spk_dim: 64
+  kernel_size: 7
+  layer_scale_init_value: null   # null: 1 / num_layers
+  n_fft_per_hop: 4
+  mag_clip_ratio: 0.5            # clip at mag_clip_ratio * n_fft
+  pitch_mode: log
+  voiced_flag: false

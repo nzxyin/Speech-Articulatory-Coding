@@ -1,18 +1,6 @@
 import os
+import sys
 from pathlib import Path
-
-# This CLI always runs as a single task/single GPU inside one srun/sbatch
-# allocation, never as an elastic `srun python train.py` multi-node launch.
-# Lightning's SLURMEnvironment.detect() auto-activates whenever SLURM_NTASKS
-# is set and SLURM_JOB_NAME isn't "bash"/"interactive" (see
-# lightning/fabric/plugins/environments/slurm.py:_is_slurm_interactive_mode),
-# which misreads our sbatch job's SLURM_* vars and tries to bind a CUDA
-# device that doesn't exist in this process's CUDA_VISIBLE_DEVICES, raising
-# "CUDA-capable device(s) is/are busy or unavailable". Spoofing the
-# interactive-mode job name (before Trainer construction reads it) is the
-# documented escape hatch and is more robust than passing an explicit
-# `plugins=` override, which does not fully suppress the auto-detection.
-os.environ["SLURM_JOB_NAME"] = "interactive"
 
 import hydra
 import lightning as pl
@@ -66,7 +54,7 @@ def _build_loggers(cfg, save_dir: Path):
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="train_config")
-def main(cfg: DictConfig) -> None:
+def legacy_main(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     save_dir = Path(cfg.dataset.save_dir)
@@ -129,6 +117,51 @@ def main(cfg: DictConfig) -> None:
         enable_progress_bar=True,
     )
     trainer.fit(model, train_dataloaders=loader, ckpt_path=cfg.resume_from_checkpoint)
+
+
+VOCODER_ROOT_KEYS = frozenset(
+    {"vocoder", "experiment", "data", "trainer", "loss", "train", "optim", "speaker", "paths", "run_dir"}
+)
+VOCODER_CONFIG_NAME = "vocoder_config"
+
+
+def routes_to_vocoder(argv: list[str]) -> bool:
+    """True if the command line selects the 24 kHz vocoder training instead of the legacy 16 kHz path.
+
+    It does when any override has a root key in ``VOCODER_ROOT_KEYS`` or ``--config-name vocoder_config`` is given.
+    Lightning's DDP subprocess launcher re-runs the original arguments plus ``hydra.*`` overrides, so the same rule
+    routes the subprocesses.
+    """
+    args = list(argv)
+    for i, arg in enumerate(args):
+        if arg in ("--config-name", "-cn") and i + 1 < len(args) and args[i + 1] == VOCODER_CONFIG_NAME:
+            return True
+        if arg.startswith(("--config-name=", "-cn=")) and arg.split("=", 1)[1] == VOCODER_CONFIG_NAME:
+            return True
+        if not arg.startswith("-") and arg.lstrip("+~").split("=")[0].split(".")[0] in VOCODER_ROOT_KEYS:
+            return True
+    return False
+
+
+def main() -> None:
+    if routes_to_vocoder(sys.argv[1:]):
+        from sparc.cli.train_vocoder import main as vocoder_main
+
+        return vocoder_main()
+
+    # This CLI always runs as a single task/single GPU inside one srun/sbatch
+    # allocation, never as an elastic `srun python train.py` multi-node launch.
+    # Lightning's SLURMEnvironment.detect() auto-activates whenever SLURM_NTASKS
+    # is set and SLURM_JOB_NAME isn't "bash"/"interactive" (see
+    # lightning/fabric/plugins/environments/slurm.py:_is_slurm_interactive_mode),
+    # which misreads our sbatch job's SLURM_* vars and tries to bind a CUDA
+    # device that doesn't exist in this process's CUDA_VISIBLE_DEVICES, raising
+    # "CUDA-capable device(s) is/are busy or unavailable". Spoofing the
+    # interactive-mode job name (before Trainer construction reads it) is the
+    # documented escape hatch and is more robust than passing an explicit
+    # `plugins=` override, which does not fully suppress the auto-detection.
+    os.environ["SLURM_JOB_NAME"] = "interactive"
+    return legacy_main()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+# Keyword arguments of lightning.Trainer (one GPU per vocoder, decision D7b) and the logging backends.
+# `precision` is 32-true until the precision pilot (D7a) has passed; strategy `auto` becomes
+# ddp_find_unused_parameters_true when more than one device is requested. `deterministic: true` makes a resumed GPU run
+# bit-exact (cuDNN/atomics are otherwise non-deterministic) at some cost in speed.
+trainer:
+  accelerator: gpu
+  devices: 1
+  num_nodes: 1
+  strategy: auto
+  precision: 32-true
+  deterministic: false
+  benchmark: true
+  log_every_n_steps: 50
+  num_sanity_val_steps: 0
+  limit_val_batches: 0
+  enable_progress_bar: false
+  enable_model_summary: true
+logging:
+  backends: [tensorboard]
+  wandb_mode: offline
+  wandb_project: sparc-vocoders

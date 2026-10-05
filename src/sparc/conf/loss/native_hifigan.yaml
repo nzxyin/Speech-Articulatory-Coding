@@ -1,0 +1,42 @@
+# HiFi-GAN recipe of the SPARC fork: MPD + MSD, LSGAN, adversarial weight 1 and feature-matching weight 2 per
+# sub-discriminator, mel weight 45. It uses the 24 kHz mel (n_fft 1024, hop 256, 100 mels, 0-12 kHz), not the fork's
+# 16 kHz 80-mel definition, which does not exist at 24 kHz with 480-sample frames.
+# The fork sums the adversarial and feature-matching terms over all sub-discriminators, whereas the loss helpers
+# average within a set, so each set's weight is its number of sub-discriminators times the per-disc weight:
+# MPD 5 x (1, 2), MSD 3 x (1, 2). Two differences remain: the MPD (Vocos port) does not return its first convolution's
+# feature map, and the MSD pooling bug of the fork (issue #9) is fixed.
+name: native_hifigan
+adversarial: lsgan
+mel_weight: 45.0
+mss_weight: 0.0
+mel:
+  _target_: sparc.vocoders.losses.losses.MelSpectrogramLoss
+  sample_rate: 24000
+  n_fft: 1024
+  win_length: 1024
+  hop_length: 256
+  n_mels: 100
+  f_min: 0.0
+  f_max: 12000.0
+  power: 1.0
+  center: true
+  mel_scale: htk
+  clamp: 1.0e-5
+mss:
+  _target_: sparc.vocoders.losses.losses.MultiScaleSpectralLoss
+  fft_sizes: [2048, 1024, 512, 256, 128, 64]
+  hop_ratio: 0.25
+  alpha: 1.0
+discriminators:
+  mpd:
+    module:
+      _target_: sparc.vocoders.losses.discriminators.MultiPeriodDiscriminator
+      periods: [2, 3, 5, 7, 11]
+    adv_weight: 5.0
+    fm_weight: 10.0
+  msd:
+    module:
+      _target_: sparc.vocoders.losses.discriminators.MultiScaleDiscriminator
+      scales: [1, 2, 4]
+    adv_weight: 3.0
+    fm_weight: 6.0

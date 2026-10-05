@@ -1,0 +1,18 @@
+# CPU, fp32: a few steps to check that the whole stack (data, step, validation, checkpoint, resume) runs.
+trainer:
+  accelerator: cpu
+  devices: 1
+  num_nodes: 1
+  strategy: auto
+  precision: 32-true
+  deterministic: false
+  benchmark: false
+  log_every_n_steps: 1
+  num_sanity_val_steps: 0
+  limit_val_batches: 0
+  enable_progress_bar: false
+  enable_model_summary: false
+logging:
+  backends: [tensorboard]
+  wandb_mode: offline
+  wandb_project: sparc-vocoders

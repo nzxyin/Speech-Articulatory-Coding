@@ -1,0 +1,7 @@
+# Shared recipe plus the DDSP-AV multi-scale spectral loss (weight 1.0) as an auxiliary term, for all three vocoders.
+defaults:
+  - shared
+  - _self_
+
+name: mss_aux
+mss_weight: 1.0

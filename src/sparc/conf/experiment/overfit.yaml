@@ -1,0 +1,20 @@
+# @package _global_
+# Overfit a few utterances with fixed crops (data.train_subset_size and data.fixed_crops).
+# Usage: sparc-train vocoder=hifigan experiment=overfit trainer=overfit
+experiment_name: overfit
+optim:
+  warmup_steps: 100
+train:
+  max_g_steps: 3000
+  mel_warmup_steps: 500
+  val_every_g_steps: 500
+  log_every_g_steps: 10
+  milestone_every_g_steps: 1000
+  checkpoint_every_minutes: 10
+data:
+  batch_size: 4
+  num_workers: 2
+  train_subset_size: 4
+  fixed_crops: true
+  val_subset_size: 4
+  logging_subset_size: 4

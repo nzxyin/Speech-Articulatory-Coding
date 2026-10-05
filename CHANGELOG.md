@@ -15,5 +15,24 @@ All notable changes to this fork. Earlier history is in `git log`.
 - `third_party/` with the MIT license texts of Vocos and DDSP-Articulatory-Vocoder, from which code is ported.
 - Direct dependencies `pandas` and `pyarrow`; dev dependency `pytest`.
 
+- Feature cache (`sparc.vocoders.features`, `sparc-cache`): Parquet manifest of all 358,503 filtered LibriTTS-R
+  utterances; a SPARC en+ extractor with the refit linear head (hash- and weight-checked), per-utterance pitch seeding,
+  un-normalized loudness, layer-0/layer-6 speaker pooling and the frozen en+ embedding; resumable `trainer.predict`
+  extraction with atomic per-utterance files; packing into memory-mapped split arrays; training-set statistics; a
+  preempt array job with a GPU preflight.
+- Data pipeline (`sparc.vocoders.data`): sox-equivalent peak gain, a resumable counter-based sampler, aligned random
+  crops with loudness rescaled by the gain, cross-utterance speaker references (`p_cross`), and full-utterance
+  evaluation datasets for the same-utterance, cross-utterance and speaker-mean conditions.
+- Vocoders (`sparc.vocoders.models`): HiFi-GAN with upsampling [8, 5, 4, 3] and the shared FiLM; the DDSP24
+  harmonic-plus-noise vocoder (200 Hz controls, F0 anchored at the CREPE frame centre, float32 synthesis); Vocos with
+  articulatory input (options A/B/C) and FiLM layer norms. Size variants as configs.
+- Losses and discriminators (`sparc.vocoders.losses`): MPD and MRD (from Vocos), MSD with the pooling fixed, hinge and
+  LSGAN losses, feature matching, the 24 kHz mel loss and the DDSP-AV multi-scale spectral loss.
+- Training (`sparc.vocoders.training`, `sparc-train vocoder=... experiment=...`, `sparc-predict`): a manual-optimization
+  GAN module with generator-step counters, mel-only warm-up, warm-up plus cosine schedules, validation with audio
+  logging, and preemption-safe checkpoints at batch boundaries with exact resume; `sparc-train` dispatches between the
+  new and the legacy 16 kHz training; Slurm launch scripts for `preempt`.
+- Tests for every module (`tests/`, 297 tests).
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).

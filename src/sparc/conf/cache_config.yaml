@@ -1,0 +1,88 @@
+# Root config of the feature cache (`sparc-cache stage=manifest|extract|pack|stats|validate`).
+# See docs/vocoders/INTERFACES.md, section 1. Locations come from the environment through `paths/default.yaml`.
+defaults:
+  - paths: default
+  - data: librittsr_filtered
+  - _self_
+
+stage: ???
+shard_index: ${oc.decode:${oc.env:SLURM_ARRAY_TASK_ID,0}}
+num_shards: ${oc.decode:${oc.env:SLURM_ARRAY_TASK_COUNT,1}}
+
+# Utterances taken by the extract, pack and validate stages. `splits: null` selects all splits of the manifest;
+# `subsample: N` keeps N evenly spaced utterances of each selected split (smoke runs).
+select:
+  splits: null
+  subsample: null
+
+cache:
+  utt_dir: ${paths.cache_root}/utt
+  meta_path: ${paths.cache_root}/meta.json
+  errors_dir: ${paths.cache_root}/errors
+  summaries_dir: ${paths.cache_root}/summaries
+  packed_dir: ${paths.cache_root}/packed
+
+manifest:
+  path: ${paths.cache_root}/manifest.parquet
+  sources_dir: ${paths.cache_root}/sources
+  source_files: [manifest_clean.tsv, manifest_other.tsv]
+  split_dirs:
+    train.clean.100: train-clean-100
+    train.clean.360: train-clean-360
+    train.other.500: train-other-500
+    dev.clean: dev-clean
+    dev.other: dev-other
+    test.clean: test-clean
+    test.other: test-other
+  min_frames: 19            # shorter utterances cannot be encoded (fork issue #12)
+  expected_rows: 358503     # null disables the check
+  check_files_exist: false
+
+inversion:
+  linear_npz: ${paths.refit_npz}
+  linear_sha256: 59c0a818e1124c97ba73a5dca211c13fd5cd975131fc60999ec63916875493ce
+  pitch_q: 2
+  pitch_hop_length: 160
+
+extractor:
+  model_name: en+
+  hf_hub_cache: ${oc.env:HF_HUB_CACHE}
+  sparc_repo: cheoljun95/Speech-Articulatory-Coding
+  sparc_snapshot: 2e6a07d4b35022d4366a2896a6293fe16aaed78a
+  sparc_ckpt: model_englishplus_2M.ckpt
+  sparc_ckpt_sha256: 2bec34081dd71455ac9b74046d55b894ce967d123d0de1d106142f60cee230fb
+  sparc_yaml: model_englishplus_2M.yaml
+  wavlm_repo: microsoft/wavlm-large
+  wavlm_snapshot: c1423ed94bb01d80a3f5ce5bc39f6026a0f4828c
+  resample_type: soxr_hq
+  allow_tf32: false         # TF32 would make EMA depend on the GPU model (about 1e-3)
+  seed_rule: crc32(id.encode()) & 0x7FFFFFFF
+  speaker_layers: [0, 6]
+
+extract:
+  accelerator: auto
+  num_workers: 4
+  prefetch_factor: 4
+  skip_valid: true
+  max_consecutive_errors: 20
+  log_every: 200
+
+pack:
+  num_threads: 16
+  chunk_utterances: 512
+  allow_missing: false      # true drops absent cache files (listed under errors/) instead of failing
+
+stats:
+  splits: null              # null: data.train_splits
+  gain_seed: 0
+  output: ${paths.cache_root}/stats/train_stats.json
+  spk_std_floor: 1.0e-6
+  chunk_frames: 2000000
+  chunk_utterances: 20000
+
+hydra:
+  run:
+    dir: ${paths.cache_root}/hydra/${stage}_${shard_index}_${now:%Y%m%d-%H%M%S}
+  output_subdir: null
+  job:
+    chdir: false

@@ -1,0 +1,23 @@
+# DDSP24 size variant: identical to ddsp.yaml except channels=448 (about 14.4 M parameters, near HiFi-GAN and Vocos).
+name: ddsp_c448
+generator:
+  _target_: sparc.vocoders.models.ddsp.DDSPVocoder
+  channels: 448
+  n_harmonics: 100
+  n_noise_bands: 129
+  control_rate: 200
+  noise_gain_cap: 0.25
+  post_filter_taps: 1537
+  f0_anchor_offset: 120
+  spk_dim: 64
+  trunk_stacks: 2
+  trunk_dilations: [1, 2, 4, 8]
+  up_channels: [192, 128]
+  head_hidden: 512
+  periodicity_gate: false
+  loudness_film: true
+  head_film: true
+  noise_bias_init: -3.0
+  taper_hz: 1000.0
+  pitch_mode: log
+  voiced_flag: false

@@ -1,0 +1,21 @@
+# @package _global_
+# Tiny CPU run. Shrink the generator on the command line, for example
+#   sparc-train vocoder=hifigan experiment=smoke trainer=smoke vocoder.generator.channels=32
+experiment_name: smoke
+optim:
+  warmup_steps: 2
+train:
+  max_g_steps: 6
+  mel_warmup_steps: 2
+  val_every_g_steps: 3
+  log_every_g_steps: 1
+  milestone_every_g_steps: 3
+  checkpoint_every_minutes: 1
+data:
+  batch_size: 2
+  num_workers: 0
+  crop_frames: 16
+  train_subset_size: 4
+  fixed_crops: true
+  val_subset_size: 2
+  logging_subset_size: 2

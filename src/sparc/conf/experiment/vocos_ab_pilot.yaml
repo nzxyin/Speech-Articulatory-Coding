@@ -1,0 +1,11 @@
+# @package _global_
+# Vocos option A versus B pilot (25k generator steps each): run it with vocoder=vocos_a and vocoder=vocos.
+experiment_name: vocos_ab_pilot
+train:
+  max_g_steps: 25000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 2500
+  milestone_every_g_steps: 25000
+data:
+  batch_size: 16
+  crop_frames: 64

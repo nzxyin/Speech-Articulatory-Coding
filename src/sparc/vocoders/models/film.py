@@ -22,10 +22,16 @@ class FiLM(nn.Module):
         nn.init.zeros_(self.proj.bias)
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor, channel_dim: int = 1) -> torch.Tensor:
-        gamma, beta = self.proj(cond).chunk(2, dim=-1)  # [B, C] each
+        # The projection runs in float32 even under autocast: in bf16, (1 + gamma) would be quantized to steps of
+        # about 0.004, which would round away small speaker modulations.
+        dtype = torch.promote_types(self.proj.weight.dtype, torch.float32)
+        with torch.autocast(device_type=cond.device.type, enabled=False):
+            gamma, beta = nn.functional.linear(
+                cond.to(dtype), self.proj.weight.to(dtype), self.proj.bias.to(dtype)
+            ).chunk(2, dim=-1)  # [B, C] each
         shape = [x.shape[0]] + [1] * (x.dim() - 1)
         shape[channel_dim] = self.channels
-        return x * (1 + gamma.reshape(shape)) + beta.reshape(shape)
+        return x * (1 + gamma.reshape(shape)).to(x.dtype) + beta.reshape(shape).to(x.dtype)
 
 
 class FiLMLayerNorm(nn.Module):

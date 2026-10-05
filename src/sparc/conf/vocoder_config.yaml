@@ -1,18 +1,19 @@
 # Root config of the 24 kHz vocoder comparison (`uv run sparc-train vocoder=<name> experiment=<name>`).
-# See docs/vocoders/INTERFACES.md.
+# See docs/vocoders/INTERFACES.md. `_self_` comes before `experiment` so that an experiment overrides the values below.
 defaults:
   - paths: default
   - vocoder: hifigan
   - data: librittsr_filtered
   - loss: shared
   - trainer: default
-  - experiment: null
   - _self_
+  - experiment: null
 
 experiment_name: default
 seed: 0
 stats_path: ${paths.cache_root}/stats/train_stats.json
 run_dir: ${paths.runs_root}/${experiment_name}/${vocoder.name}
+resume: auto     # auto: newest loadable ${run_dir}/ckpt/step*.ckpt, else a fresh start; none: always start fresh
 
 optim:
   lr: 2.0e-4
@@ -24,13 +25,20 @@ train:
   max_g_steps: 400000
   mel_warmup_steps: 10000
   val_every_g_steps: 5000
+  log_every_g_steps: 50
   milestone_every_g_steps: 50000
   checkpoint_every_minutes: 20
+  keep_last_checkpoints: 3
 
 speaker:
   layer: l6        # l6 (en+ layer, decision D5) or l0
   p_cross: 0.5     # probability of a cross-utterance reference in training (decision D4)
   dropout: 0.2
+
+predict:           # `sparc-predict`: the split and conditions come from data.predict_split / data.predict_conditions
+  ckpt: null       # null: newest loadable checkpoint of the run
+  output_dir: ${run_dir}/predictions
+  precision: 32-true
 
 hydra:
   run:

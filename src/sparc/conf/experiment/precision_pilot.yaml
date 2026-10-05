@@ -1,0 +1,13 @@
+# @package _global_
+# Precision pilot (decision D7a): 30k generator steps, 20k of them adversarial. Select the precision on the command line,
+#   sparc-train vocoder=vocos experiment=precision_pilot trainer.trainer.precision=bf16-mixed
+# The run directory name carries the precision, so the two arms never share checkpoints.
+experiment_name: precision_pilot_${trainer.trainer.precision}
+train:
+  max_g_steps: 30000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 2500
+  milestone_every_g_steps: 10000
+data:
+  batch_size: 16
+  crop_frames: 64

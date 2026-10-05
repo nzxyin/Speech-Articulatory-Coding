@@ -11,3 +11,13 @@ num_workers: 8
 gain_db_range: [-6.0, -1.0]
 eval_gain_db: -3.0
 ref_min_dur: 3.0
+# Sanity-run and evaluation options.
+train_subset_size: null   # keep only this many training utterances (fixed random subset)
+fixed_crops: false        # crop start, gain and speaker reference become a function of the utterance (overfit runs)
+val_subset_seed: 0        # seed of the fixed dev subset and of the logging subset
+logging_ids_file: null    # optional text file with one logging utterance id per line (replaces the seeded choice)
+logging_duration_range_s: [4.0, 8.0]   # duration window of the seeded logging utterances
+predict_limit: null       # predict only this many utterances of predict_split (fixed random subset)
+eval_num_workers: 2
+pin_memory: true
+prefetch_factor: 4

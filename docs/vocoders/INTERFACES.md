@@ -251,3 +251,19 @@ recomputation on a synthetic signal; sampler resume determinism (consume k items
 uninterrupted stream); discriminator and loss shapes; cache write/read/validate round trip and atomic write; T
 formula and crop alignment (a synthetic burst at known sample positions lands in the same relative frame of cropped
 features and cropped audio).
+
+## 8. Implementation notes (added after the first implementation pass)
+
+- Feature cache: constructors take the Hydra config first (`SparcFeatureExtractor(cfg, device)`,
+  `ManifestShardDataModule(cfg, shard_index, num_shards, skip_valid)`, `pack_split(cfg, split)`,
+  `compute_stats(cfg)`). `sparc-cache` also has `stage=validate`. `cache_config.yaml` has a `cache:` block with the
+  directory layout. The extractor disables TF32 so cached values do not depend on the GPU model, and `meta.json` may
+  record `fork_commit` with a `+dirty` suffix. A stop signal ends extraction with exit code 75 after the current
+  utterance. Smoke runs must use a separate cache root (the DONE markers are keyed by shard only).
+- DataLoader workers use `sparc.vocoders.data.datamodule.ignore_stop_signals` (ignore SIGUSR1; exit on SIGTERM only
+  when the parent sends it), so a crashing main process never waits on its workers.
+- `FiLM` computes its projection in at least float32 even under autocast.
+- Losses use `losses/ops.py` (deterministic reflect padding and centred STFT) so `trainer.deterministic=true` works.
+- Trainer settings live under `cfg.trainer.trainer.*`; `use_distributed_sampler=False` (the sampler strides by rank).
+  Bit-exact resume on GPU needs `trainer.trainer.deterministic=true` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; otherwise a
+  resumed run is statistically equivalent but not bit-identical.
