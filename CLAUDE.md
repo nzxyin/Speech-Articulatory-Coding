@@ -11,7 +11,20 @@ periodicity), the same speaker conditioning (FiLM from a SPARC speaker embedding
 and the same training recipe and budget. The EMA comes from the per-utterance MNGU0 refit of the linear AAI head
 (`linear_aai_mngu0_refit_peralign.pkl`), not from the head embedded in the `en+` checkpoint.
 
-Status: the Phase 1 investigation is complete and awaiting review. No training code has been written yet.
+Status (2026-10-05): Phase 1 approved in full (decisions D1-D10). Phase 2 code is complete on branch
+`vocoder-comparison` (contract: `docs/vocoders/INTERFACES.md`; 304 tests). All three vocoders pass an end-to-end GPU
+smoke run (train, validate, preempt/resume, predict) and an overfit check on 4 utterances (aligned within 0.6 ms by
+envelope cross-correlation; Whisper transcripts match the reference audio). The full feature cache is being built on
+the `preempt` partition (tracking issue #18). Next: pack and statistics, then the three primary runs (one GPU each).
+
+## Measurements so far
+
+- fp32 train step at the main shape (batch 16 × 64 frames, RTX 6000 Ada, `cudnn.benchmark` off): HiFi-GAN 304 ms,
+  DDSP 236 ms, Vocos 214 ms (bf16: about 120-160 ms). A 400k-step run is about 24-34 GPU-hours in fp32.
+- Feature extraction: about 144 s per audio hour on an L40 (batch size 1), about 23 GPU-hours for all 572 h.
+- Overfit regime (4 utterances, 4k steps): final mel L1 HiFi-GAN 0.18, DDSP 0.29 (plateaus from about 2k steps),
+  Vocos 0.08; HiFi-GAN output about 3 dB quieter than the reference at that point.
+- "fp32" runs use cuDNN TF32 convolutions (PyTorch default); the feature extractor disables TF32.
 
 ## Findings that constrain the implementation
 
