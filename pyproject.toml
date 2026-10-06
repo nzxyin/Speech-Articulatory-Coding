@@ -41,6 +41,7 @@ sparc-decode = "sparc.cli.decode:main"
 sparc-train = "sparc.cli.train:main"
 sparc-cache = "sparc.cli.cache_features:main"
 sparc-predict = "sparc.cli.predict_vocoder:main"
+sparc-eval = "sparc.cli.eval_vocoder:main"
 
 [build-system]
 requires = ["uv_build>=0.9.15,<0.10.0"]
@@ -49,4 +50,9 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: downloads or runs real models or the SPARC extractor (deselect with -m \"not slow\")",
 ]

@@ -1,0 +1,117 @@
+# Root config of the Phase 3 evaluation (`sparc-eval stage=<...> system=<name|all> condition=<T1|T2|T3|all>`).
+# Contract: docs/vocoders/EVALUATION.md. Metric settings come from the group `eval_metrics`, feature and probe settings
+# from `eval_features`; this file holds the run selection, the system registry and the aggregation settings.
+defaults:
+  - paths: default
+  - data: librittsr_filtered
+  - eval_metrics: default
+  - eval_features: default
+  - _self_
+
+# stage: gt | synth | refs | signal | utmos | asr | spk | reextract | prosody | probes | efficiency | aggregate | samples
+stage: ???
+system: all          # a name of eval.systems, or all (every system the stage applies to)
+condition: all       # T1 | T2 | T3 | all (every condition of the system)
+seed: 0
+stats_path: ${paths.cache_root}/stats/train_stats.json
+
+paths:
+  eval_root: ${oc.env:SV_ROOT}/eval
+
+eval:
+  split: test.clean
+  limit: null              # N: a fixed random subset of N ids, written under eval_root/smoke_<N>/ (never mixed with full results)
+  seed: ${seed}            # seed of the limit subset (the same draw as data.predict_limit) and of the samples
+  chunk_size: 256          # utterances per chunk of the sorted id list; chunk k writes part-<k:04d>
+  device: auto             # auto: cuda when available, else cpu
+  allow_fingerprint_change: false   # true: a vocoder checkpoint change may reuse an existing result directory (default: error)
+  sex_file: ${paths.eval_root}/ref_data/LibriTTS_R/SPEAKERS.txt   # LibriTTS-R doc.tar.gz (speaker -> F/M), read by io.read_speaker_sex
+  gain_db: ${data.eval_gain_db}   # level of the gt audio and of the vocoder inputs (-3 dBFS peak)
+  max_audio_failures: 10   # refs stage: utterances a reference model may fail on (per system and condition) before the stage stops
+  require_final: true      # refuse a vocoder checkpoint that has not reached train.max_g_steps (false for smoke runs)
+  spk_models: [ecapa, wavlm_sv]   # speaker embedders of the spk stage (the first is the primary model of sim_same/sim_spk)
+  predict:
+    num_workers: 2
+    precision: 32-true
+  samples:
+    n_female: 10
+    n_male: 10
+    duration_range_s: [3.0, 12.0]
+    seed: 0
+    pcm_subtype: PCM_16
+  aggregate:
+    n_boot: 10000
+    seed: 0
+    ci: 0.95
+    split_chapters: true   # T2 reported also stratified by same / different chapter
+    reference_systems: [vocos_mel, enplus16]   # every vocoder is also compared with these on shared ids
+    note: >-
+      Each arm is a single training run: differences between vocoders include run-to-run variance that this table
+      cannot separate from an architecture effect. Intervals are speaker-cluster bootstrap CI95 over test speakers.
+  # name -> spec (io/systems.py). A vocoder names a trained run by `experiment` and `vocoder`; ablation runs are added
+  # on the command line, e.g. `+eval.systems.hifigan_c256='{kind: vocoder, sr: 24000, conditions: [T1,T2,T3], experiment: main, vocoder: hifigan_c256}'`.
+  systems:
+    gt:
+      kind: gt
+      sr: 24000
+      conditions: [T1]
+      head: refit
+      label: ground truth
+    gt_shipped:            # the gt audio re-extracted with the shipped en+ head: the pitch/EMA reference of enplus16
+      kind: gt
+      sr: 24000
+      conditions: [T1]
+      head: shipped
+      audio_from: gt
+      stages: [reextract]
+      label: ground truth (shipped head)
+    vocos_mel:
+      kind: reference
+      sr: 24000
+      conditions: [T1]
+      head: refit
+      label: Vocos mel copy synthesis
+    enplus16:
+      kind: reference
+      sr: 16000
+      conditions: [T1, T2]
+      head: shipped
+      ema_ref: gt_shipped
+      label: SPARC en+ (16 kHz)
+    hifigan:
+      kind: vocoder
+      sr: 24000
+      conditions: [T1, T2, T3]
+      head: refit
+      experiment: main
+      vocoder: hifigan
+      ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
+      overrides: []   # extra vocoder_config overrides, e.g. eval.systems.hifigan.overrides=['train.max_g_steps=2']
+      label: HiFi-GAN
+    ddsp:
+      kind: vocoder
+      sr: 24000
+      conditions: [T1, T2, T3]
+      head: refit
+      experiment: main
+      vocoder: ddsp
+      ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
+      overrides: []   # extra vocoder_config overrides, e.g. eval.systems.ddsp.overrides=['train.max_g_steps=2']
+      label: DDSP
+    vocos:
+      kind: vocoder
+      sr: 24000
+      conditions: [T1, T2, T3]
+      head: refit
+      experiment: main
+      vocoder: vocos
+      ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
+      overrides: []   # extra vocoder_config overrides, e.g. eval.systems.vocos.overrides=['train.max_g_steps=2']
+      label: Vocos
+
+hydra:
+  run:
+    dir: ${paths.eval_root}/hydra/${stage}_${now:%Y%m%d-%H%M%S}
+  output_subdir: null
+  job:
+    chdir: false

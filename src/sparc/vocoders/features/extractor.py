@@ -9,6 +9,8 @@ captured from that pass by a forward hook.
 import importlib.metadata
 import os
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import librosa
@@ -66,6 +68,33 @@ def set_fp32_numerics(allow_tf32: bool) -> None:
     torch.backends.cuda.matmul.allow_tf32 = bool(allow_tf32)
 
 
+def _no_dither(cents: torch.Tensor) -> torch.Tensor:
+    """Identity stand-in for ``torchcrepe.convert.dither``."""
+    return cents
+
+
+@contextmanager
+def crepe_dither(enabled: bool = True) -> Iterator[None]:
+    """Disables torchcrepe's pitch dither inside the block when ``enabled`` is false; the original is always restored.
+
+    ``torchcrepe.convert.bins_to_cents`` adds triangular noise of one CREPE bin (20 cents) to the decoded pitch through
+    the module-level function ``torchcrepe.convert.dither``, which draws from NumPy's global RNG. Every decoder
+    reaches it through ``bins_to_cents``, so replacing that one name by the identity removes the noise. The patch is
+    process-global (not thread-safe) and is undone on exit, also when the block raises.
+    """
+    if enabled:
+        yield
+        return
+    from torchcrepe import convert
+
+    original = convert.dither
+    convert.dither = _no_dither
+    try:
+        yield
+    finally:
+        convert.dither = original
+
+
 def pool_speaker(hidden: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, float, bool]:
     """Periodicity-weighted mean of ``hidden [frames, 1024]``, as in ``SpeakerEncoder._get_spk_emb``.
 
@@ -102,6 +131,7 @@ class SparcFeatureExtractor:
         self.cfg = cfg
         self.device = torch.device(device)
         ext = cfg.extractor
+        self.dither = bool(ext.get("dither", True))  # False: CREPE pitch without dither (evaluation re-extraction)
         set_fp32_numerics(ext.allow_tf32)
         hub = Path(ext.hf_hub_cache)
         sparc_dir = hub / f"models--{ext.sparc_repo.replace('/', '--')}" / "snapshots" / ext.sparc_snapshot
@@ -201,7 +231,8 @@ class SparcFeatureExtractor:
         outputs = coder.inverter(wavs, {})
         hidden = self._hidden
         np.random.seed(seed)
-        outputs = coder.source_extractor(wavs, outputs)
+        with crepe_dither(self.dither):
+            outputs = coder.source_extractor(wavs, outputs)
 
         ema = outputs["ema"][0]
         frames = ema.shape[0]

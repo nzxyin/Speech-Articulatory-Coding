@@ -34,6 +34,17 @@ All notable changes to this fork. Earlier history is in `git log`.
   new and the legacy 16 kHz training; Slurm launch scripts for `preempt`.
 - Tests for every module (`tests/`, 297 tests).
 
+- Phase 3 evaluation (`sparc.vocoders.eval`, `sparc-eval`, contract `docs/vocoders/EVALUATION.md`): resumable chunked
+  stages for gt audio, reference systems (Vocos mel copy synthesis, the authors' en+ decoder at 16 kHz), vocoder
+  synthesis, signal metrics (PESQ wb, MCD, MR-STFT, mel L1 and three bands), UTMOS, Whisper large-v3 WER/CER, ECAPA and
+  WavLM-SV speaker embeddings, no-dither SPARC re-extraction with prosody and EMA consistency, controllability probes,
+  efficiency (parameters, RTF, measured lookahead), aggregation with speaker-cluster bootstrap CI95 and paired
+  differences, and matched samples; Slurm scripts `eval.sh` and `submit_eval.sh`; tests under `tests/eval/`.
+- `SparcFeatureExtractor`: opt-in `extractor.dither=false` disables CREPE's pitch dither (default unchanged).
+- `sparc-predict`: `predict.skip_existing` (default false) leaves out utterances whose WAV exists; `run()` accepts
+  extra callbacks.
+- Dependencies jiwer, pesq, pysptk, vocos, speechbrain; pytest marker `slow`.
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);

@@ -1,0 +1,75 @@
+# Settings of the Phase 3 model-based and signal metrics (docs/vocoders/EVALUATION.md sections 4.1-4.4).
+# The group lands at `cfg.eval_metrics`; the metric code takes one sub-block each (`signal`, `utmos`, `asr`, `speaker`).
+# Model revisions are exact commit hashes (or a release tag for torch.hub plus the sha256 of the weight file), so a
+# moved branch cannot change a metric silently. Hub downloads go to the private cache (`HF_HUB_CACHE`).
+signal:
+  sample_rate: 24000          # rate of the reference and of every 24 kHz metric
+  resample_type: soxr_hq      # librosa resampler for every rate change
+  pesq:
+    sample_rate: 16000
+    mode: wb
+  mcd:                        # Hann window, power spectrum -> mel-cepstrum (pysptk.sp2mc), no DTW, c0 excluded
+    n_fft: 1024
+    win_length: 1024
+    hop_length: 240
+    center: true              # reflect padding, frame t is centred on sample t * hop_length
+    order: 24
+    alpha: 0.466              # all-pass constant of the mel scale at 24 kHz
+    power_floor: 1.0e-10      # lower bound of the power spectrum before the logarithm
+    energy_floor: 1.0e-10     # lower bound of the frame energy before converting it to dB
+    energy_range_db: 40.0     # keep gt frames within this many dB of the loudest gt frame
+  mrstft:                     # (n_fft, hop, window) per resolution, Hann; spectral convergence + log-magnitude L1
+    resolutions: [[1024, 120, 600], [2048, 240, 1200], [512, 50, 240]]
+    eps: 1.0e-7               # magnitude floor inside the logarithm
+  mel:                        # must equal `loss.mel` of the training config (tests/eval/test_metrics_signal.py checks)
+    sample_rate: 24000
+    n_fft: 1024
+    win_length: 1024
+    hop_length: 256
+    n_mels: 100
+    f_min: 0.0
+    f_max: 12000.0
+    power: 1.0
+    center: true
+    mel_scale: htk
+    clamp: 1.0e-5
+  mel_bands_hz:               # column suffix -> [low, high] in Hz; a bin belongs to a band by its centre frequency,
+    0_4k: [0.0, 4000.0]       # low <= centre < high, and the band whose high edge is f_max includes it
+    4_8k: [4000.0, 8000.0]
+    8_12k: [8000.0, 12000.0]
+
+utmos:
+  hub_repo: tarepan/SpeechMOS:v1.2.0     # tag v1.2.0 = commit ed25eacbfa42b99156c36ebec67a733b5dbb9b79 (2026-10-05)
+  entry: utmos22_strong
+  trust_repo: true
+  sample_rate: 16000
+  hub_dir: null               # null: $TORCH_HOME/hub
+  checkpoint_file: utmos22_strong_step7459_v1.pt      # downloaded by the hub entry into <hub_dir>/checkpoints
+  checkpoint_sha256: 38aa51ab79e2a4e09a1449758a4b37e9cbb2e8235a49662a732d33a9ba1e9bff   # checked at load time when set
+
+asr:
+  model_id: openai/whisper-large-v3
+  revision: 06f233fe06e710322aca913c1bc4249a0d71fce1
+  cache_dir: ${oc.env:HF_HUB_CACHE,null}
+  sample_rate: 16000
+  batch_size: 16              # length-sorted batches of utterances up to short_form_max_s
+  fp16_on_cuda: true          # fp16 on CUDA, fp32 on CPU
+  language: en
+  task: transcribe
+  num_beams: 1                # greedy
+  max_new_tokens: 440
+  short_form_max_s: 30.0      # longer inputs are decoded one at a time with the sequential long-form algorithm
+  normalizer_file: normalizer.json    # English spelling map in the model repo (used by EnglishTextNormalizer)
+
+speaker:
+  sample_rate: 16000
+  cache_dir: ${oc.env:HF_HUB_CACHE,null}
+  ecapa:
+    repo_id: speechbrain/spkrec-ecapa-voxceleb
+    revision: 0f99f2d0ebe89ac095bcc5903c4dd8f72b367286
+    allow_patterns: ["*.ckpt", "*.yaml", "*.txt", "config.json"]
+    dim: 192
+  wavlm_sv:
+    repo_id: microsoft/wavlm-base-plus-sv
+    revision: feb593a6c23c1cc3d9510425c29b0a14d2b07b1e
+    dim: 512

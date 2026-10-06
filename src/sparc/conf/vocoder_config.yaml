@@ -39,6 +39,7 @@ predict:           # `sparc-predict`: the split and conditions come from data.pr
   ckpt: null       # null: newest loadable checkpoint of the run
   output_dir: ${run_dir}/predictions
   precision: 32-true
+  skip_existing: false   # true: leave out utterances whose WAV exists (resumable synthesis; the evaluation sets it)
 
 hydra:
   run:
