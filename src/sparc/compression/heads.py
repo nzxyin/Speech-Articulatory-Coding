@@ -65,11 +65,11 @@ class Smooth(nn.Module):
 class LayerPool(nn.Module):
     """Weighted sum over layers with G independent weightings; returns (B, G, T, D)."""
 
-    def __init__(self, n_layers, dim, mode="static", groups=1, attn_dim=64):
+    def __init__(self, n_layers, dim, mode="static", groups=1, attn_dim=64, norm=True):
         super().__init__()
         if mode not in ("static", "attn"):
             raise ValueError(mode)
-        self.mode, self.groups = mode, groups
+        self.mode, self.groups, self.norm = mode, groups, norm
         self.logits = nn.Parameter(torch.zeros(groups, n_layers))
         if mode == "attn":
             self.proj = nn.Linear(dim, attn_dim)
@@ -84,13 +84,14 @@ class LayerPool(nn.Module):
         return None if self.weight_sum is None else (self.weight_sum / max(self.weight_n, 1)).tolist()
 
     def forward(self, states, pad_mask=None):  # list of L tensors (B, T, D)
-        H = torch.stack([F.layer_norm(s, s.shape[-1:]) for s in states], 2)  # (B, T, L, D)
+        Hn = torch.stack([F.layer_norm(s, s.shape[-1:]) for s in states], 2)  # (B, T, L, D)
+        H = Hn if self.norm else torch.stack(states, 2)  # values pooled: normalized (default) or raw
         if self.mode == "static":
             w = torch.softmax(self.logits, -1)  # (G, L)
             out = torch.einsum("gl,btld->bgtd", w.to(H.dtype), H)
             w_frames = w[None, :, None, :].expand(H.shape[0], -1, H.shape[1], -1)
         else:
-            k = torch.tanh(self.proj(H))  # (B, T, L, A)
+            k = torch.tanh(self.proj(Hn))  # (B, T, L, A); scores always from normalized layers
             scores = torch.einsum("btla,ga->bgtl", k, self.v.to(k.dtype)) + self.logits[None, :, None, :].to(k.dtype)
             w_frames = torch.softmax(scores.float(), -1)  # (B, G, T, L)
             out = torch.einsum("bgtl,btld->bgtd", w_frames.to(H.dtype), H)
@@ -120,7 +121,7 @@ class GroupLinear(nn.Module):
 
 class Head(nn.Module):
     def __init__(self, dim, kind="linear", hidden=256, kernel=9, window=0, causal=False, n_out=12,
-                 smooth=True, n_pool_layers=0, pool="static", per_articulator=False):
+                 smooth=True, n_pool_layers=0, pool="static", per_articulator=False, pool_norm=True):
         super().__init__()
         self.kind, self.causal, self.window, self.kernel = kind, causal, window, kernel
         if per_articulator and not n_pool_layers:
@@ -129,13 +130,18 @@ class Head(nn.Module):
             raise ValueError("per_articulator supports the linear and conv heads")
         self.groups = N_ARTICULATORS if per_articulator else 1
         self.per_articulator = per_articulator
-        self.pool = LayerPool(n_pool_layers, dim, pool, self.groups) if n_pool_layers else None
+        self.pool = LayerPool(n_pool_layers, dim, pool, self.groups, norm=pool_norm) if n_pool_layers else None
         self.norm = nn.LayerNorm(dim) if kind != "linear" else nn.Identity()
-        # Fixed per-channel standardization of the linear head's input (set_input_stats). Raw SSL
-        # features have very uneven channel scales, so without it the ridge weights are tiny and an
-        # Adam step of ~lr per weight throws the head off the probe solution at once.
-        self.register_buffer("in_mean", torch.zeros(dim))
-        self.register_buffer("in_std", torch.ones(dim))
+        # Per-channel standardization of the linear head's input (set_input_stats), one row per group.
+        # Raw SSL features have very uneven channel scales, so without it the ridge weights are tiny and
+        # an Adam step of ~lr per weight throws the head off the probe solution at once. With pooling the
+        # input distribution moves as the pool weights train, so pooled linear heads re-standardize from
+        # running statistics every epoch (track_input_stats / restandardize), preserving the function.
+        self.register_buffer("in_mean", torch.zeros(self.groups, dim))
+        self.register_buffer("in_std", torch.ones(self.groups, dim))
+        self.track_input_stats = kind == "linear" and n_pool_layers > 0
+        self._stat_sum = self._stat_sq = None
+        self._stat_n = None
         G, per_out = self.groups, n_out // self.groups
         if kind == "linear":
             self.out = GroupLinear(G, dim, per_out) if per_articulator else nn.Linear(dim, n_out)
@@ -153,9 +159,10 @@ class Head(nn.Module):
         self.smooth = Smooth() if smooth else None
 
     def set_input_stats(self, mean, std):
+        """mean/std: (D,) for every group, or (G, D)."""
         with torch.no_grad():
-            self.in_mean.copy_(torch.as_tensor(mean))
-            self.in_std.copy_(torch.as_tensor(std).clamp_min(1e-6))
+            self.in_mean.copy_(torch.as_tensor(mean).expand_as(self.in_mean))
+            self.in_std.copy_(torch.as_tensor(std).clamp_min(1e-6).expand_as(self.in_std))
 
     def init_linear(self, W, b):
         """Load a ridge solution (W: D x 12, b: 12) mapping raw features to standardized EMA,
@@ -163,8 +170,43 @@ class Head(nn.Module):
         assert self.kind == "linear" and not self.per_articulator
         W, b = torch.as_tensor(W, dtype=torch.float32), torch.as_tensor(b, dtype=torch.float32)
         with torch.no_grad():
-            self.out.weight.copy_((W * self.in_std.cpu()[:, None]).T)
-            self.out.bias.copy_(b + self.in_mean.cpu() @ W)
+            self.out.weight.copy_((W * self.in_std[0].cpu()[:, None]).T)
+            self.out.bias.copy_(b + self.in_mean[0].cpu() @ W)
+
+    def _accumulate_stats(self, h, pad_mask):
+        """Running per-group sums of the (pre-standardization) linear-head input over valid frames."""
+        with torch.no_grad():
+            hg = h if h.dim() == 4 else h[:, None]  # (B, G, T, D)
+            valid = torch.ones(hg.shape[0], hg.shape[2], device=h.device) if pad_mask is None else (~pad_mask).float()
+            x = hg.float()
+            s = torch.einsum("bgtd,bt->gd", x, valid)
+            q = torch.einsum("bgtd,bt->gd", x * x, valid)
+            n = valid.sum()
+            if self._stat_sum is None:
+                self._stat_sum, self._stat_sq, self._stat_n = s, q, n
+            else:
+                self._stat_sum, self._stat_sq, self._stat_n = self._stat_sum + s, self._stat_sq + q, self._stat_n + n
+
+    @torch.no_grad()
+    def restandardize(self):
+        """Move the input standardization to the running statistics and re-express the linear map so
+        the head computes exactly the same function: W' = W * (s'/s), b' = b + ((m' - m)/s) @ W."""
+        if self._stat_sum is None or float(self._stat_n) < 2:
+            return
+        m_new = self._stat_sum / self._stat_n
+        s_new = (self._stat_sq / self._stat_n - m_new**2).clamp_min(0).sqrt().clamp_min(1e-6)
+        m_old, s_old = self.in_mean.float(), self.in_std.float()
+        if self.per_articulator:  # out.weight (G, D, o), out.bias (G, o)
+            W = self.out.weight.float()
+            self.out.bias.add_(torch.einsum("gd,gdo->go", (m_new - m_old) / s_old, W).to(self.out.bias.dtype))
+            self.out.weight.copy_(W * (s_new / s_old)[:, :, None])
+        else:  # nn.Linear: weight (o, D), bias (o,)
+            W = self.out.weight.float()
+            self.out.bias.add_((W @ ((m_new[0] - m_old[0]) / s_old[0])).to(self.out.bias.dtype))
+            self.out.weight.copy_(W * (s_new[0] / s_old[0])[None, :])
+        self.in_mean.copy_(m_new)
+        self.in_std.copy_(s_new)
+        self._stat_sum = self._stat_sq = self._stat_n = None
 
     def _attn_mask(self, T, device):
         i = torch.arange(T, device=device)
@@ -193,7 +235,12 @@ class Head(nn.Module):
         """h: (B, T, D) or list of per-layer (B, T, D) when pooling; pad_mask: (B, T) True on padding."""
         h = self.pooled(h, pad_mask)
         if self.kind == "linear":
-            h = (h - self.in_mean) / self.in_std
+            if self.training and self.track_input_stats:
+                self._accumulate_stats(h, pad_mask)
+            if h.dim() == 4:  # (B, G, T, D), per-group statistics
+                h = (h - self.in_mean[None, :, None, :]) / self.in_std[None, :, None, :]
+            else:
+                h = (h - self.in_mean[0]) / self.in_std[0]
         h = self.norm(h)
         if self.per_articulator:  # h: (B, G, T, D)
             if self.kind == "conv":

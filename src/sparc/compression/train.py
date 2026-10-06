@@ -79,7 +79,8 @@ def build(args, device):
     pool = getattr(args, "pool", "static" if args.layer_pool else "none")  # older configs only had layer_pool
     head = Head(model.config.hidden_size, args.head, args.hidden, args.kernel, args.window, args.causal,
                 smooth=not args.no_smooth, n_pool_layers=len(args.layers) if pool != "none" else 0,
-                pool=pool if pool != "none" else "static", per_articulator=getattr(args, "per_articulator", False))
+                pool=pool if pool != "none" else "static", per_articulator=getattr(args, "per_articulator", False),
+                pool_norm=getattr(args, "pool_norm", "layer") == "layer")
     return model.to(device), head.to(device), bank
 
 
@@ -190,13 +191,13 @@ def pooled_ridge_init(model, head, data, args, ym, ys, device):
                 h = h[:, 0]  # all articulator groups are identical at initialization
             if head.smooth is not None:
                 h = head.smooth(h.float())
-            h = ((h - head.in_mean) / head.in_std)[0].double()
+            h = ((h - head.in_mean[0]) / head.in_std[0])[0].double()
             sl, tgt = _targets([u], [h.shape[0]], args.shift, ym, ys, device)
             if sl:
                 _, s, n = sl[0]
                 yield h[s : s + n], tgt.double()
 
-    D = head.in_mean.numel()
+    D = head.in_mean.shape[-1]
     G = torch.zeros(D, D, dtype=torch.float64, device=device)
     C = torch.zeros(D, 12, dtype=torch.float64, device=device)
     sx = torch.zeros(D, dtype=torch.float64, device=device)
@@ -238,16 +239,19 @@ def rmse(preds, trues):
 def trainable_state(model, head):
     params = {f"model.{n}": p for n, p in model.named_parameters() if p.requires_grad}
     params.update({f"head.{n}": p for n, p in head.named_parameters()})
+    # the input standardization moves with the linear weights when a pooled head re-standardizes
+    params.update({f"head.{n}": b for n, b in head.named_buffers() if n in ("in_mean", "in_std")})
     return {k: v.detach().cpu().clone() for k, v in params.items()}
 
 
 def load_trainable(model, head, state):
     mp = dict(model.named_parameters())
     hp = dict(head.named_parameters())
+    hp.update({n: b for n, b in head.named_buffers() if n in ("in_mean", "in_std")})
     with torch.no_grad():
         for k, v in state.items():
             dst = mp[k[6:]] if k.startswith("model.") else hp[k[5:]]
-            dst.copy_(v)
+            dst.copy_(v.reshape(dst.shape))  # older runs stored (D,) input statistics
 
 
 def fit(model, head, bank, data, args, ym, ys, device, epochs, state_path):
@@ -305,6 +309,8 @@ def fit(model, head, bank, data, args, ym, ys, device, epochs, state_path):
             opt.step()
             sched.step()
             losses.append(loss.item())
+        if head.track_input_stats:
+            head.restandardize()  # function-preserving; keeps the pooled linear head well conditioned
         val = rmse(*predict(model, head, data["valid"], args, ym, ys, device)[:2])
         history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "valid_rmse": val,
                         "seconds": time.time() - t0})
@@ -338,6 +344,8 @@ def main(argv=None):
     ap.add_argument("--causal", action="store_true")
     ap.add_argument("--pool", default="none", choices=POOL_MODES,
                     help="pool all retained layers: static weights or frame-wise attention weights")
+    ap.add_argument("--pool-norm", default="layer", choices=("layer", "none"),
+                    help="layer-normalize each layer before pooling (default) or pool the raw hidden states")
     ap.add_argument("--per-articulator", action="store_true",
                     help="separate layer pooling (and head projections) per articulator")
     ap.add_argument("--no-smooth", action="store_true")
@@ -378,7 +386,8 @@ def main(argv=None):
             + (f"_r{args.rank}_{args.targets.replace(',', '+')}" if args.variant != "none" else "")
             + (f"_g{args.gate}" if args.variant == "shared_gated" else "")
             + f"_{args.head}" + ("_causal" if args.causal else "") + (f"_w{args.window}" if args.window else "")
-            + (f"_pool{args.pool}" if args.layer_pool else "") + ("_art" if args.per_articulator else "")
+            + (f"_pool{args.pool}" if args.layer_pool else "") + ("_raw" if args.layer_pool and args.pool_norm == "none" else "")
+            + ("_art" if args.per_articulator else "") + (f"_h{args.hidden}" if args.head != "linear" and args.hidden != 256 else "")
             + ("_randinit" if args.no_probe_init and args.head == "linear" and not args.layer_pool else "")
             + f"_s{args.seed}")
     out = Path(args.out or ADAPT_ROOT / args.model / name)
