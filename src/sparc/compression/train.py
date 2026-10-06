@@ -143,6 +143,25 @@ def predict(model, head, utts, args, ym, ys, device):
     return preds, trues, phones
 
 
+@torch.no_grad()
+def feature_stats(model, head, utts, args, device):
+    """Per-channel mean/std of the head's input over the training frames (initial encoder, no LoRA effect)."""
+    model.eval()
+    pool = head.pool
+    s = s2 = None
+    n = 0
+    for u in utts:
+        out = model(torch.from_numpy(normalize_wav(u.wav)).unsqueeze(0).to(device),
+                    output_hidden_states=args.layer_pool)
+        h = pool(list(out.hidden_states[1:])) if args.layer_pool else out.last_hidden_state
+        h = h[0].double()
+        s = h.sum(0) if s is None else s + h.sum(0)
+        s2 = (h**2).sum(0) if s2 is None else s2 + (h**2).sum(0)
+        n += len(h)
+    mean = s / n
+    return mean.float(), (s2 / n - mean**2).clamp_min(0).sqrt().float()
+
+
 def rmse(preds, trues):
     P, Y = np.concatenate(preds), np.concatenate(trues)
     return float(np.sqrt(((P - Y) ** 2).mean(0)).mean())
@@ -184,7 +203,7 @@ def main(argv=None):
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=2e-4, help="LoRA learning rate")
-    ap.add_argument("--head-lr", type=float, default=1e-3)
+    ap.add_argument("--head-lr", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--patience", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
@@ -228,6 +247,14 @@ def main(argv=None):
     ym, ys = allY.mean(0), allY.std(0)
 
     model, head, bank = build(args, device)
+    if args.head == "linear":
+        stats_path = out / "input_stats.pt"
+        if stats_path.exists():
+            mean, std = torch.load(stats_path)
+        else:
+            mean, std = feature_stats(model, head, data["train"], args, device)
+            torch.save((mean, std), stats_path)
+        head.set_input_stats(mean, std)
     if args.head == "linear" and not args.layer_pool and W is not None and not args.no_probe_init \
             and args.layers == list(range(1, k + 1)):
         head.init_linear(W / ys[None, :], (b - ym) / ys)

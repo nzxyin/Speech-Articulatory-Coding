@@ -184,3 +184,16 @@ def test_causal_heads_ignore_future(kind):
     h2 = h.clone()
     h2[:, 20:] = torch.randn(1, 10, 16)
     torch.testing.assert_close(head(h)[:, :20], head(h2)[:, :20])
+
+
+@torch.no_grad()
+def test_linear_head_standardized_init_matches_raw_ridge():
+    rng = np.random.default_rng(0)
+    W, b = rng.normal(size=(16, 12)) * 1e-3, rng.normal(size=12)
+    mean, std = rng.normal(size=16) * 5, rng.uniform(10, 100, size=16)
+    head = Head(16, "linear", smooth=False)
+    head.set_input_stats(torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32))
+    head.init_linear(W, b)
+    h = torch.tensor(rng.normal(size=(1, 7, 16)) * std + mean, dtype=torch.float32)
+    torch.testing.assert_close(head(h)[0], (h[0].double() @ torch.tensor(W) + torch.tensor(b)).float(),
+                               rtol=1e-4, atol=1e-4)

@@ -67,6 +67,11 @@ class Head(nn.Module):
         self.kind, self.causal, self.window, self.kernel = kind, causal, window, kernel
         self.pool = LayerPool(n_pool_layers) if n_pool_layers else None
         self.norm = nn.LayerNorm(dim) if kind != "linear" else nn.Identity()
+        # Fixed per-channel standardization of the linear head's input (set_input_stats). Raw SSL
+        # features have very uneven channel scales, so without it the ridge weights are tiny and an
+        # Adam step of ~lr per weight throws the head off the probe solution at once.
+        self.register_buffer("in_mean", torch.zeros(dim))
+        self.register_buffer("in_std", torch.ones(dim))
         if kind == "linear":
             self.out = nn.Linear(dim, n_out)
         elif kind == "conv":
@@ -82,12 +87,19 @@ class Head(nn.Module):
             raise ValueError(kind)
         self.smooth = Smooth() if smooth else None
 
-    def init_linear(self, W, b):
-        """Load a ridge solution (W: D x 12, b: 12) mapping features to standardized EMA."""
-        assert self.kind == "linear"
+    def set_input_stats(self, mean, std):
         with torch.no_grad():
-            self.out.weight.copy_(torch.as_tensor(W).T)
-            self.out.bias.copy_(torch.as_tensor(b))
+            self.in_mean.copy_(torch.as_tensor(mean))
+            self.in_std.copy_(torch.as_tensor(std).clamp_min(1e-6))
+
+    def init_linear(self, W, b):
+        """Load a ridge solution (W: D x 12, b: 12) mapping raw features to standardized EMA,
+        re-expressed on the standardized input: W' = diag(std) W, b' = b + mean @ W."""
+        assert self.kind == "linear"
+        W, b = torch.as_tensor(W, dtype=torch.float32), torch.as_tensor(b, dtype=torch.float32)
+        with torch.no_grad():
+            self.out.weight.copy_((W * self.in_std.cpu()[:, None]).T)
+            self.out.bias.copy_(b + self.in_mean.cpu() @ W)
 
     def _attn_mask(self, T, device):
         i = torch.arange(T, device=device)
@@ -103,6 +115,8 @@ class Head(nn.Module):
         """h: (B, T, D) or list of per-layer (B, T, D) when pooling; pad_mask: (B, T) True on padding."""
         if self.pool is not None:
             h = self.pool(h)
+        if self.kind == "linear":
+            h = (h - self.in_mean) / self.in_std
         h = self.norm(h)
         if self.kind == "conv":
             x = F.gelu(self.inp(h)).transpose(1, 2)
