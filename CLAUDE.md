@@ -74,13 +74,15 @@ re-standardization; reviewed adversarially before the runs). Test RMSE mm, unpoo
 | WavLM Large k=9 | 0.889 -> 0.867 (attn, global) | 0.753 +/- 0.001 -> 0.745 |
 | XLS-R 300M k=18 | 0.893 -> 0.871 (attn, per-articulator) | 0.739 +/- 0.005 -> 0.737 |
 | XLS-R 1B k=16 | 0.893 -> 0.882 (attn, per-articulator) | 0.758 +/- 0.002 -> 0.740 |
-- Frame-wise attention pooling helps frozen encoders (-0.016 to -0.022 mm). The attention mixes the last
-  retained layer with layer 1. Static pooling does not help frozen encoders. (On WavLM it never left its
+- Frame-wise attention pooling helps frozen encoders (-0.011 mm for 1B, -0.022 mm for 300M and WavLM). The
+  last retained layer always gets the most weight. Layer 1 is second for WavLM and 1B and third for 300M,
+  where the second-to-last layer is second. Static pooling does not help frozen encoders. (On WavLM it never left its
   ridge initialization; with raw, non-normalized layers it reached 0.881.)
-- With LoRA, the pools concentrate on the last retained layer (0.55-0.80 weight) and gains are seed-noise-sized.
-  The best LoRA results for every model use static per-articulator pooling with a small head (hidden 48).
-  That looks like regularization, not per-articulator specialization: all six articulators learn nearly
-  the same layer weights.
+- With LoRA, the last retained layer is always the top-weighted layer, at 0.20-0.80 weight: 0.5-0.8 for
+  WavLM, 0.2-0.4 for 300M and 1B static pools. Gains are seed-noise-sized.
+  The best LoRA results for 300M and 1B use static per-articulator pooling with a small head (hidden 48).
+  For WavLM that ties attention per-articulator pooling (0.7451 vs 0.7451). That looks like regularization,
+  not per-articulator specialization: all six articulators learn nearly the same layer weights.
 - Per-articulator pooling gives no systematic gain. This matches the per-channel probe check (picking each
   channel's best layer on validation changes test RMSE by <= 0.003 mm).
 - 1B still doesn't beat 300M (0.740 vs 0.737 mm, 38 vs 29 GFLOPs/s), so component pruning was run on 300M.
@@ -89,7 +91,7 @@ Component pruning of XLS-R 300M k=18 (LoRA + causal conv source; `components.py`
 head/FFN masks, 4 iterative rounds with LoRA recovery, physical removal, 40-epoch final fine-tune):
 | keep | heads | FFN neurons | params | GFLOPs/s | test RMSE | PCC | nearest truncation / native |
 |---|---|---|---|---|---|---|---|
-| 0.75 | 216/288 | 55k/74k | 183M | 23.3 | 0.754 | 0.932 | 1B k=9 0.780 @ 24.3 |
+| 0.75 | 216/288 | 55k/74k | 183M | 23.2 | 0.754 | 0.932 | 1B k=9 0.780 @ 24.3 |
 | 0.5 | 144/288 | 37k/74k | 127M | 17.4 | 0.786 | 0.929 | WavLM k=9 0.753 @ 17.4; 300M k=8 0.783 @ 16.1 |
 | 0.5 random | 144/288 | 37k/74k | 127M | 17.4 | 0.858 | 0.916 | (control) |
 | 0.4 | 115/288 | 29k/74k | 104M | 15.1 | 0.812 | 0.926 | 300M k=8 0.783 @ 16.1 |
@@ -98,7 +100,10 @@ head/FFN masks, 4 iterative rounds with LoRA recovery, physical removal, 40-epoc
 - Mild pruning (keep 0.75) beats truncation at that cost. From keep 0.5 down, pruning inside the layers is no
   better than dropping late layers, and clearly worse than WavLM at the same FLOPs.
 - Overall: no compression of XLS-R (1B or 300M; truncation, non-contiguous layers, pooling, head/FFN pruning)
-  beats WavLM Large k=9 + LoRA + causal conv at its 17.4 GFLOPs/s.
+  beats WavLM Large k=9 + LoRA + causal conv at its 17.4 GFLOPs/s (0.753 mm unpooled). The best result at that
+  budget is pooled WavLM k=9 itself (0.745 mm, attention per-articulator or static per-articulator h48; single
+  seed). (Claims in this section were checked against the raw results by an independent verification pass;
+  six corrections were applied.)
 
 ### Probe results (linear probes, test set; 2026-10-06)
 | model | best k (valid) | GFLOPs/s audio | params | test RMSE mm (95% CI) | PCC |
