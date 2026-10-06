@@ -14,7 +14,10 @@ Usage: python -m sparc.compression.analyze [--out DIR]
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
+
+import numpy as np
 
 from .extract import OUT_ROOT
 from .train import ADAPT_ROOT
@@ -197,6 +200,19 @@ def main():
                               [("model", ("model", s)), ("run", ("run", s)), ("GFLOPs/s", ("gflops", f2)),
                                ("LoRA params", ("lora_params", s)), ("valid RMSE", ("valid_rmse", f3)),
                                ("test RMSE", ("test_rmse", f3)), ("test PCC", ("test_pcc", f4))]))
+    groups = {}
+    for a in adapted:
+        groups.setdefault((a["model"], re.sub(r"_s\d+$", "", a["run"])), []).append(a)
+    multi = {k: v for k, v in groups.items() if len(v) > 1}
+    if multi:
+        parts.append("\n## Seed variation (configurations with several seeds)\n")
+        parts.append("| model | configuration | seeds | GFLOPs/s | test RMSE mean +/- std | test PCC mean +/- std |")
+        parts.append("|---|---|---|---|---|---|")
+        for (m, cfg), v in sorted(multi.items()):
+            r = np.array([a["test_rmse"] for a in v])
+            p = np.array([a["test_pcc"] for a in v])
+            parts.append(f"| {m} | {cfg} | {len(v)} | {v[0]['gflops']:.1f} | {r.mean():.3f} +/- {r.std(ddof=1):.3f} "
+                         f"| {p.mean():.4f} +/- {p.std(ddof=1):.4f} |")
     for m in models:
         for pf in sorted((Path(OUT_ROOT) / m).glob("prune_from*_to*.json")):
             ev = json.loads(pf.read_text()).get("eval", {})
