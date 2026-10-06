@@ -8,7 +8,9 @@ Examples:
     python -m sparc.compression.train --model xlsr-1b --layers 1-12 --variant shared_gated --gate rank
     # temporal heads: centered or causal local conv, windowed attention, layer pooling
     python -m sparc.compression.train --model xlsr-1b --layers 1-12 --head conv --kernel 9 --causal
-    python -m sparc.compression.train --model xlsr-1b --layers 1-12 --head attn --window 25 --layer-pool
+    python -m sparc.compression.train --model xlsr-1b --layers 1-12 --head attn --window 25 --pool static
+    # frame-wise attention pooling over layers, separately per articulator
+    python -m sparc.compression.train --model xlsr-1b --layers 1-16 --head conv --causal --pool attn --per-articulator
     # non-contiguous subset
     python -m sparc.compression.train --model xlsr-1b --layers 1,2,4,7,9,12 --variant independent
 
@@ -31,7 +33,7 @@ import torch
 from . import mngu0
 from .encoders import MODELS, frame_lengths, load_subset, normalize_wav
 from .extract import OUT_ROOT
-from .heads import Head
+from .heads import POOL_MODES, Head
 from .lora import VARIANTS, apply_lora, lora_param_count, merge_lora
 from .metrics import ema_metrics
 
@@ -74,8 +76,10 @@ def build(args, device):
             p.requires_grad_(False)
     if args.grad_ckpt and bank is not None:
         model.gradient_checkpointing_enable()
+    pool = getattr(args, "pool", "static" if args.layer_pool else "none")  # older configs only had layer_pool
     head = Head(model.config.hidden_size, args.head, args.hidden, args.kernel, args.window, args.causal,
-                smooth=not args.no_smooth, n_pool_layers=len(args.layers) if args.layer_pool else 0)
+                smooth=not args.no_smooth, n_pool_layers=len(args.layers) if pool != "none" else 0,
+                pool=pool if pool != "none" else "static", per_articulator=getattr(args, "per_articulator", False))
     return model.to(device), head.to(device), bank
 
 
@@ -147,13 +151,14 @@ def predict(model, head, utts, args, ym, ys, device):
 def feature_stats(model, head, utts, args, device):
     """Per-channel mean/std of the head's input over the training frames (initial encoder, no LoRA effect)."""
     model.eval()
-    pool = head.pool
     s = s2 = None
     n = 0
     for u in utts:
         out = model(torch.from_numpy(normalize_wav(u.wav)).unsqueeze(0).to(device),
                     output_hidden_states=args.layer_pool)
-        h = pool(list(out.hidden_states[1:])) if args.layer_pool else out.last_hidden_state
+        h = head.pooled(list(out.hidden_states[1:])) if args.layer_pool else out.last_hidden_state
+        if h.dim() == 4:  # per-articulator pooling: all groups are identical at initialization
+            h = h[:, 0]
         h = h[0].double()
         s = h.sum(0) if s is None else s + h.sum(0)
         s2 = (h**2).sum(0) if s2 is None else s2 + (h**2).sum(0)
@@ -196,7 +201,10 @@ def main(argv=None):
     ap.add_argument("--kernel", type=int, default=9)
     ap.add_argument("--window", type=int, default=0)
     ap.add_argument("--causal", action="store_true")
-    ap.add_argument("--layer-pool", action="store_true")
+    ap.add_argument("--pool", default="none", choices=POOL_MODES,
+                    help="pool all retained layers: static weights or frame-wise attention weights")
+    ap.add_argument("--per-articulator", action="store_true",
+                    help="separate layer pooling (and head projections) per articulator")
     ap.add_argument("--no-smooth", action="store_true")
     ap.add_argument("--no-probe-init", action="store_true")
     ap.add_argument("--shift", type=int, default=None)
@@ -204,6 +212,7 @@ def main(argv=None):
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=2e-4, help="LoRA learning rate")
     ap.add_argument("--head-lr", type=float, default=3e-4)
+    ap.add_argument("--pool-lr", type=float, default=3e-3, help="learning rate of the layer-pooling parameters")
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--patience", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
@@ -213,6 +222,9 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=None, help="debug: cap utterances per split")
     args = ap.parse_args(argv)
     args.layers = parse_layers(args.layers)
+    args.layer_pool = args.pool != "none"
+    if args.per_articulator and not args.layer_pool:
+        ap.error("--per-articulator needs --pool static or attn")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     args.bf16 = args.bf16 and device == "cuda"
@@ -231,7 +243,8 @@ def main(argv=None):
             + (f"_r{args.rank}_{args.targets.replace(',', '+')}" if args.variant != "none" else "")
             + (f"_g{args.gate}" if args.variant == "shared_gated" else "")
             + f"_{args.head}" + ("_causal" if args.causal else "") + (f"_w{args.window}" if args.window else "")
-            + ("_pool" if args.layer_pool else "") + f"_s{args.seed}")
+            + (f"_pool{args.pool}" if args.layer_pool else "") + ("_art" if args.per_articulator else "")
+            + f"_s{args.seed}")
     out = Path(args.out or ADAPT_ROOT / args.model / name)
     out.mkdir(parents=True, exist_ok=True)
     if (out / "results.json").exists():
@@ -260,7 +273,11 @@ def main(argv=None):
         head.init_linear(W / ys[None, :], (b - ym) / ys)
         print(f"head initialized from the ridge probe of layer {k}")
 
-    groups = [{"params": list(head.parameters()), "lr": args.head_lr}]
+    pool_params = list(head.pool.parameters()) if head.pool is not None else []
+    pool_ids = {id(p) for p in pool_params}
+    groups = [{"params": [p for p in head.parameters() if id(p) not in pool_ids], "lr": args.head_lr}]
+    if pool_params:  # softmax logits need larger steps than Adam at head_lr gives them to leave uniform
+        groups.append({"params": pool_params, "lr": args.pool_lr, "weight_decay": 0.0})
     if bank is not None:
         groups.append({"params": list(bank.parameters()), "lr": args.lr})
     opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
@@ -324,7 +341,11 @@ def main(argv=None):
     load_trainable(model, head, best_state)
     preds, trues, phones = predict(model, head, data["test"], args, ym, ys, device)
     test = ema_metrics(preds, trues, phones=phones)
+    if head.pool is not None:
+        head.pool.reset_stats()
     valid = ema_metrics(*predict(model, head, data["valid"], args, ym, ys, device)[:2], n_boot=0)
+    # mean layer weights over validation frames, (groups x retained layers); groups = articulators if per-articulator
+    pool_weights = head.pool.mean_weights() if head.pool is not None else None
     merged_rmse = None
     if bank is not None:
         merge_lora(model)
@@ -341,6 +362,7 @@ def main(argv=None):
         "test_rmse_after_merge": merged_rmse,
         "history": history,
         "probe_test_rmse_same_layer": probe_res["test"]["rmse"] if probe_res else None,
+        "pool_weights_valid": pool_weights,
     }
     (out / "results.json").write_text(json.dumps(result, indent=1))
     print(f"test RMSE {test['rmse']:.4f} mm, PCC {test['pcc']:.4f}"

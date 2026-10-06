@@ -197,3 +197,77 @@ def test_linear_head_standardized_init_matches_raw_ridge():
     h = torch.tensor(rng.normal(size=(1, 7, 16)) * std + mean, dtype=torch.float32)
     torch.testing.assert_close(head(h)[0], (h[0].double() @ torch.tensor(W) + torch.tensor(b)).float(),
                                rtol=1e-4, atol=1e-4)
+
+
+# --- layer pooling ---------------------------------------------------------------------------
+
+from sparc.compression.heads import LayerPool  # noqa: E402
+
+
+def _layers(n=4, B=2, T=11, D=16, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return [torch.randn(B, T, D, generator=g) * (i + 1) + i for i in range(n)]
+
+
+@pytest.mark.parametrize("mode", ["static", "attn"])
+@torch.no_grad()
+def test_layer_pool_starts_uniform_over_normalized_layers(mode):
+    hs = _layers()
+    out = LayerPool(4, 16, mode, groups=3)(hs)
+    ref = torch.stack([torch.nn.functional.layer_norm(h, (16,)) for h in hs]).mean(0)
+    assert out.shape == (2, 3, 11, 16)
+    for g in range(3):
+        torch.testing.assert_close(out[:, g], ref)
+
+
+def test_attn_pool_is_framewise_and_trainable():
+    hs = _layers()
+    pool = LayerPool(4, 16, "attn", groups=2)
+    with torch.no_grad():
+        pool.v.normal_()
+    out = pool(hs)
+    out.sum().backward()
+    assert pool.v.grad.abs().sum() > 0 and pool.proj.weight.grad.abs().sum() > 0
+    # weights differ across frames (frame-wise), unlike static pooling
+    w = pool.weight_sum
+    assert w.shape == (2, 4)
+    hs2 = [h.clone() for h in hs]
+    hs2[0][:, 5] += 10  # change one frame: only that frame's output may change
+    with torch.no_grad():
+        o1, o2 = pool(hs), pool(hs2)
+    diff = (o1 - o2).abs().sum(dim=(0, 1, 3))
+    assert diff[5] > 0 and torch.all(diff[torch.arange(11) != 5] == 0)
+
+
+@torch.no_grad()
+def test_per_articulator_head_maps_groups_to_channel_pairs():
+    torch.manual_seed(0)
+    head = Head(16, "linear", smooth=False, n_pool_layers=4, pool="static", per_articulator=True)
+    hs = _layers()
+    y = head(hs)
+    assert y.shape == (2, 11, 12)
+    head.out.weight[3].zero_()
+    head.out.bias[3].fill_(7.0)  # articulator 3 (LI) -> channels 6, 7
+    y = head(hs)
+    assert torch.all(y[..., 6:8] == 7.0) and not torch.all(y[..., 4:6] == 7.0)
+
+
+@torch.no_grad()
+def test_per_articulator_causal_conv_ignores_future():
+    torch.manual_seed(0)
+    head = Head(16, "conv", hidden=8, kernel=5, causal=True, smooth=False, n_pool_layers=4, pool="attn",
+                per_articulator=True).eval()
+    with torch.no_grad():
+        head.pool.v.normal_()
+    hs = _layers()
+    hs2 = [h.clone() for h in hs]
+    for h in hs2:
+        h[:, 8:] = torch.randn(2, 3, 16)
+    torch.testing.assert_close(head(hs)[:, :8], head(hs2)[:, :8])
+
+
+def test_per_articulator_requires_pooling_and_supported_head():
+    with pytest.raises(ValueError):
+        Head(16, "linear", per_articulator=True)
+    with pytest.raises(ValueError):
+        Head(16, "attn", n_pool_layers=3, per_articulator=True)
