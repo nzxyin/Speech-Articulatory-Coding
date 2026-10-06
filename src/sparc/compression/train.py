@@ -187,6 +187,78 @@ def load_trainable(model, head, state):
             dst.copy_(v)
 
 
+def fit(model, head, bank, data, args, ym, ys, device, epochs, state_path):
+    """Train the head (and LoRA bank, if any) with early stopping on validation RMSE.
+
+    Restart-safe through `state_path`. Returns (best validation RMSE, best trainable state, history).
+    """
+    pool_params = list(head.pool.parameters()) if head.pool is not None else []
+    pool_ids = {id(p) for p in pool_params}
+    groups = [{"params": [p for p in head.parameters() if id(p) not in pool_ids], "lr": args.head_lr}]
+    if pool_params:  # softmax logits need larger steps than Adam at head_lr gives them to leave uniform
+        groups.append({"params": pool_params, "lr": args.pool_lr, "weight_decay": 0.0})
+    if bank is not None:
+        groups.append({"params": list(bank.parameters()), "lr": args.lr})
+    opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
+    steps_per_epoch = math.ceil(len(data["train"]) / args.batch_size)
+    total, warm = epochs * steps_per_epoch, steps_per_epoch
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: min(1.0, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(s, total) / total))
+    )
+
+    start_epoch, best, best_state, bad, history = 0, float("inf"), None, 0, []
+    if state_path.exists():
+        st = torch.load(state_path, weights_only=False)
+        load_trainable(model, head, st["current"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        start_epoch, best, best_state, bad, history = st["epoch"] + 1, st["best"], st["best_state"], st["bad"], st["history"]
+        random.setstate(st["py_rng"])
+        print(f"resumed at epoch {start_epoch}")
+    else:
+        val0 = rmse(*predict(model, head, data["valid"], args, ym, ys, device)[:2])
+        history.append({"epoch": -1, "valid_rmse": val0})
+        best, best_state = val0, trainable_state(model, head)
+        print(f"initial valid RMSE {val0:.4f} mm", flush=True)
+
+    for epoch in range(start_epoch, epochs):
+        if bad >= args.patience:
+            break
+        model.train() if bank is not None else model.eval()
+        head.train()
+        order = list(range(len(data["train"])))
+        random.shuffle(order)
+        t0, losses = time.time(), []
+        for i in range(0, len(order), args.batch_size):
+            utts = [data["train"][j] for j in order[i : i + args.batch_size]]
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
+                y, nf = forward(model, head, [normalize_wav(u.wav) for u in utts], device, args.layer_pool, True)
+            sl, tgt = _targets(utts, nf, args.shift, ym, ys, device)
+            pred = torch.cat([y[b_, s : s + n] for b_, s, n in sl]).float()
+            loss = torch.nn.functional.mse_loss(pred, tgt)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]], 1.0)
+            opt.step()
+            sched.step()
+            losses.append(loss.item())
+        val = rmse(*predict(model, head, data["valid"], args, ym, ys, device)[:2])
+        history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "valid_rmse": val,
+                        "seconds": time.time() - t0})
+        if val < best - 1e-4:
+            best, best_state, bad = val, trainable_state(model, head), 0
+        else:
+            bad += 1
+        print(f"epoch {epoch}: loss {np.mean(losses):.4f} valid RMSE {val:.4f} mm (best {best:.4f}) "
+              f"{time.time() - t0:.0f}s", flush=True)
+        torch.save({"current": trainable_state(model, head), "opt": opt.state_dict(), "sched": sched.state_dict(),
+                    "epoch": epoch, "best": best, "best_state": best_state, "bad": bad, "history": history,
+                    "py_rng": random.getstate()}, str(state_path) + ".tmp")
+        Path(str(state_path) + ".tmp").replace(state_path)
+
+    return best, best_state, history
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, choices=sorted(MODELS))
@@ -273,70 +345,7 @@ def main(argv=None):
         head.init_linear(W / ys[None, :], (b - ym) / ys)
         print(f"head initialized from the ridge probe of layer {k}")
 
-    pool_params = list(head.pool.parameters()) if head.pool is not None else []
-    pool_ids = {id(p) for p in pool_params}
-    groups = [{"params": [p for p in head.parameters() if id(p) not in pool_ids], "lr": args.head_lr}]
-    if pool_params:  # softmax logits need larger steps than Adam at head_lr gives them to leave uniform
-        groups.append({"params": pool_params, "lr": args.pool_lr, "weight_decay": 0.0})
-    if bank is not None:
-        groups.append({"params": list(bank.parameters()), "lr": args.lr})
-    opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
-    steps_per_epoch = math.ceil(len(data["train"]) / args.batch_size)
-    total, warm = args.epochs * steps_per_epoch, steps_per_epoch
-    sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: min(1.0, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(s, total) / total))
-    )
-
-    start_epoch, best, best_state, bad, history = 0, float("inf"), None, 0, []
-    state_path = out / "state.pt"
-    if state_path.exists():
-        st = torch.load(state_path, weights_only=False)
-        load_trainable(model, head, st["current"])
-        opt.load_state_dict(st["opt"])
-        sched.load_state_dict(st["sched"])
-        start_epoch, best, best_state, bad, history = st["epoch"] + 1, st["best"], st["best_state"], st["bad"], st["history"]
-        random.setstate(st["py_rng"])
-        print(f"resumed at epoch {start_epoch}")
-    else:
-        val0 = rmse(*predict(model, head, data["valid"], args, ym, ys, device)[:2])
-        history.append({"epoch": -1, "valid_rmse": val0})
-        best, best_state = val0, trainable_state(model, head)
-        print(f"initial valid RMSE {val0:.4f} mm", flush=True)
-
-    for epoch in range(start_epoch, args.epochs):
-        if bad >= args.patience:
-            break
-        model.train() if bank is not None else model.eval()
-        head.train()
-        order = list(range(len(data["train"])))
-        random.shuffle(order)
-        t0, losses = time.time(), []
-        for i in range(0, len(order), args.batch_size):
-            utts = [data["train"][j] for j in order[i : i + args.batch_size]]
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
-                y, nf = forward(model, head, [normalize_wav(u.wav) for u in utts], device, args.layer_pool, True)
-            sl, tgt = _targets(utts, nf, args.shift, ym, ys, device)
-            pred = torch.cat([y[b_, s : s + n] for b_, s, n in sl]).float()
-            loss = torch.nn.functional.mse_loss(pred, tgt)
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]], 1.0)
-            opt.step()
-            sched.step()
-            losses.append(loss.item())
-        val = rmse(*predict(model, head, data["valid"], args, ym, ys, device)[:2])
-        history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "valid_rmse": val,
-                        "seconds": time.time() - t0})
-        if val < best - 1e-4:
-            best, best_state, bad = val, trainable_state(model, head), 0
-        else:
-            bad += 1
-        print(f"epoch {epoch}: loss {np.mean(losses):.4f} valid RMSE {val:.4f} mm (best {best:.4f}) "
-              f"{time.time() - t0:.0f}s", flush=True)
-        torch.save({"current": trainable_state(model, head), "opt": opt.state_dict(), "sched": sched.state_dict(),
-                    "epoch": epoch, "best": best, "best_state": best_state, "bad": bad, "history": history,
-                    "py_rng": random.getstate()}, str(state_path) + ".tmp")
-        Path(str(state_path) + ".tmp").replace(state_path)
+    best, best_state, history = fit(model, head, bank, data, args, ym, ys, device, args.epochs, out / "state.pt")
 
     load_trainable(model, head, best_state)
     preds, trues, phones = predict(model, head, data["test"], args, ym, ys, device)
