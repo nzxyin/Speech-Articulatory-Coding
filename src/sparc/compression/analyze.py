@@ -43,6 +43,8 @@ def load(root=OUT_ROOT, adapt_root=ADAPT_ROOT):
                          "valid_rmse": r["valid"]["rmse"], "test_rmse": r["test"]["rmse"],
                          "test_rmse_ci": r["test"].get("rmse_ci"), "test_pcc": r["test"]["pcc"],
                          "test_vel_rmse": r["test"]["vel_rmse"], "shift": r["shift"]})
+        if len(rows) < L:  # probe sweep still running
+            continue
         models[d.name] = {"L": L, "rows": sorted(rows, key=lambda x: x["layers"]), "comp": comp,
                           "best": probe["best_layer_by_valid_rmse"]}
     adapted = []
@@ -195,6 +197,20 @@ def main():
                               [("model", ("model", s)), ("run", ("run", s)), ("GFLOPs/s", ("gflops", f2)),
                                ("LoRA params", ("lora_params", s)), ("valid RMSE", ("valid_rmse", f3)),
                                ("test RMSE", ("test_rmse", f3)), ("test PCC", ("test_pcc", f4))]))
+    for m in models:
+        for pf in sorted((Path(OUT_ROOT) / m).glob("prune_from*_to*.json")):
+            ev = json.loads(pf.read_text()).get("eval", {})
+            sizes = sorted({v["n_layers"] for v in ev.values()}, reverse=True)
+            if not sizes:
+                continue
+            parts.append(f"\n## Non-contiguous selection, {LABELS.get(m, m)} ({pf.stem}; ridge probe, test RMSE / PCC)\n")
+            parts.append("| layers kept | prefix | greedy | block influence | greedy subset |")
+            parts.append("|---|---|---|---|---|")
+            for n in sizes:
+                cell = lambda k: (f"{ev[k]['test']['rmse']:.3f} / {ev[k]['test']['pcc']:.4f}" if k in ev else "-")
+                g = ev.get(f"greedy_{n}", {}).get("layers", [])
+                parts.append(f"| {n} | {cell(f'prefix_{n}')} | {cell(f'greedy_{n}')} | {cell(f'bi_{n}')} | {g} |")
+    if adapted:
         rob = [a for a in adapted if "robustness" in a]
         if rob:
             conds = list(rob[0]["robustness"])
