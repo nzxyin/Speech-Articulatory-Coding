@@ -34,6 +34,9 @@ All notable changes to this fork. Earlier history is in `git log`.
   new and the legacy 16 kHz training; Slurm launch scripts for `preempt`.
 - Tests for every module (`tests/`, 297 tests).
 
+- Experiment config `ablation_100k` (100k generator steps, main recipe) for ablations and the Vocos option that lost
+  the A/B pilot.
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);
