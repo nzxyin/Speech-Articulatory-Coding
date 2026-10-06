@@ -167,6 +167,69 @@ def feature_stats(model, head, utts, args, device):
     return mean.float(), (s2 / n - mean**2).clamp_min(0).sqrt().float()
 
 
+@torch.no_grad()
+def pooled_ridge_init(model, head, data, args, ym, ys, device):
+    """Closed-form ridge initialization of a pooled linear head.
+
+    Gradient training cannot reach the ridge solution from a random start within the epoch budget on
+    these ill-conditioned features, so the single-layer baselines start from the ridge probe. For a
+    fair comparison, a pooled linear head starts from the ridge solution on its own initial input:
+    the uniformly pooled layers, low-pass smoothed (the head smooths its output, and smoothing commutes
+    with the linear map) and standardized. Alpha is chosen on validation RMSE (standardized units).
+    """
+    from .probe import ALPHAS
+
+    model.eval()
+    head.eval()
+
+    def feats(utts):
+        for u in utts:
+            out = model(torch.from_numpy(normalize_wav(u.wav)).unsqueeze(0).to(device), output_hidden_states=True)
+            h = head.pooled(list(out.hidden_states[1:]))
+            if h.dim() == 4:
+                h = h[:, 0]  # all articulator groups are identical at initialization
+            if head.smooth is not None:
+                h = head.smooth(h.float())
+            h = ((h - head.in_mean) / head.in_std)[0].double()
+            sl, tgt = _targets([u], [h.shape[0]], args.shift, ym, ys, device)
+            if sl:
+                _, s, n = sl[0]
+                yield h[s : s + n], tgt.double()
+
+    D = head.in_mean.numel()
+    G = torch.zeros(D, D, dtype=torch.float64, device=device)
+    C = torch.zeros(D, 12, dtype=torch.float64, device=device)
+    sx = torch.zeros(D, dtype=torch.float64, device=device)
+    sy = torch.zeros(12, dtype=torch.float64, device=device)
+    n = 0
+    for x, y in feats(data["train"]):
+        G += x.T @ x
+        C += x.T @ y
+        sx += x.sum(0)
+        sy += y.sum(0)
+        n += len(x)
+    mx, my = sx / n, sy / n
+    evals, V = torch.linalg.eigh(G - n * torch.outer(mx, mx))
+    VtC = V.T @ (C - n * torch.outer(mx, my))
+    val = list(feats(data["valid"]))
+    best = None
+    for a in ALPHAS:
+        W = V @ (VtC / (evals.clamp_min(0) + a)[:, None])
+        b = my - mx @ W
+        err = torch.cat([x @ W + b - y for x, y in val])
+        r = float(err.pow(2).mean().sqrt())
+        if best is None or r < best[0]:
+            best = (r, float(a), W, b)
+    _, alpha, W, b = best
+    if head.per_articulator:
+        head.out.weight.copy_(W.T.reshape(head.groups, -1, D).transpose(1, 2).float())
+        head.out.bias.copy_(b.reshape(head.groups, -1).float())
+    else:
+        head.out.weight.copy_(W.T.float())
+        head.out.bias.copy_(b.float())
+    return alpha
+
+
 def rmse(preds, trues):
     P, Y = np.concatenate(preds), np.concatenate(trues)
     return float(np.sqrt(((P - Y) ** 2).mean(0)).mean())
@@ -316,6 +379,7 @@ def main(argv=None):
             + (f"_g{args.gate}" if args.variant == "shared_gated" else "")
             + f"_{args.head}" + ("_causal" if args.causal else "") + (f"_w{args.window}" if args.window else "")
             + (f"_pool{args.pool}" if args.layer_pool else "") + ("_art" if args.per_articulator else "")
+            + ("_randinit" if args.no_probe_init and args.head == "linear" and not args.layer_pool else "")
             + f"_s{args.seed}")
     out = Path(args.out or ADAPT_ROOT / args.model / name)
     out.mkdir(parents=True, exist_ok=True)
@@ -344,6 +408,14 @@ def main(argv=None):
             and args.layers == list(range(1, k + 1)):
         head.init_linear(W / ys[None, :], (b - ym) / ys)
         print(f"head initialized from the ridge probe of layer {k}")
+    if args.head == "linear" and args.layer_pool and not args.no_probe_init:
+        ridge_path = out / "pooled_ridge_init.pt"
+        if ridge_path.exists():
+            head.out.load_state_dict(torch.load(ridge_path))
+        else:
+            alpha = pooled_ridge_init(model, head, data, args, ym, ys, device)
+            torch.save(head.out.state_dict(), ridge_path)
+            print(f"pooled linear head initialized by ridge on the uniform pool (alpha {alpha:.3g})")
 
     best, best_state, history = fit(model, head, bank, data, args, ym, ys, device, args.epochs, out / "state.pt")
 
