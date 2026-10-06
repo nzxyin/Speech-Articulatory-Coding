@@ -28,6 +28,15 @@ All notable changes to this fork. Earlier history is in `git log`.
   - The linear head standardizes its input with train statistics, so gradient training starts at the ridge
     probe solution instead of moving away from it on the first steps.
   - Job scripts set `HF_HUB_OFFLINE=1` (all models are pre-downloaded to the shared cache).
+  - Layer pooling over retained layers (`--pool static|attn`, `--per-articulator`, `--pool-norm`, `--pool-lr`):
+    static softmax weights or frame-wise attention weights, global or per articulator with articulator-specific
+    head projections. Pooled linear heads are ridge-initialized on the uniform pool and re-standardize their
+    input every epoch in a function-preserving way. Mean pool weights are reported in `results.json`.
+  - `components`: iterative structured pruning of attention heads and FFN neurons (Taylor importance on mask
+    variables, physical removal with exact constant-bias replacement of emptied blocks, LoRA recovery per round,
+    resumable), with a random-importance control.
+  - `train.fit()` factored out of `train.main()`; random-init linear controls are named `_randinit`.
+  - Tests: `tests/test_components.py`, `tests/test_pooling_stats.py`.
   - `scripts/xlsr_ema_{probe,compute,job}_slurm.sh` job scripts; tests in `tests/test_compression.py`.
 
 ### Fixed
