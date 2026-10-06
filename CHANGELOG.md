@@ -22,7 +22,12 @@ All notable changes to this fork. Earlier history is in `git log`.
     preemption-safe training with validation early stopping and a merged-weights test check.
   - `prune`: non-contiguous layer selection (greedy backward elimination and Block Influence) evaluated
     against prefixes of the same size.
-  - `analyze`: performance-vs-FLOPs and performance-vs-compression figures and a compute-matched table.
+  - `evaluate`: robustness of finished runs under white noise (20/10/5/0 dB SNR) and ±10% speed perturbation.
+  - `analyze`: performance-vs-FLOPs and performance-vs-compression figures, a compute-matched table, seed
+    aggregation, non-contiguous selection and robustness tables.
+  - The linear head standardizes its input with train statistics, so gradient training starts at the ridge
+    probe solution instead of moving away from it on the first steps.
+  - Job scripts set `HF_HUB_OFFLINE=1` (all models are pre-downloaded to the shared cache).
   - `scripts/xlsr_ema_{probe,compute,job}_slurm.sh` job scripts; tests in `tests/test_compression.py`.
 
 ### Fixed
