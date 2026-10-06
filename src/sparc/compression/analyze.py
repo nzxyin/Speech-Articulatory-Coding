@@ -21,7 +21,6 @@ from .train import ADAPT_ROOT
 
 COLORS = {"xlsr-1b": "#2a78d6", "xlsr-300m": "#eb6834", "wavlm-large": "#1baf7a", "xlsr-2b": "#eda100"}
 LABELS = {"xlsr-1b": "XLS-R 1B", "xlsr-300m": "XLS-R 300M", "wavlm-large": "WavLM Large", "xlsr-2b": "XLS-R 2B"}
-MARKERS = {"none": "s", "independent": "^", "shared_a": "D", "shared_gated": "P"}
 
 
 def load(root=OUT_ROOT, adapt_root=ADAPT_ROOT):
@@ -61,6 +60,9 @@ def load(root=OUT_ROOT, adapt_root=ADAPT_ROOT):
                             "lora_params": r["n_lora_params"], "head_params": r["n_head_params"],
                             "valid_rmse": r["best_valid_rmse"], "test_rmse": r["test"]["rmse"],
                             "test_pcc": r["test"]["pcc"], "test_vel_rmse": r["test"]["vel_rmse"]})
+            rob = f.parent / "robustness.json"
+            if rob.exists():
+                adapted[-1]["robustness"] = {k: v["rmse"] for k, v in json.loads(rob.read_text()).items()}
     return models, adapted
 
 
@@ -74,6 +76,17 @@ def compute_matched(models, budgets):
             best = min(ok, key=lambda r: r["valid_rmse"])
             out.append({"budget": name, "budget_gflops": budget, **best})
     return out
+
+
+def best_adapted(adapted, model):
+    """Per retained-layer count, the adapted run of `model` with the lowest validation RMSE (prefixes only)."""
+    by_n = {}
+    for a in adapted:
+        if a["model"] != model or a["layers"] != list(range(1, a["n_layers"] + 1)):
+            continue
+        if a["n_layers"] not in by_n or a["valid_rmse"] < by_n[a["n_layers"]]["valid_rmse"]:
+            by_n[a["n_layers"]] = a
+    return [by_n[n] for n in sorted(by_n)]
 
 
 def figures(models, adapted, out):
@@ -100,9 +113,11 @@ def figures(models, adapted, out):
                 ax.plot(full[xkey], full[ykey], "o", ms=9, color=col, mec="white", mew=2)
                 best = next(r for r in d["rows"] if r["layers"] == d["best"])
                 ax.plot(best[xkey], best[ykey], "*", ms=14, color=col, mec="white", mew=1.5)
-            for a in adapted:
-                ax.plot(a[xkey], a[ykey], MARKERS.get(a["variant"], "x"), ms=8, color=COLORS.get(a["model"]),
-                        mec="white", mew=1.5, alpha=0.95)
+            for m in models:
+                best = best_adapted(adapted, m)
+                if best:
+                    ax.plot([a[xkey] for a in best], [a[ykey] for a in best], color=COLORS.get(m, "#5f5e5a"),
+                            lw=2, ls="--", marker="^", ms=8, mec="white", mew=1.5)
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
         handles, labels = axes[0].get_legend_handles_labels()
@@ -110,9 +125,9 @@ def figures(models, adapted, out):
 
         extra = [Line2D([], [], ls="", marker="*", ms=12, color="#5f5e5a", label="best layer (validation)"),
                  Line2D([], [], ls="", marker="o", ms=8, color="#5f5e5a", label="full model")]
-        variants = {a["variant"] for a in adapted}
-        extra += [Line2D([], [], ls="", marker=MARKERS[v], ms=8, color="#5f5e5a", label=f"adapted: {v}")
-                  for v in MARKERS if v in variants]
+        if adapted:
+            extra.append(Line2D([], [], ls="--", lw=2, marker="^", ms=8, color="#5f5e5a",
+                                label="best adapted run per depth (validation)"))
         fig.legend(handles + extra, labels + [h.get_label() for h in extra], loc="lower center",
                    ncol=min(4, len(handles) + len(extra)), frameon=False, fontsize=9)
         fig.tight_layout(rect=(0, 0.12, 1, 1))
@@ -146,7 +161,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     models, adapted = load()
     write_csv([r for d in models.values() for r in d["rows"]], out / "probe_by_layer.csv")
-    write_csv(adapted, out / "adapted.csv")
+    write_csv([{k: v for k, v in a.items() if k != "robustness"} for a in adapted], out / "adapted.csv")
 
     budgets = []
     if "xlsr-1b" in models:
@@ -180,6 +195,14 @@ def main():
                               [("model", ("model", s)), ("run", ("run", s)), ("GFLOPs/s", ("gflops", f2)),
                                ("LoRA params", ("lora_params", s)), ("valid RMSE", ("valid_rmse", f3)),
                                ("test RMSE", ("test_rmse", f3)), ("test PCC", ("test_pcc", f4))]))
+        rob = [a for a in adapted if "robustness" in a]
+        if rob:
+            conds = list(rob[0]["robustness"])
+            parts.append("\n## Robustness (test RMSE, mm)\n")
+            parts.append("| model | run | " + " | ".join(conds) + " |")
+            parts.append("|---|---|" + "---|" * len(conds))
+            for a in sorted(rob, key=lambda a: (a["model"], a["run"])):
+                parts.append(f"| {a['model']} | {a['run']} | " + " | ".join(f"{a['robustness'][c]:.3f}" for c in conds) + " |")
     (out / "summary.md").write_text("\n".join(parts) + "\n")
     print("\n".join(parts))
 
