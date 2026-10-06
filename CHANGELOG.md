@@ -36,6 +36,9 @@ All notable changes to this fork. Earlier history is in `git log`.
 
 - Experiment config `ablation_100k` (100k generator steps, main recipe) for ablations and the Vocos option that lost
   the A/B pilot.
+- Ablation experiment configs (decision D10), 100k generator steps each: `abl_pcross0` (speaker reference always the
+  target utterance), `abl_msd` (MPD + MSD), `abl_native` (the fork's loss, Adam 0.5/0.9 at lr 1e-4, no mel-only
+  warm-up). Each is compared with `ablation_100k` for the same vocoder.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
