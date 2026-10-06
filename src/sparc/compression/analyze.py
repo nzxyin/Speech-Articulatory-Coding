@@ -64,11 +64,48 @@ def load(root=OUT_ROOT, adapt_root=ADAPT_ROOT):
                             "gflops": c["gflops_per_audio_s"], "flops_frac": c["flops"] / models[m]["comp"][models[m]["L"]]["flops"],
                             "lora_params": r["n_lora_params"], "head_params": r["n_head_params"],
                             "valid_rmse": r["best_valid_rmse"], "test_rmse": r["test"]["rmse"],
-                            "test_pcc": r["test"]["pcc"], "test_vel_rmse": r["test"]["vel_rmse"]})
+                            "test_pcc": r["test"]["pcc"], "test_vel_rmse": r["test"]["vel_rmse"],
+                            "pool": r["config"].get("pool", "static" if r["config"].get("layer_pool") else "none"),
+                            "pool_norm": r["config"].get("pool_norm", "layer"),
+                            "per_articulator": r["config"].get("per_articulator", False),
+                            "hidden": r["config"].get("hidden", 256),
+                            "probe_init": not r["config"].get("no_probe_init", False),
+                            "pool_weights": r.get("pool_weights_valid")})
             rob = f.parent / "robustness.json"
             if rob.exists():
                 adapted[-1]["robustness"] = {k: v["rmse"] for k, v in json.loads(rob.read_text()).items()}
     return models, adapted
+
+
+def load_pruned(models, adapt_root=ADAPT_ROOT):
+    """Component-pruning runs (components.py): adapt/<model>/pruned/<run>/results.json."""
+    out = []
+    for f in sorted(Path(adapt_root).glob("*/pruned/*/results.json")):
+        r = json.loads(f.read_text())
+        m = f.parent.parent.parent.name
+        if m not in models or not r.get("cost"):
+            continue
+        full = models[m]["comp"][models[m]["L"]]["flops"]
+        out.append({"model": m, "run": f.parent.name, "keep": r["keep"], "importance": r["importance"],
+                    "n_layers": len(r["config"]["layers"]), "heads": f"{r['heads_kept']}/{r['heads_total']}",
+                    "neurons": f"{r['neurons_kept']}/{r['neurons_total']}",
+                    "params_m": r["cost"]["params"]["total"] / 1e6, "gflops": r["cost"]["gflops_per_audio_s"],
+                    "flops_frac": r["cost"]["flops"] / full, "rtf": r["cost"].get("rtf"),
+                    "valid_rmse": r["best_valid_rmse"], "test_rmse": r["test"]["rmse"], "test_pcc": r["test"]["pcc"],
+                    "test_rmse_ci": r["test"].get("rmse_ci")})
+    return out
+
+
+def pool_summary(weights, top=3):
+    """Short text summary of mean pool weights (groups x layers): top layers per group (1-indexed retained layer)."""
+    if not weights:
+        return ""
+    names = ["TD", "TB", "TT", "LI", "UL", "LL"] if len(weights) == 6 else ["all"]
+    parts = []
+    for name, w in zip(names, weights):
+        order = sorted(range(len(w)), key=lambda i: -w[i])[:top]
+        parts.append(f"{name}: " + ", ".join(f"L{i + 1} {w[i]:.2f}" for i in order))
+    return "; ".join(parts)
 
 
 def compute_matched(models, budgets):
@@ -94,7 +131,7 @@ def best_adapted(adapted, model):
     return [by_n[n] for n in sorted(by_n)]
 
 
-def figures(models, adapted, out):
+def figures(models, adapted, out, pruned=()):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -123,6 +160,14 @@ def figures(models, adapted, out):
                 if best:
                     ax.plot([a[xkey] for a in best], [a[ykey] for a in best], color=COLORS.get(m, "#5f5e5a"),
                             lw=2, ls="--", marker="^", ms=8, mec="white", mew=1.5)
+                taylor = sorted((p for p in pruned if p["model"] == m and p["importance"] == "taylor"),
+                                key=lambda p: p[xkey])
+                if taylor:
+                    ax.plot([p[xkey] for p in taylor], [p[ykey] for p in taylor], color=COLORS.get(m, "#5f5e5a"),
+                            lw=2, ls=":", marker="D", ms=7, mec="white", mew=1.5)
+                for p in pruned:
+                    if p["model"] == m and p["importance"] != "taylor":
+                        ax.plot(p[xkey], p[ykey], "D", ms=7, mfc="none", mec=COLORS.get(m, "#5f5e5a"), mew=1.5)
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
         handles, labels = axes[0].get_legend_handles_labels()
@@ -133,6 +178,9 @@ def figures(models, adapted, out):
         if adapted:
             extra.append(Line2D([], [], ls="--", lw=2, marker="^", ms=8, color="#5f5e5a",
                                 label="best adapted run per depth (validation)"))
+        if pruned:
+            extra.append(Line2D([], [], ls=":", lw=2, marker="D", ms=7, color="#5f5e5a",
+                                label="head + FFN pruned (open: random control)"))
         fig.legend(handles + extra, labels + [h.get_label() for h in extra], loc="lower center",
                    ncol=min(4, len(handles) + len(extra)), frameon=False, fontsize=9)
         fig.tight_layout(rect=(0, 0.12, 1, 1))
@@ -177,7 +225,9 @@ def main():
         budgets += [("XLS-R 300M full", g3), ("2/3 of 300M", 2 / 3 * g3), ("1/3 of 300M", g3 / 3)]
     matched = compute_matched(models, budgets)
     write_csv(matched, out / "compute_matched.csv")
-    figures(models, adapted, out)
+    pruned = load_pruned(models)
+    write_csv(pruned, out / "pruned.csv")
+    figures(models, adapted, out, pruned)
 
     f2, f3, f4 = (lambda v: f"{v:.2f}"), (lambda v: f"{v:.3f}"), (lambda v: f"{v:.4f}")
     s = (lambda v: str(v))
@@ -235,6 +285,35 @@ def main():
             parts.append("|---|---|" + "---|" * len(conds))
             for a in sorted(rob, key=lambda a: (a["model"], a["run"])):
                 parts.append(f"| {a['model']} | {a['run']} | " + " | ".join(f"{a['robustness'][c]:.3f}" for c in conds) + " |")
+    pooled = [a for a in adapted if a["pool"] != "none" or not a["probe_init"]]
+    if pooled:
+        parts.append("\n## Layer pooling (same retained prefix; compare with the matching unpooled run)\n")
+        parts.append("| model | arm | pool | layer norm | per articulator | head hidden | head params | test RMSE | "
+                     "test PCC | unpooled RMSE | top pool weights (valid) |")
+        parts.append("|---|---|---|---|---|---|---|---|---|---|---|")
+        def is_causal(run):
+            return "_causal" in run
+
+        for a in sorted(pooled, key=lambda a: (a["model"], a["variant"], a["pool"], a["per_articulator"], a["run"])):
+            arm = "frozen + linear" if a["variant"] == "none" and a["head"] == "linear" else f"{a['variant']} + {a['head']}"
+            base = next((b for b in adapted
+                         if b["model"] == a["model"] and b["layers"] == a["layers"] and b["variant"] == a["variant"]
+                         and b["head"] == a["head"] and b["pool"] == "none" and b["probe_init"]
+                         and b["hidden"] == 256 and b["run"].endswith("_s0") and is_causal(b["run"]) == is_causal(a["run"])),
+                        None)
+            cells = [a["model"], arm, a["pool"] if a["pool"] != "none" else "none (random init)",
+                     a["pool_norm"] if a["pool"] != "none" else "-", "yes" if a["per_articulator"] else "no",
+                     str(a["hidden"]) if a["head"] != "linear" else "-", str(a["head_params"]),
+                     f"{a['test_rmse']:.3f}", f"{a['test_pcc']:.4f}", f"{base['test_rmse']:.3f}" if base else "-",
+                     pool_summary(a["pool_weights"])]
+            parts.append("| " + " | ".join(cells) + " |")
+    if pruned:
+        parts.append("\n## Component (head + FFN neuron) pruning\n")
+        parts.append(md_table(sorted(pruned, key=lambda p: (p["model"], -p["keep"], p["importance"])),
+                              [("model", ("model", s)), ("keep", ("keep", s)), ("importance", ("importance", s)),
+                               ("heads", ("heads", s)), ("FFN neurons", ("neurons", s)), ("params (M)", ("params_m", f2)),
+                               ("GFLOPs/s", ("gflops", f2)), ("valid RMSE", ("valid_rmse", f3)),
+                               ("test RMSE", ("test_rmse", f3)), ("test PCC", ("test_pcc", f4))]))
     (out / "summary.md").write_text("\n".join(parts) + "\n")
     print("\n".join(parts))
 
