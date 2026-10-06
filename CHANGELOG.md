@@ -4,6 +4,27 @@ All notable changes to this fork. Earlier history is in `git log`.
 
 ## Unreleased
 
+### Added
+- `sparc.compression`: toolkit for studying structural compression of SSL speech encoders (XLS-R 300M/1B/2B,
+  WavLM Large) for speech-to-EMA prediction on MNGU0.
+  - `mngu0`: the corpus's standard train/validation/test file sets, EMA de-normalized to mm, and EMA/audio
+    alignment derived from the forced-alignment labels (end of leading silence) instead of from a pretrained
+    model's predictions; utterances shorter than 0.2 s of EMA are excluded.
+  - `metrics`: RMSE/MAE/PCC (per-utterance and pooled), velocity error, per-channel, per-articulator and
+    per-phone-class errors, bootstrap confidence intervals.
+  - `encoders`: layer-subset encoders (prefix truncation or any increasing subset) that reuse the Hugging Face
+    forward pass.
+  - `compute`: parameters, FLOPs, activation memory and latency/RTF of every truncation depth.
+  - `extract` / `probe`: per-layer hidden-state caching and ridge probes with validation-selected alignment shift
+    and regularization.
+  - `lora` / `heads` / `train`: independent, shared-A and shared-with-per-layer-gate LoRA; linear, local
+    convolution and windowed attention heads (causal or centered) with optional layer pooling;
+    preemption-safe training with validation early stopping and a merged-weights test check.
+  - `prune`: non-contiguous layer selection (greedy backward elimination and Block Influence) evaluated
+    against prefixes of the same size.
+  - `analyze`: performance-vs-FLOPs and performance-vs-compression figures and a compute-matched table.
+  - `scripts/xlsr_ema_{probe,compute,job}_slurm.sh` job scripts; tests in `tests/test_compression.py`.
+
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
   instead of 1x/2x/8x (#9). Existing state dicts still load.
