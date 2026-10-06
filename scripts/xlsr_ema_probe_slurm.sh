@@ -20,6 +20,7 @@
 set -euo pipefail
 MODEL=${1:?model name}
 cd "$SLURM_SUBMIT_DIR"
+export HF_HUB_OFFLINE=1  # every model is pre-downloaded to the shared cache
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 PY=${PY:-.venv/bin/python}
 [ -x "$PY" ] || PY=../../../.venv/bin/python  # worktrees under .claude/worktrees share the main venv
