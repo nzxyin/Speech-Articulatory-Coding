@@ -24,7 +24,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from . import mngu0
+from . import datasets, mngu0
 from .encoders import load_full, normalize_wav
 from .extract import OUT_ROOT, lowpass
 from .metrics import ema_metrics
@@ -91,19 +91,24 @@ def fit_select(tr_feats, tr_utts, va_feats, va_utts, shifts, device):
     return best
 
 
-def full_eval(runner, layers, data, device):
-    feats = {s: runner.features(data[s], layers) for s in ("train", "valid", "test")}
+def full_eval(runner, layers, data, device, ds=None):
+    ds = ds or datasets.get("mngu0")
+    evals = [s for s in ("test", "test_unseen") if data.get(s)]
+    feats = {s: runner.features(data[s], layers) for s in ["train", "valid"] + evals}
     r, shift, alpha, W, b, ridge = fit_select(feats["train"], data["train"], feats["valid"], data["valid"],
-                                              mngu0.SHIFT_CANDIDATES, device)
-    Xte, Yte, te_utts = _aligned(feats["test"], data["test"], shift)
-    phones = [mngu0.frame_phones(u, u.base_offset + shift, len(y)) for u, y in zip(te_utts, Yte)]
-    return {"layers": layers, "n_layers": len(layers), "shift": shift, "alpha": alpha, "valid_rmse": r,
-            "test": ema_metrics(ridge.predict(W, b, Xte), Yte, phones=phones)}
+                                              ds.shift_candidates, device)
+    out = {"layers": layers, "n_layers": len(layers), "shift": shift, "alpha": alpha, "valid_rmse": r}
+    for split in evals:
+        X, Y, us = _aligned(feats[split], data[split], shift)
+        phones = [ds.frame_phones(u, u.base_offset + shift, len(y)) for u, y in zip(us, Y)]
+        out[split] = ds.evaluate(us, ridge.predict(W, b, X), Y, phones=phones if any(phones) else None)
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
+    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
     ap.add_argument("--start", type=int, required=True, help="K: start from the prefix 1..K")
     ap.add_argument("--min", type=int, required=True, help="smallest subset size to reach")
     ap.add_argument("--train-subsample", type=int, default=400)
@@ -111,15 +116,16 @@ def main():
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    out = Path(args.out or OUT_ROOT / args.model / f"prune_from{args.start}_to{args.min}.json")
+    froot = datasets.features_root(args.dataset)
+    out = Path(args.out or froot / args.model / f"prune_from{args.start}_to{args.min}.json")
     state = json.loads(out.read_text()) if out.exists() else {}
 
-    splits = mngu0.stems_by_split()
-    data = {s: [mngu0.load_utterance(x) for x in v] for s, v in splits.items()}
+    ds = datasets.get(args.dataset)
+    data = {s: [ds.load_utterance(x) for x in v] for s, v in ds.splits().items()}
     rng = random.Random(args.seed)
     sub_train = rng.sample(data["train"], min(args.train_subsample, len(data["train"])))
     runner = SubsetRunner(args.model, device)
-    probe = json.loads((OUT_ROOT / args.model / "probe_results.json").read_text())["layers"]
+    probe = json.loads((froot / args.model / "probe_results.json").read_text())["layers"]
     search_shifts = [probe[str(args.start)]["shift"]]  # fixed during search; re-chosen in full_eval
     protected = {1} if runner.is_wavlm else set()
 
@@ -170,7 +176,7 @@ def main():
             if key in evals:
                 continue
             same = next((v for v in evals.values() if v["layers"] == layers), None)
-            evals[key] = same or full_eval(runner, layers, data, device)
+            evals[key] = same or full_eval(runner, layers, data, device, ds)
             print(f"{key}: layers {layers} test RMSE {evals[key]['test']['rmse']:.4f} "
                   f"PCC {evals[key]['test']['pcc']:.4f}", flush=True)
             save()

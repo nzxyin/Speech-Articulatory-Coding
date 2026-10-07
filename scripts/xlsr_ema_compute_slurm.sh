@@ -18,7 +18,9 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-export HF_HUB_OFFLINE=1  # every model is pre-downloaded to the shared cache
+export HF_HUB_OFFLINE=1  # every model is pre-downloaded
+# some nodes cannot read the shared /data/hf_cache from jobs; use a personal copy of the needed repos when present
+if [ -d /data/user_data/xoy/hf_hub_jobs ]; then export HF_HUB_CACHE=/data/user_data/xoy/hf_hub_jobs; fi
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 PY=${PY:-.venv/bin/python}
 [ -x "$PY" ] || PY=../../../.venv/bin/python

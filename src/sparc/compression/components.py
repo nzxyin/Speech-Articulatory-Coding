@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from . import mngu0
+from . import datasets, mngu0
 from .compute import profile
 from .encoders import frame_lengths, normalize_wav
 from .lora import apply_lora, lora_param_count, merge_lora
@@ -229,7 +229,9 @@ def main():
     random.seed(cli.seed)
     np.random.seed(cli.seed)
     torch.manual_seed(cli.seed)
-    out = Path(cli.out or ADAPT_ROOT / args.model / "pruned"
+    args.dataset = getattr(args, "dataset", "mngu0")
+    ds = datasets.get(args.dataset)
+    out = Path(cli.out or datasets.adapt_root(args.dataset) / args.model / "pruned"
                / f"{src.name}_keep{cli.keep:g}_{cli.importance}_steps{cli.steps}_s{cli.seed}")
     out.mkdir(parents=True, exist_ok=True)
     if (out / "results.json").exists():
@@ -237,10 +239,10 @@ def main():
         return
     print(f"run {out}", flush=True)
 
-    splits = mngu0.stems_by_split()
+    splits = ds.splits()
     if cli.limit:
         splits = {k: v[: cli.limit] for k, v in splits.items()}
-    data ={s: [mngu0.load_utterance(x) for x in v] for s, v in splits.items()}
+    data = {s: [ds.load_utterance(x) for x in v] for s, v in splits.items()}
     allY = np.concatenate([u.ema_mm for u in data["train"]])
     ym, ys = allY.mean(0), allY.std(0)
     rng = random.Random(cli.seed)
@@ -309,9 +311,13 @@ def main():
                                        out / "fit_final.pt")
     load_trainable(model, head, best_state)
     n_lora = lora_param_count(bank)
-    preds, trues, phones = predict(model, head, data["test"], args, ym, ys, device)
-    test = ema_metrics(preds, trues, phones=phones)
-    valid = ema_metrics(*predict(model, head, data["valid"], args, ym, ys, device)[:2], n_boot=0)
+    def evaluate_split(split, n_boot):
+        p, t, ph, kept = predict(model, head, data[split], args, ym, ys, device, return_utts=True)
+        return ds.evaluate(kept, p, t, phones=ph if any(ph) else None, n_boot=n_boot)
+
+    test = evaluate_split("test", 1000)
+    extra_eval = {s: evaluate_split(s, 1000) for s in ("test_unseen",) if data.get(s)}
+    valid = evaluate_split("valid", 0)
     merge_lora(model)
     merged = rmse(*predict(model, head, data["test"], args, ym, ys, device)[:2])
     cost = profile(model.eval(), device) if device == "cuda" else None
@@ -321,7 +327,7 @@ def main():
         "heads_kept": sum(len(x["heads"]) for x in spec), "heads_total": total_heads,
         "neurons_kept": sum(len(x["neurons"]) for x in spec), "neurons_total": total_neurons,
         "source_valid_rmse": source_valid, "rounds": history, "final_history": final_hist,
-        "n_lora_params": n_lora, "best_valid_rmse": best, "valid": valid, "test": test,
+        "n_lora_params": n_lora, "best_valid_rmse": best, "valid": valid, "test": test, **extra_eval,
         "test_rmse_after_merge": merged, "cost": cost,
     }
     torch.save({"spec": spec, "encoder": model.state_dict(), "head": head.state_dict()}, out / "pruned_model.pt")

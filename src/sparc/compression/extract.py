@@ -18,12 +18,11 @@ import json
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import torch
 
 from sparc.inversion import butter_bandpass_filter
 
-from . import mngu0
+from . import datasets, mngu0
 from .encoders import MODELS, frame_lengths, load_full, normalize_wav
 
 OUT_ROOT = Path("/data/user_data/xoy/xlsr_ema/features")
@@ -35,23 +34,23 @@ def lowpass(x):
 
 
 @torch.no_grad()
-def extract(name, out_root=OUT_ROOT, limit=None, device="cuda"):
-    out = Path(out_root) / name
+def extract(name, out_root=None, limit=None, device="cuda", dataset="mngu0"):
+    ds = datasets.get(dataset)
+    out = Path(out_root or datasets.features_root(dataset)) / name
     out.mkdir(parents=True, exist_ok=True)
     meta_path = out / "meta.json"
     if meta_path.exists() and json.loads(meta_path.read_text()).get("complete") and limit is None:
         print(f"{out} already complete")
         return out
 
-    stems = mngu0.available_stems()
+    stems = ds.available_stems()
     if limit:
-        stems = [s for s in stems if mngu0.split_of(s) != "train"][:limit] + [
-            s for s in stems if mngu0.split_of(s) == "train"
-        ][:limit]
+        sp = ds.splits()
+        stems = sorted(set(sp["train"][:limit]) | {s for k, v in sp.items() if k != "train" for s in v[:limit]})
     model = load_full(name).to(device)
     L, D = model.config.num_hidden_layers, model.config.hidden_size
 
-    lengths = {s: int(frame_lengths(model, sf.info(mngu0.WAV_DIR / f"{s}.wav").frames)) for s in stems}
+    lengths = {s: int(frame_lengths(model, ds.n_samples(s))) for s in stems}
     index, start = {}, 0
     for s in stems:
         index[s] = [start, lengths[s]]
@@ -64,7 +63,7 @@ def extract(name, out_root=OUT_ROOT, limit=None, device="cuda"):
     print(f"{name}: {len(stems)} utterances, {total} frames, {L} layers x {D} dims")
 
     for i, s in enumerate(stems):
-        utt = mngu0.load_utterance(s)
+        utt = ds.load_utterance(s)
         wav = torch.from_numpy(normalize_wav(utt.wav)).unsqueeze(0).to(device)
         hs = model(wav, output_hidden_states=True).hidden_states
         a, n = index[s]
@@ -93,11 +92,12 @@ def extract(name, out_root=OUT_ROOT, limit=None, device="cuda"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model", choices=sorted(MODELS))
-    ap.add_argument("out_root", nargs="?", default=str(OUT_ROOT))
+    ap.add_argument("out_root", nargs="?", default=None)
+    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
     ap.add_argument("--limit", type=int, default=None, help="debug: N train + N val/test utterances")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
-    extract(args.model, args.out_root, args.limit, args.device)
+    extract(args.model, args.out_root, args.limit, args.device, args.dataset)
 
 
 if __name__ == "__main__":

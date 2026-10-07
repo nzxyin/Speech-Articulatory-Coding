@@ -32,6 +32,7 @@ import torch
 
 from . import mngu0
 from .encoders import MODELS, frame_lengths, load_subset, normalize_wav
+from . import datasets
 from .extract import OUT_ROOT
 from .heads import POOL_MODES, Head
 from .lora import VARIANTS, apply_lora, lora_param_count, merge_lora
@@ -57,8 +58,8 @@ def layer_tag(layers):
     return "sub" + "-".join(map(str, layers))
 
 
-def probe_info(model, k):
-    d = OUT_ROOT / model
+def probe_info(model, k, dataset="mngu0"):
+    d = datasets.features_root(dataset) / model
     res = json.loads((d / "probe_results.json").read_text())["layers"].get(str(k))
     heads = np.load(d / "probe_heads.npz") if (d / "probe_heads.npz").exists() else {}
     W = heads[f"W_{k:02d}"] if f"W_{k:02d}" in heads else None
@@ -84,11 +85,9 @@ def build(args, device):
     return model.to(device), head.to(device), bank
 
 
-def load_data(splits):
-    data = {}
-    for split, stems in splits.items():
-        data[split] = [mngu0.load_utterance(s) for s in stems]
-    return data
+def load_data(splits, ds=None):
+    ds = ds or datasets.get("mngu0")
+    return {split: [ds.load_utterance(s) for s in stems] for split, stems in splits.items()}
 
 
 def forward(model, head, wavs, device, layer_pool, train):
@@ -128,10 +127,11 @@ def _targets(utts, n_frames, offset, ym, ys, device):
 
 
 @torch.no_grad()
-def predict(model, head, utts, args, ym, ys, device):
+def predict(model, head, utts, args, ym, ys, device, return_utts=False):
     model.eval()
     head.eval()
-    preds, trues, phones = [], [], []
+    preds, trues, phones, kept = [], [], [], []
+    ds = datasets.get(getattr(args, "dataset", "mngu0"))
     for u in utts:
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
             y, nf = forward(model, head, [normalize_wav(u.wav)], device, args.layer_pool, train=False)
@@ -144,7 +144,10 @@ def predict(model, head, utts, args, ym, ys, device):
         e = u.ema_mm if off >= 0 else u.ema_mm[-off:]
         preds.append(p)
         trues.append(e[:n])
-        phones.append(mngu0.frame_phones(u, off, n))
+        phones.append(ds.frame_phones(u, off, n))
+        kept.append(u)
+    if return_utts:
+        return preds, trues, phones, kept
     return preds, trues, phones
 
 
@@ -331,6 +334,7 @@ def fit(model, head, bank, data, args, ym, ys, device, epochs, state_path):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, choices=sorted(MODELS))
+    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
     ap.add_argument("--layers", required=True, help="e.g. 1-12 or 1,2,4,7")
     ap.add_argument("--variant", default="none", choices=("none",) + VARIANTS)
     ap.add_argument("--rank", type=int, default=8)
@@ -377,7 +381,7 @@ def main(argv=None):
 
     k = args.layers[-1]
     try:
-        probe_res, W, b = probe_info(args.model, k)
+        probe_res, W, b = probe_info(args.model, k, args.dataset)
     except FileNotFoundError:
         probe_res, W, b = None, None, None
     if args.shift is None:
@@ -390,17 +394,18 @@ def main(argv=None):
             + ("_art" if args.per_articulator else "") + (f"_h{args.hidden}" if args.head != "linear" and args.hidden != 256 else "")
             + ("_randinit" if args.no_probe_init and args.head == "linear" and not args.layer_pool else "")
             + f"_s{args.seed}")
-    out = Path(args.out or ADAPT_ROOT / args.model / name)
+    out = Path(args.out or datasets.adapt_root(args.dataset) / args.model / name)
     out.mkdir(parents=True, exist_ok=True)
     if (out / "results.json").exists():
         print(f"{out} already finished")
         return
     print(f"run {out}", flush=True)
 
-    splits = mngu0.stems_by_split()
+    ds = datasets.get(args.dataset)
+    splits = ds.splits()
     if args.limit:
         splits = {s: v[: args.limit] for s, v in splits.items()}
-    data = load_data(splits)
+    data = load_data(splits, ds)
     allY = np.concatenate([u.ema_mm for u in data["train"]])
     ym, ys = allY.mean(0), allY.std(0)
 
@@ -429,11 +434,16 @@ def main(argv=None):
     best, best_state, history = fit(model, head, bank, data, args, ym, ys, device, args.epochs, out / "state.pt")
 
     load_trainable(model, head, best_state)
-    preds, trues, phones = predict(model, head, data["test"], args, ym, ys, device)
-    test = ema_metrics(preds, trues, phones=phones)
+    def evaluate_split(split, n_boot):
+        preds, trues, phones, kept = predict(model, head, data[split], args, ym, ys, device, return_utts=True)
+        return ds.evaluate(kept, preds, trues, phones=phones if any(phones) else None, n_boot=n_boot)
+
+    test = evaluate_split("test", 1000)
+    extra_eval = {s: evaluate_split(s, 1000 if s.startswith("test") else 0)
+                  for s in ("valid_unseen", "test_unseen") if data.get(s)}
     if head.pool is not None:
         head.pool.reset_stats()
-    valid = ema_metrics(*predict(model, head, data["valid"], args, ym, ys, device)[:2], n_boot=0)
+    valid = evaluate_split("valid", 0)
     # mean layer weights over validation frames, (groups x retained layers); groups = articulators if per-articulator
     pool_weights = head.pool.mean_weights() if head.pool is not None else None
     merged_rmse = None
@@ -449,6 +459,7 @@ def main(argv=None):
         "best_valid_rmse": best,
         "valid": valid,
         "test": test,
+        **extra_eval,
         "test_rmse_after_merge": merged_rmse,
         "history": history,
         "probe_test_rmse_same_layer": probe_res["test"]["rmse"] if probe_res else None,

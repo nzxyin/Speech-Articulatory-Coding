@@ -15,16 +15,19 @@
 # MNGU0, then fit a ridge EMA probe per layer (sparc.compression.extract / .probe).
 # Restart-safe: extraction is redone unless it completed; probing resumes per layer.
 #
-# Usage: sbatch scripts/xlsr_ema_probe_slurm.sh <model>   # xlsr-1b | xlsr-300m | wavlm-large | xlsr-2b
+# Usage: sbatch scripts/xlsr_ema_probe_slurm.sh <model> [dataset]   # model: xlsr-1b | xlsr-300m | wavlm-large | xlsr-2b; dataset: mngu0 (default) | ema_multi
 
 set -euo pipefail
 MODEL=${1:?model name}
+DATASET=${2:-mngu0}
 cd "$SLURM_SUBMIT_DIR"
-export HF_HUB_OFFLINE=1  # every model is pre-downloaded to the shared cache
+export HF_HUB_OFFLINE=1  # every model is pre-downloaded
+# some nodes cannot read the shared /data/hf_cache from jobs; use a personal copy of the needed repos when present
+if [ -d /data/user_data/xoy/hf_hub_jobs ]; then export HF_HUB_CACHE=/data/user_data/xoy/hf_hub_jobs; fi
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 PY=${PY:-.venv/bin/python}
 [ -x "$PY" ] || PY=../../../.venv/bin/python  # worktrees under .claude/worktrees share the main venv
 
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-$PY -m sparc.compression.extract "$MODEL"
-$PY -m sparc.compression.probe "$MODEL"
+$PY -m sparc.compression.extract "$MODEL" --dataset "$DATASET"
+$PY -m sparc.compression.probe "$MODEL" --dataset "$DATASET"
