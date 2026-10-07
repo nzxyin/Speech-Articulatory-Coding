@@ -42,6 +42,12 @@ All notable changes to this fork. Earlier history is in `git log`.
 - `sparc.ema_corpora`: preprocessing of USC-TIMIT EMA and USC EMA_5EMO into audio-aligned 50 Hz utterances
   (`mview` reader, `corpora` discovery and segmentation, `preprocess`, `sync` latency analysis, `check`
   end-to-end checks, `dataset` loader); tests in `tests/test_ema_corpora.py`.
+- `sparc.compression.datasets`: dataset interface over MNGU0 and the multi-speaker corpora (`ema_multi`: per-speaker
+  z-scored targets, held-out speakers, per-speaker metrics); `extract`, `probe`, `train`, `prune`, `components`
+  take `--dataset`. `crossspeaker` (zero-shot evaluation of MNGU0-trained models on new speakers) and
+  `analyze_multi` (multi-speaker tables and figure).
+- Job scripts read models from a personal cache copy when present: the shared cache lost the XLS-R 1B / 2B
+  snapshot directories (blobs intact), which had made jobs fail with "couldn't find them in the cached files".
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input

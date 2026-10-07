@@ -152,6 +152,48 @@ decision). Outputs: `/data/user_data/xoy/ema_corpora/` (`manifest.csv`, `stats.j
   - pssg_short phrases are mostly exact excerpts of the full passages (used instead of them); 10 of 270 are
     not and are kept, flagged located=False; jn neutral's phrase split differs from the brief (text left empty).
 
+### Multi-speaker generalization and fitting (2026-10-07)
+Code: `compression/datasets.py` (dataset `ema_multi`), `crossspeaker.py`, `analyze_multi.py`; every experiment
+module takes `--dataset ema_multi`. Results: `/data/user_data/xoy/xlsr_ema/{features_ema_multi,adapt_ema_multi,
+analysis_multi}`. Protocol: train on usc_M1/M3/F5 + 5emo_jn/jr (1473 utterances), test on their text-disjoint
+test sentences ("seen", 283) and on held-out speakers usc_F1 + 5emo_kf ("unseen", 114 test sentences). Targets
+are z-scored per speaker (training-split stats); RMSE is reported in mm after per-speaker de-normalization.
+Multi-speaker numbers are not comparable to MNGU0 ones (different speakers, sensor placements, mm spreads).
+
+Zero-shot (MNGU0-trained models on all seven new speakers; mean over speakers):
+| model | zero-shot PCC | PCC after per-speaker linear calibration |
+|---|---|---|
+| SPARC shipped (WavLM k9 linear) | 0.656 | 0.720 |
+| WavLM k9 LoRA + causal conv | 0.670 | 0.716 |
+| XLS-R 300M k18 LoRA + causal conv | 0.672 | 0.725 |
+| XLS-R 1B k16 LoRA + causal conv | 0.687 | 0.755 |
+| XLS-R 2B k11 LoRA + causal conv | 0.683 | 0.751 |
+| XLS-R 300M pruned keep 0.5 | 0.642 | 0.694 |
+- Larger pretrained models transfer better to new speakers: 1B beats 300M on all seven speakers (zero-shot PCC
+  +0.006 to +0.021), unlike MNGU0 in-domain where they tied. Pruning hurts transfer.
+
+Fitted on the multi-speaker data (LoRA r8 + causal conv; 3 seeds mean +/- std):
+| model | k | GFLOPs/s | seen RMSE mm | seen PCC | unseen RMSE mm | unseen PCC |
+|---|---|---|---|---|---|---|
+| WavLM Large | 7 | 14.9 | 2.374 +/- 0.006 | 0.801 +/- 0.001 | 3.453 +/- 0.034 | 0.703 +/- 0.006 |
+| XLS-R 1B | 10 | 26.4 | 2.331 +/- 0.020 | 0.804 +/- 0.003 | 3.618 +/- 0.109 | 0.697 +/- 0.004 |
+| XLS-R 300M | 18 | 29.1 | 2.401 +/- 0.009 | 0.815 +/- 0.004 | 3.497 +/- 0.025 | 0.724 +/- 0.009 |
+| XLS-R 1B (1 seed) | 16 | 38.4 | 2.386 | 0.814 | 3.417 | 0.707 |
+| XLS-R 1B (1 seed) | 36 | 78.5 | 2.362 | 0.823 | 3.355 | 0.723 |
+- Best probe layers: WavLM 7, 300M 18 (as on MNGU0), 1B 10 (its layer 36 has the best unseen-speaker probe,
+  3.208 mm / PCC 0.699, the best of any probe).
+- Seen speakers: truncated 1B (k10) has lower RMSE than 300M at less compute (2.331 vs 2.401 mm), but 300M has
+  higher PCC (0.815 vs 0.804); WavLM k7 is within 0.04 mm at half the FLOPs. No model wins on both metrics.
+- Unseen speakers: LoRA raises PCC but worsens RMSE vs frozen encoders (e.g. WavLM 3.453 vs 3.335 mm with a frozen
+  causal-conv head): adaptation partly fits training-speaker specifics. 1B k10 is the most seed-sensitive here.
+- Component pruning of 300M (multi): keep 0.75 2.447 mm / 0.806 at 23.2; keep 0.5 2.433 / 0.796 at 17.4 vs WavLM
+  k7 2.374 / 0.801 at 14.9; random control 2.628 / 0.762. Same conclusion as MNGU0.
+- Greedy non-contiguous selection on 1B: prefix is optimal from 10-24 layers; at 8-9 layers skipping layers 5/6
+  helps (8 layers: 2.972 vs prefix 3.056 mm seen), still only tying WavLM k7's probe at more FLOPs.
+- Overall: in-domain (seen speakers) the compression picture is unchanged (WavLM most efficient, no XLS-R
+  compression wins on both metrics). Under speaker shift, larger and deeper representations do carry more:
+  the zero-shot ranking favours 1B/2B and the deepest 1B (k36) is best on unseen speakers, but at 2-5x the FLOPs.
+
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
   EMA corpus (e.g. the group's `EMA_5EMO_NSF` set, or mocha-timit / HPRC). Per-phone-class errors are in

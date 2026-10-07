@@ -108,7 +108,7 @@ def figure(probes, adapted, out):
                         mec="white", mew=1.2)
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Inference GFLOPs per second of audio")
-    axes[0].set_ylabel("Test RMSE (mm, per-speaker de-normalized), lower is better")
+    axes[0].set_ylabel("Test RMSE (mm), lower is better")
     handles, labels = axes[0].get_legend_handles_labels()
     extra = [Line2D([], [], ls="", marker="*", ms=12, color="#5f5e5a", label="best probe layer (validation)"),
              Line2D([], [], ls="", marker="^", ms=8, color="#5f5e5a", label="adapted runs"),
@@ -153,6 +153,34 @@ def main():
                               [("model", ("model", s)), ("run", ("run", s)), ("GFLOPs/s", ("gflops", f2)),
                                ("seen RMSE", ("test_rmse", f3)), ("seen PCC", ("test_pcc", f4)),
                                ("unseen RMSE", ("unseen_rmse", f3)), ("unseen PCC", ("unseen_pcc", f4))]))
+    groups = {}
+    for a in adapted:
+        if a["kind"] == "adapted" and a["run"][-3:-1] == "_s":
+            groups.setdefault((a["model"], a["run"][:-3]), []).append(a)
+    multi = {k: v for k, v in groups.items() if len(v) > 1}
+    if multi:
+        parts.append("\n## Seed variation (mean +/- std over seeds)\n")
+        parts.append("| model | configuration | seeds | GFLOPs/s | seen RMSE | seen PCC | unseen RMSE | unseen PCC |")
+        parts.append("|---|---|---|---|---|---|---|---|")
+        for (m, cfg), v in sorted(multi.items()):
+            ms = lambda k: f"{np.mean([x[k] for x in v]):.3f} +/- {np.std([x[k] for x in v], ddof=1):.3f}"  # noqa: E731
+            parts.append(f"| {m} | {cfg} | {len(v)} | {v[0]['gflops']:.1f} | {ms('test_rmse')} | {ms('test_pcc')} | "
+                         f"{ms('unseen_rmse')} | {ms('unseen_pcc')} |")
+    pf = [(d.name, f) for d in (sorted(FEAT.iterdir()) if FEAT.exists() else [])
+          for f in sorted(d.glob("prune_from*_to*.json"))]
+    for model, f in pf:
+        ev = json.loads(f.read_text()).get("eval", {})
+        sizes = sorted({v["n_layers"] for v in ev.values()}, reverse=True)
+        if not sizes:
+            continue
+        parts.append(f"\n## Non-contiguous selection, {LABELS.get(model, model)} ({f.stem}; ridge probe, seen / unseen RMSE mm)\n")
+        parts.append("| layers kept | prefix | greedy | block influence | greedy subset |")
+        parts.append("|---|---|---|---|---|")
+        for n in sizes:
+            cell = lambda k: (f"{ev[k]['test']['rmse']:.3f} / {ev[k]['test_unseen']['rmse']:.3f}"  # noqa: E731
+                              if k in ev and "test_unseen" in ev[k] else "-")
+            parts.append(f"| {n} | {cell(f'prefix_{n}')} | {cell(f'greedy_{n}')} | {cell(f'bi_{n}')} | "
+                         f"{ev.get(f'greedy_{n}', {}).get('layers', [])} |")
     if probes:
         figure(probes, adapted, out)
     (out / "summary.md").write_text("\n".join(parts) + "\n")
