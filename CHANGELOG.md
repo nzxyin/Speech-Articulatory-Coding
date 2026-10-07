@@ -45,6 +45,12 @@ All notable changes to this fork. Earlier history is in `git log`.
   extra callbacks.
 - Dependencies jiwer, pesq, pysptk, vocos, speechbrain; pytest marker `slow`.
 
+### Fixed
+- Evaluation WER: Whisper's text normalizer deleted words in parentheses and brackets, which LibriTTS-R references
+  use for spoken parentheticals (40 test-clean texts), so they counted as insertions for every system (absolute WER
+  was about 11 % too high). The bracket characters are now removed first; stage `asr_rescore` recomputes stored counts.
+- Efficiency stage: GPU and CPU timing runs shared one DONE marker, so the first to finish made the other skip.
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);
