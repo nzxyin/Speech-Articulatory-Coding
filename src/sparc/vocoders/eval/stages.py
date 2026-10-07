@@ -931,9 +931,17 @@ SYSTEM_STAGES = ("probes", "efficiency")
 ALWAYS_RERUN = ("aggregate", "samples")  # cheap and dependent on other stages: never short-circuited by a DONE marker
 
 
-def done_path(root: Path, split: str, stage: str, system: str, condition: str) -> Path:
-    """DONE marker of a CLI item (``<eval root>/done/<split>/<stage>__<system>__<condition>``); ``scripts/slurm/eval.sh`` uses the same."""
-    return Path(root) / "done" / split / f"{stage}__{system}__{condition}"
+def done_path(root: Path, split: str, stage: str, system: str, condition: str, device: str | None = None) -> Path:
+    """DONE marker of a CLI item (``<eval root>/done/<split>/<stage>__<system>__<condition>``); ``scripts/slurm/eval.sh`` uses the same.
+
+    The efficiency stage times GPU and CPU in separate runs of the same item, so its marker also carries the device
+    (``...__<condition>__<device>``). ``eval.sh`` does not know that suffix and therefore never skips an efficiency item;
+    the stage is cheap and merges into its JSON, so a rerun only repeats the timing.
+    """
+    name = f"{stage}__{system}__{condition}"
+    if stage == "efficiency" and device:
+        name += f"__{device}"
+    return Path(root) / "done" / split / name
 
 
 def run_stage(ctx: EvalContext, stage: str, system: str = "all", condition: str = "all") -> None:
@@ -985,4 +993,4 @@ def run_stage(ctx: EvalContext, stage: str, system: str = "all", condition: str 
     if failures:
         raise MissingPrerequisite(f"{len(failures)} item(s) skipped:\n" + "\n".join(failures))
     if stage not in ALWAYS_RERUN:
-        write_text(done_path(ctx.paths.root, ctx.split, stage, system, condition), utc_now() + "\n")
+        write_text(done_path(ctx.paths.root, ctx.split, stage, system, condition, ctx.device.type), utc_now() + "\n")

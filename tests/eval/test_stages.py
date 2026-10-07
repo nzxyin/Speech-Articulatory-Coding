@@ -872,3 +872,13 @@ def test_hydra_cleared_allows_composing_inside_a_running_app():
         assert GlobalHydra.instance().hydra is outer
         assert compose(config_name="vocoder_config", overrides=["vocoder=hifigan"]).vocoder is not None
     GlobalHydra.instance().clear()
+
+
+def test_efficiency_markers_are_per_device(tmp_path):
+    """GPU and CPU efficiency runs of the same item must not share a DONE marker (either would skip the other)."""
+    from sparc.vocoders.eval.stages import done_path
+
+    gpu = done_path(tmp_path, "test.clean", "efficiency", "vocos", "all", "cuda")
+    cpu = done_path(tmp_path, "test.clean", "efficiency", "vocos", "all", "cpu")
+    assert gpu != cpu and gpu.name.endswith("__cuda") and cpu.name.endswith("__cpu")
+    assert done_path(tmp_path, "test.clean", "asr", "vocos", "all", "cuda").name == "asr__vocos__all"

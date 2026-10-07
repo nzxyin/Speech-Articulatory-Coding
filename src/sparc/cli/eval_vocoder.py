@@ -30,7 +30,7 @@ def run(cfg: DictConfig, stop: StopFlag | None = None) -> int:
     flag = stop if stop is not None else StopFlag()
     with flag.installed():
         ctx = EvalContext(cfg, flag)
-        marker = done_path(ctx.paths.root, ctx.split, stage, str(cfg.system), str(cfg.condition))
+        marker = done_path(ctx.paths.root, ctx.split, stage, str(cfg.system), str(cfg.condition), ctx.device.type)
         if stage not in ALWAYS_RERUN and marker.is_file():
             logger.info("%s %s %s already done (%s)", stage, cfg.system, cfg.condition, marker)
             return 0
