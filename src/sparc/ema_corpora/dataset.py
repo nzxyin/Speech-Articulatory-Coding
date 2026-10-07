@@ -21,7 +21,7 @@ import soundfile as sf
 from .preprocess import CHANNELS, OUT_ROOT
 
 NUMERIC = {"start", "end", "duration", "n_frames", "ema_sr", "lag_s", "rotation_deg", "valid_frac", "sentence_id",
-           "repetition", "source_utt", "cut_spread_s", "frame_offset_mm", "frame_offset_x", "frame_offset_y",
+           "repetition", "source_utt", "cut_spread_s", "duration_ratio", "frame_offset_mm", "frame_offset_x", "frame_offset_y",
            "frame_offset_lat"}
 
 

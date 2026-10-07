@@ -236,6 +236,27 @@ def norm_stats(rows, out_dir):
     return stats
 
 
+def add_duration_ratio(rows):
+    """USC-TIMIT QC: utterance duration / (speaker rate x median duration of the sentence over M1, F1, F5).
+
+    Far-off ratios point at segmentation problems (or long hesitations). M3's DTW segmentation gives a spread
+    of log ratios (0.16) like that of the transcript-segmented speakers (0.09-0.18)."""
+    usc = [r for r in rows if r["corpus"] == "usc_timit"]
+    ref = {}
+    for r in usc:
+        if r["speaker"] in ("usc_M1", "usc_F1", "usc_F5"):
+            ref.setdefault(r["sentence_id"], []).append(r["duration"])
+    ref = {k: float(np.median(v)) for k, v in ref.items()}
+    rate = {}
+    for r in usc:
+        if r["sentence_id"] in ref:
+            rate.setdefault(r["speaker"], []).append(r["duration"] / ref[r["sentence_id"]])
+    rate = {k: float(np.median(v)) for k, v in rate.items()}
+    for r in usc:
+        if r["sentence_id"] in ref:
+            r["duration_ratio"] = round(r["duration"] / (rate[r["speaker"]] * ref[r["sentence_id"]]), 3)
+
+
 def usc_split(sentence_id):
     """Text-disjoint USC-TIMIT split: the same sentences are held out for every speaker."""
     if sentence_id % 10 == 0:
@@ -270,6 +291,14 @@ def main():
             r.update({"frame_offset_mm": round(float(np.linalg.norm(c)), 3), "frame_offset_x": round(float(c[0]), 3),
                       "frame_offset_y": round(float(c[1]), 3), "frame_offset_lat": round(float(c[2]), 3)})
         r["split"] = usc_split(r["sentence_id"]) if r["corpus"] == "usc_timit" else ""
+    add_duration_ratio(rows)
+    write_manifest(rows, out_dir)
+    stats = norm_stats(rows, out_dir)
+    (out_dir / "stats.json").write_text(json.dumps(stats, indent=1))
+    print(f"wrote {len(rows)} utterances ({len(segs) - len(rows)} failed) to {out_dir}")
+
+
+def write_manifest(rows, out_dir):
     keys = []
     for r in rows:
         keys += [k for k in r if k not in keys]
@@ -277,9 +306,6 @@ def main():
         w = csv.DictWriter(f, fieldnames=keys)
         w.writeheader()
         w.writerows(rows)
-    stats = norm_stats(rows, out_dir)
-    (out_dir / "stats.json").write_text(json.dumps(stats, indent=1))
-    print(f"wrote {len(rows)} utterances ({len(segs) - len(rows)} failed) to {out_dir}")
 
 
 if __name__ == "__main__":

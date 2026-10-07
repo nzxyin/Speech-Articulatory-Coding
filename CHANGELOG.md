@@ -39,6 +39,10 @@ All notable changes to this fork. Earlier history is in `git log`.
   - Tests: `tests/test_components.py`, `tests/test_pooling_stats.py`.
   - `scripts/xlsr_ema_{probe,compute,job}_slurm.sh` job scripts; tests in `tests/test_compression.py`.
 
+- `sparc.ema_corpora`: preprocessing of USC-TIMIT EMA and USC EMA_5EMO into audio-aligned 50 Hz utterances
+  (`mview` reader, `corpora` discovery and segmentation, `preprocess`, `sync` latency analysis, `check`
+  end-to-end checks, `dataset` loader); tests in `tests/test_ema_corpora.py`.
+
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
   instead of 1x/2x/8x (#9). Existing state dicts still load.

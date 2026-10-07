@@ -122,6 +122,36 @@ Full models (last layer): WavLM 0.968, 300M 1.000, 1B 1.028, 2B 0.946 mm at 36.8
   ~24 GFLOPs/s, 1B k=9 (0.934) does no better than 300M k=8 (0.926). At the 300M budget, 2B keeps only 6 layers
   (0.967 mm).
 
+### Multi-speaker EMA corpora: USC-TIMIT EMA + USC EMA_5EMO (2026-10-07)
+Preprocessed into audio-aligned 50 Hz utterances by `src/sparc/ema_corpora/` (module docstrings document every
+decision). Outputs: `/data/user_data/xoy/ema_corpora/` (`manifest.csv`, `stats.json`, `checks.json`,
+`<corpus>/<speaker>/<utt>.{wav,npz}`); load with `sparc.ema_corpora.dataset`. Regenerate with
+`python -m sparc.ema_corpora.preprocess`, verify with `python -m sparc.ema_corpora.check`.
+- 2757 utterances, ~2.65 h: USC-TIMIT M1, F1, M3, F5 (460 sentences each; text-disjoint train/valid/test
+  split by sentence id) and 5EMO jn, jr, kf (917: sentences x 5 emotions, neutral repetitions, passage
+  phrases). Same 12 channels as MNGU0 (TD, TB, TT, LI, UL, LL x anterior/up), lateral coordinate and native
+  3-D trajectories kept for later PCA reparameterization. Normalization: per-articulator z-score per
+  speaker, except usc_F5 which has two session groups. No cross-speaker transform.
+- Facts found in the raw data (and handled):
+  - Both corpora are mview .mat files; audio and EMA start together (EMA at 97.5-100.08 Hz, its own rate per
+    file). In 276 USC files the EMA stops 70-110 ms before the audio. The .wav files equal the embedded audio
+    (5EMO: peak-normalized copies).
+  - Latency: model-based sync (SPARC inversion vs measured EMA, signed vertical channels) gives EMA leading audio
+    by ~22 ms for all USC speakers (an independent /p b m/ vs lip-aperture check agrees in sign), 26 ms for
+    5emo_jn, and ~0 for jr/kf. Corrected per speaker; residual lag on the outputs is within -4.5 to +6.2 ms.
+  - 5emo_jn's frame is rotated ~50 deg (README: F1 not aligned to the occlusal plane); rotated so all speakers
+    share x = anterior, y = up (lip line -13..+9 deg, tongue line -17..+6 deg across speakers after correction).
+  - USC M3's transcripts are from its MRI session (no timing relation to the EMA audio). M3 is segmented by
+    DTW-transferring sentence cuts from M1/F1/F5 recordings of the same sentences (2-4% wrong cuts in a
+    leave-one-speaker-out test; M3's duration consistency matches transcript-segmented speakers).
+  - USC F5 sentences 001-065 sit ~12 mm (all sensors) away from 066-460: two normalization groups.
+  - USC M1's jaw sensor is ~13 mm off midline (plane tilt 17 deg); placement, left to per-articulator norm.
+  - 5EMO emotion blocks carry 2-6 mm common-mode frame offsets (e.g. jr neutral 5.7 mm posterior). Emotion and
+    session are confounded, so they are NOT corrected; per-utterance estimates are in the manifest
+    (frame_offset_*). They inflate 5EMO channel std (5-7 mm vs 3-4 mm in USC).
+  - pssg_short phrases are mostly exact excerpts of the full passages (used instead of them); 10 of 270 are
+    not and are kept, flagged located=False; jn neutral's phrase split differs from the brief (text left empty).
+
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
   EMA corpus (e.g. the group's `EMA_5EMO_NSF` set, or mocha-timit / HPRC). Per-phone-class errors are in

@@ -371,7 +371,9 @@ def usc_segments(spk, read_audio):
     M1, F1, F5: sentence spans from their transcripts. M3 (transcripts from the MRI session): sentence cuts
     transferred from M1, F1 and F5's recordings of the same sentences by DTW (cuts_by_dtw); in a
     leave-one-speaker-out check on M1/F1/F5 (two references) 2-4% of transferred cuts fell outside the true
-    between-sentence silence, so `cut_spread_s` (reference disagreement) is recorded to flag doubtful ones."""
+    between-sentence silence. `cut_spread_s` records how far apart the references put each cut before it is
+    snapped to a pause; references often land at different points of the same pause, so it is not an error
+    flag. Use the manifest's `duration_ratio` (preprocess.add_duration_ratio) to spot doubtful segments."""
     texts = usc_sentence_texts()
     ref_files = {} if spk in TRANSCRIBED else \
         {r: {(f, l): (m, t) for m, f, l, t in usc_files(r)} for r in TRANSCRIBED}
