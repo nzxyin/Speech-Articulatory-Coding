@@ -389,6 +389,24 @@ def test_asr_stage_counts_edits_and_corpus_sums(env):
     assert frame["ref_norm"][0] == reference.lower()
 
 
+def test_asr_rescore_recomputes_counts_from_stored_transcripts(env):
+    from sparc.vocoders.eval.metrics import asr as asr_module
+
+    env.monkeypatch.setattr(asr_module, "normalize_text", lambda text: "")  # an old normalizer that loses the reference
+    ctx = env.make_ctx()
+    prepare_audio(ctx)
+    stages.run_stage(ctx, "asr", "gt", "T1")
+    before = io.read_parquet_parts(ctx.paths.results_dir("gt", "T1", "asr"))
+    assert (before["word_ref_len"] == 0).all()
+    env.monkeypatch.setattr(asr_module, "normalize_text", lambda text: " ".join(text.lower().split()))
+    env.monkeypatch.setattr(FakeASR, "transcribe", lambda self, w, errors=None: pytest.fail("rescoring must not transcribe"))
+    stages.run_stage(ctx, "asr_rescore", "gt", "T1")
+    after = io.read_parquet_parts(ctx.paths.results_dir("gt", "T1", "asr"))
+    assert (after["hyp"] == before["hyp"]).all() and (after["word_ref_len"] == 5).all()
+    for _, row in after.iterrows():
+        assert row["word_errors"] == asr_module.edit_counts(row["ref_norm"], row["hyp_norm"])["word_errors"]
+
+
 def test_asr_model_error_gives_nan_counts_and_the_error_text(env):
     from sparc.vocoders.eval.metrics import asr as asr_module
 

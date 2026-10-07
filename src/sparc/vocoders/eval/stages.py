@@ -915,6 +915,39 @@ def stage_aggregate(ctx: EvalContext) -> dict:
     return run_aggregate(ctx.cfg, ctx.paths, ctx.systems, ctx.table, ctx.ids)
 
 
+def stage_asr_rescore(ctx: EvalContext, spec: SystemSpec, condition: str) -> None:
+    """Recomputes ``ref_norm``, ``hyp_norm`` and the edit counts of the finished asr parts from their stored Whisper
+    transcripts with the current ``normalize_text``, without transcribing again.
+
+    For results written before ``normalize_text`` kept the words inside parentheses and brackets. Rows that failed
+    (an ``err`` with an empty transcript) keep their missing counts.
+    """
+    from sparc.vocoders.eval.metrics.asr import edit_counts, normalize_text, read_reference
+
+    directory = results_dir(ctx, spec, condition, "asr")
+    parts = sorted(directory.glob("part-*.parquet"))
+    if not parts:
+        raise MissingPrerequisite(f"no asr parts for {spec.name} {condition} in {directory}")
+    wav_paths = ctx.table.set_index("id")["wav_path"]
+    changed = 0
+    for path in parts:
+        ctx.stop.raise_if_set()
+        frame = pd.read_parquet(path)
+        for row in frame.itertuples():
+            failed = bool(getattr(row, "err", "")) and not row.hyp
+            ref_norm = normalize_text(read_reference(wav_paths[row.id]))
+            hyp_norm = normalize_text(row.hyp or "")
+            frame.at[row.Index, "ref_norm"] = ref_norm
+            frame.at[row.Index, "hyp_norm"] = hyp_norm
+            if not failed:
+                counts = edit_counts(ref_norm, hyp_norm)
+                changed += int(counts["word_errors"] != row.word_errors or counts["word_ref_len"] != row.word_ref_len)
+                for column, value in counts.items():
+                    frame.at[row.Index, column] = value
+        write_parquet(path, frame)
+    logger.info("asr_rescore %s %s: %d parts, %d utterances changed", spec.name, condition, len(parts), changed)
+
+
 # ----------------------------------------------------------------------------------------------- dispatch
 
 CHUNK_STAGES: dict[str, Callable[..., Any]] = {
@@ -966,6 +999,9 @@ def run_stage(ctx: EvalContext, stage: str, system: str = "all", condition: str 
         stage_aggregate(ctx)
     elif stage == "samples":
         stage_samples(ctx)
+    elif stage == "asr_rescore":
+        for spec, cond in resolve_items(ctx.systems, stage, system, condition):
+            attempt(f"asr_rescore {spec.name} {cond}", lambda spec=spec, cond=cond: stage_asr_rescore(ctx, spec, cond))
     elif stage == "synth":
         grouped: dict[str, list[str]] = {}
         for spec, cond in resolve_items(ctx.systems, stage, system, condition):

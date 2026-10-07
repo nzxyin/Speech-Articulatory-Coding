@@ -11,6 +11,7 @@ import functools
 import importlib.resources
 import json
 import logging
+import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -46,8 +47,17 @@ def set_default_normalizer(cfg: DictConfig) -> None:
     _DEFAULT_NORMALIZER["normalizer"] = load_normalizer(cfg)
 
 
+# Whisper's EnglishTextNormalizer deletes text between brackets or parentheses as non-speech annotations. LibriTTS-R
+# references keep spoken parentheticals in parentheses (40 test-clean texts; one is entirely in brackets), which the
+# readers speak, so the bracket characters become spaces first and the words are kept, for references and hypotheses.
+_BRACKETS = re.compile(r"[()\[\]{}<>]")
+
+
 def normalize_text(text: str) -> str:
     """Whisper English normalization (lower case, spelling, numbers, abbreviations), whitespace collapsed.
+
+    Bracket and parenthesis characters are replaced by spaces before the Whisper normalizer, so the words inside them
+    are kept (the Whisper normalizer would delete them).
 
     Uses the normalizer set by ``set_default_normalizer``; without one, it is built from the packaged default
     config (``conf/eval_metrics/default.yaml``), downloading ``normalizer.json`` of the pinned revision if needed.
@@ -56,7 +66,7 @@ def normalize_text(text: str) -> str:
         default = importlib.resources.files("sparc.conf").joinpath("eval_metrics", "default.yaml")
         with importlib.resources.as_file(default) as path:
             set_default_normalizer(OmegaConf.load(path).asr)
-    return " ".join(_DEFAULT_NORMALIZER["normalizer"](text).split())
+    return " ".join(_DEFAULT_NORMALIZER["normalizer"](_BRACKETS.sub(" ", text)).split())
 
 
 def edit_counts(ref_norm: str, hyp_norm: str) -> dict[str, int]:

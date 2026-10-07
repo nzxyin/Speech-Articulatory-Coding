@@ -42,6 +42,8 @@ def test_config_pins_whisper_large_v3(asr_cfg):
         ("  Hello,   WORLD!  ", "hello world"),
         ("Dr. Jones", "doctor jones"),
         ("", ""),
+        ("[YOU THOUGHT I HAD FORGOTTEN]", "you thought i had forgotten"),  # spoken words in brackets are kept
+        ("He played (like this) the cornet.", "he played like this the cornet"),
     ],
 )
 def test_normalize_text_examples(normalizer, text, expected):
