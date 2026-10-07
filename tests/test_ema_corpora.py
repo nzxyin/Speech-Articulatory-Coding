@@ -90,6 +90,9 @@ def test_locate_exact_excerpt():
     full = rng.normal(size=50000)
     assert corpora.locate(full[12345:20000], full) == 12345
     assert corpora.locate(rng.normal(size=5000), full) is None
+    # an excerpt starting in (near-)silence: the probe must not rely on its first samples
+    full2 = np.concatenate([np.zeros(8000), rng.normal(size=20000), np.zeros(5000), rng.normal(size=20000)])
+    assert corpora.locate(full2[2000:30000], full2) == 2000
 
 
 def test_usc_split_text_disjoint():

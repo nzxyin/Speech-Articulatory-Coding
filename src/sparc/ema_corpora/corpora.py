@@ -438,8 +438,38 @@ def passage_phrase_texts():
     return out
 
 
+PASSAGE_PHRASES = {1: 10, 2: 5}
+PASSAGE_TEXT = {
+    1: "My grandfather: You wished to know all about my grandfather. Well, he is nearly ninety-three years old; "
+       "he dresses himself in an ancient black frock coat, usually minus several buttons; yet he still thinks as "
+       "swiftly as ever. A long, flowing beard clings to his chin, giving those who observe him a pronounced "
+       "feeling of the utmost respect. When he speaks, his voice is just a bit cracked and quivers a trifle. "
+       "Twice each day he plays skillfully and with zest upon our small organ. Except in the winter when the ooze "
+       "or snow or ice prevents, he slowly takes a short walk in the open air each day. We have often urged him "
+       "to walk more and smoke less, but he always answers, \"Banana oil!\" Grandfather likes to be modern in his "
+       "language.",
+    2: "The North Wind and the Sun were disputing which was the stronger, when a traveler came along wrapped in a "
+       "warm cloak. They agreed that the one who first succeeded in making the traveler take his cloak off should "
+       "be considered stronger than the other. Then the North Wind blew as hard as he could, but the more he blew "
+       "the more closely did the traveler fold his cloak around him, and at last the North Wind gave up the "
+       "attempt. Then the Sun shone out warmly, and immediately the traveler took off his cloak. And so the North "
+       "Wind was obliged to confess that the Sun was the stronger of the two.",
+}
+
+
 def emo_segments(read_audio=None):
+    """EMA_5EMO utterances: sentences, passage phrases (pssg_short) and full passages not covered by phrases.
+
+    Most pssg_short phrases are exact excerpts of a full passage recording (same audio and EMA); those are
+    located (exact audio match), which fixes their passage and phrase order regardless of file names, and the
+    full passage they cover is then not emitted. Phrases that are not excerpts of any full passage (jn fear:
+    a different take of passage 1 and 2) are kept as their own recordings, ordered by utterance number
+    (10 phrases of passage 1, then 5 of passage 2) and flagged located=False; the full passages of that
+    speaker/emotion/rate are then emitted as long utterances since they are separate recordings."""
+    if read_audio is None:
+        raise ValueError("passage phrases need read_audio to be located in their passages")
     codes = perceived_emotion_codes()
+    fulls = {}  # (spk, emo, rate) -> {passage: (match, mat)}
     for spk in EMO_SPEAKERS:
         for mat in sorted((EMO_ROOT / spk / "wav_mat").glob("ema_5emo_*.mat")):
             m = EMO_NAME.match(mat.name)
@@ -447,13 +477,10 @@ def emo_segments(read_audio=None):
                 print(f"skip unparsed {mat.name}")
                 continue
             if m["kind"] == "pssg":
-                continue  # full passages: used through their pssg_short phrases instead
+                fulls.setdefault((spk, m["emo"], m["rate"]), {})[int(m["num"])] = (m, mat)
+                continue
             yield _emo_segment(m, mat, EMO_SENTENCES[int(m["num"])], codes, read_audio,
                                {"prompt": f"sent{m['num']}"})
-    # passage phrases: located in their full passage recordings (exact audio match), which fixes the
-    # passage and phrase order even where file names are inconsistent (jn fear names phrases pssg1..pssg10)
-    if read_audio is None:
-        raise ValueError("passage phrases need read_audio to be located in their passages")
     phrase_text = passage_phrase_texts()
     groups = {}
     for mat in sorted((EMO_ROOT / "pssg_short" / "wav_mat").glob("ema_5emo_*.mat")):
@@ -462,24 +489,55 @@ def emo_segments(read_audio=None):
             print(f"skip unparsed {mat.name}")
             continue
         groups.setdefault((m["spk"], m["emo"], m["rate"]), []).append((m, mat))
-    for (spk, emo, rate), items in sorted(groups.items()):
-        fulls = {}
-        for f in sorted((EMO_ROOT / spk / "wav_mat").glob(f"ema_5emo_{spk}_{emo}_{rate}_pssg*_utt*.mat")):
-            fm = EMO_NAME.match(f.name)
-            fulls[int(fm["num"])] = read_audio(f)[0]
-        located = []
+    covered = set()  # (spk, emo, rate, passage) of full passages whose content is in located phrases
+    for key, items in sorted(groups.items()):
+        full_audio = {p: read_audio(mat)[0] for p, (_, mat) in fulls.get(key, {}).items()}
+        items = sorted(items, key=lambda x: int(x[0]["utt"]))
+        hits = []
         for m, mat in items:
             audio = read_audio(mat)[0]
-            hit = next(((p, off) for p, full in fulls.items() if (off := locate(audio, full)) is not None), None)
-            if hit is None:
-                raise ValueError(f"{mat.name}: not found in any full passage of {spk} {emo} {rate}")
-            located.append((hit[0], hit[1], m, mat))
-        located.sort(key=lambda x: (x[0], x[1]))
-        for passage in sorted({x[0] for x in located}):
-            phrases = [x for x in located if x[0] == passage]
-            for k, (_, off, m, mat) in enumerate(phrases):
-                yield _emo_segment(m, mat, phrase_text.get((passage, k + 1), ""), codes, read_audio,
-                                   {"prompt": f"pssg{passage}_phrase{k + 1:02d}", "passage_offset_samples": off})
+            hits.append(next(((p, off) for p, fa in full_audio.items() if (off := locate(audio, fa)) is not None),
+                             None))
+        if all(h is None for h in hits):
+            raise ValueError(f"{key}: no phrase is an excerpt of a full passage; cannot assign passages")
+        # unlocated phrases join the passage of the nearest located phrase before them (else after them); one
+        # between located phrases of two different passages goes to the passage short of its canonical count
+        passages = []
+        for i, h in enumerate(hits):
+            if h is not None:
+                passages.append(h[0])
+                continue
+            before = [hits[j][0] for j in range(i - 1, -1, -1) if hits[j] is not None]
+            after = [hits[j][0] for j in range(i + 1, len(hits)) if hits[j] is not None]
+            if before and after and before[0] != after[0]:
+                # phrases each passage still lacks: canonical count - assigned so far - located ones still to come
+                need = {p: PASSAGE_PHRASES[p] - passages.count(p)
+                        - sum(1 for j in range(i + 1, len(hits)) if hits[j] is not None and hits[j][0] == p)
+                        for p in (before[0], after[0])}
+                passages.append(max(need, key=lambda p: (need[p], p == before[0])))
+            else:
+                passages.append(before[0] if before else after[0])
+        for passage in sorted(set(passages)):
+            idx = [i for i in range(len(items)) if passages[i] == passage]
+            offs = [hits[i][1] for i in idx if hits[i] is not None]
+            if offs != sorted(offs):
+                raise ValueError(f"{key} passage {passage}: utterance order and positions in the recording disagree")
+            canonical = len(idx) == PASSAGE_PHRASES[passage]
+            covered.add((*key, passage)) if offs else None
+            for k, i in enumerate(idx):
+                m, mat = items[i]
+                meta = {"prompt": f"pssg{passage}_phrase{k + 1:02d}", "located": hits[i] is not None,
+                        "phrases_in_passage": len(idx)}
+                if hits[i] is not None:
+                    meta["passage_offset_samples"] = hits[i][1]
+                # phrase texts follow passage_brief.txt only where the phrase split is the canonical one
+                text = phrase_text.get((passage, k + 1), "") if canonical else ""
+                yield _emo_segment(m, mat, text, codes, read_audio, meta)
+    for key, ps in sorted(fulls.items()):
+        for passage, (m, mat) in sorted(ps.items()):
+            if (*key, passage) not in covered:
+                yield _emo_segment(m, mat, PASSAGE_TEXT[passage], codes, read_audio,
+                                   {"prompt": f"pssg{passage}_full"})
 
 
 def locate(short, full, probe=4096):
@@ -489,9 +547,15 @@ def locate(short, full, probe=4096):
         return None
     from scipy.signal import correlate
 
-    c = correlate(full, short[:n], mode="valid", method="fft")
-    for off in np.argsort(c)[::-1][:10]:  # a near-silent probe can put the true offset below the top peak
-        off = int(off)
+    # probe with the most energetic window: a near-silent probe (phrases often start in silence) has no
+    # distinctive correlation peak
+    energy = np.convolve(short**2, np.ones(n), mode="valid")
+    p0 = int(np.argmax(energy))
+    c = correlate(full, short[p0:p0 + n], mode="valid", method="fft")
+    for pos in np.argsort(c)[::-1][:10]:
+        off = int(pos) - p0
+        if off < 0:
+            continue
         seg = full[off:off + len(short)]
         if len(seg) == len(short) and np.allclose(seg, short, atol=1e-9):
             return off
