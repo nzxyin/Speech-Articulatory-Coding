@@ -11,7 +11,9 @@ Paired comparisons across folds: mean paired difference with a 95% t interval, f
 sign test with Holm correction over all comparisons reported. With 7 folds only 7/7 can reach p < 0.05 (p=0.0156)
 and folds share training speakers, so treat the intervals as the main evidence.
 
-Usage: python -m sparc.compression.loso --arms label=model/run_name ...   (run name without the _s<seed> suffix)
+Usage: python -m sparc.compression.loso --arms label=model/run_name[@target] ...
+(run name without the _s<seed> suffix; @target selects folds trained on a reparameterized target, e.g. @pca,
+whose metrics are already mapped back to per-channel z)
 """
 
 import argparse
@@ -45,11 +47,12 @@ def holm(ps):
     return adj
 
 
-def collect(model, run):
+def collect(model, run, target="z"):
     """{speaker: {metric: mean over seeds}} for the held-out speaker of each fold."""
     out = {}
+    suffix = "" if target == "z" else f"_{target}"
     for spk in datasets.ALL_SPEAKERS:
-        d = datasets.adapt_root(f"ema_loso_{spk}") / model
+        d = datasets.adapt_root(f"ema_loso_{spk}{suffix}") / model
         rs = [json.loads(f.read_text()) for f in sorted(d.glob(f"{run}_s*/results.json"))]
         if not rs:
             continue
@@ -63,15 +66,16 @@ def collect(model, run):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arms", nargs="+", required=True, help="label=model/run_name")
+    ap.add_argument("--arms", nargs="+", required=True, help="label=model/run_name[@target]")
     ap.add_argument("--out", default=str(datasets.XLSR_EMA / "analysis_loso"))
     args = ap.parse_args()
     arms = {}
     for a in args.arms:
         label, spec = a.split("=", 1)
+        spec, _, target = spec.partition("@")
         model, run = spec.split("/", 1)
-        arms[label] = (model, run)
-    res = {lab: collect(m, run) for lab, (m, run) in arms.items()}
+        arms[label] = (model, run, target or "z")
+    res = {lab: collect(*a) for lab, a in arms.items()}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     folds = [s for s in datasets.ALL_SPEAKERS if all(s in res[a] for a in res)]

@@ -55,6 +55,11 @@ All notable changes to this fork. Earlier history is in `git log`.
   `crossspeaker` evaluates every MNGU0 seed and the w2v2 runs, skipping runs that are not finished.
 - CLAUDE.md: the project framing (inference FLOPs, generalization; rmse_z/PCC primary), the pre-registered pooling
   rule, and corrections to claims that rested on single seeds or test-set selection.
+- Target reparameterizations for the multi-speaker datasets (`--dataset ema_multi_<t>` / `ema_loso_<speaker>_<t>`,
+  t in zca / pca / zca12): per-normalization-group whitening transforms fitted on training-split frames
+  (`datasets.target_matrices`); predictions are mapped back to per-channel z for every metric (`rmse_target` is the
+  fitting-space error). `target_probe` screens them with ridge probes over LOSO folds; `loso --arms ...@<t>` summarizes
+  LoRA runs trained on them. Tests: `tests/test_targets.py`.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
