@@ -22,6 +22,7 @@ MODELS = {
     "xlsr-300m": "facebook/wav2vec2-xls-r-300m",
     "xlsr-1b": "facebook/wav2vec2-xls-r-1b",
     "xlsr-2b": "facebook/wav2vec2-xls-r-2b",
+    "w2v2-large": "facebook/wav2vec2-large-lv60",  # English LV-60k, same architecture as XLS-R 300M
 }
 
 

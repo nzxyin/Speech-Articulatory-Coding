@@ -37,6 +37,7 @@ class Utterance:
     phones: list = field(default_factory=list)
     speaker: str = ""
     sil_end: float = 0.0
+    norm_key: str = ""  # normalization group (speaker, or a session group such as usc_F5_s1)
 
 
 class MNGU0:
@@ -94,11 +95,14 @@ class EMAMulti:
     name = "ema_multi"
     shift_candidates = (-1, 0, 1)
 
-    def __init__(self, root=EMA_ROOT, held_out=HELD_OUT):
+    def __init__(self, root=EMA_ROOT, held_out=HELD_OUT, norm_by="speaker"):
         from sparc.ema_corpora.dataset import load_manifest
 
         self.root = Path(root)
         self.held_out = tuple(held_out)
+        if norm_by not in ("speaker", "norm_group"):
+            raise ValueError(norm_by)
+        self.norm_by = norm_by  # 'norm_group' gives usc_F5's two recording sessions separate statistics
         rows = load_manifest(self.root)
         self.rows = {}
         for r in rows:
@@ -120,7 +124,7 @@ class EMAMulti:
             if r["_split"] != "train":
                 continue
             e = np.load(self.root / r["ema"])["ema"][r["_first"]:r["_last"]].astype(np.float64)
-            a = acc.setdefault(r["speaker"], [np.zeros(12), np.zeros(12), 0])
+            a = acc.setdefault(r[self.norm_by], [np.zeros(12), np.zeros(12), 0])
             a[0] += e.sum(0)
             a[1] += (e * e).sum(0)
             a[2] += len(e)
@@ -147,11 +151,12 @@ class EMAMulti:
 
     def load_targets(self, stem, with_audio=False):
         r = self.rows[stem]
-        mean, std = self._stats[r["speaker"]]
+        mean, std = self._stats[r[self.norm_by]]
         e = np.load(self.root / r["ema"])["ema"][r["_first"]:r["_last"]].astype(np.float64)
         z = ((e - mean) / std).astype(np.float32)
         wav = sf.read(self.root / r["audio"], dtype="float32")[0] if with_audio else None
-        return Utterance(stem=stem, wav=wav, ema_mm=z, base_offset=r["_first"], speaker=r["speaker"])
+        return Utterance(stem=stem, wav=wav, ema_mm=z, base_offset=r["_first"], speaker=r["speaker"],
+                         norm_key=r[self.norm_by])
 
     def load_utterance(self, stem):
         return self.load_targets(stem, with_audio=True)
@@ -160,7 +165,7 @@ class EMAMulti:
         return []
 
     def to_mm(self, u, arr):
-        mean, std = self._stats[u.speaker]
+        mean, std = self._stats[u.norm_key or u.speaker]
         return arr * std + mean
 
     def evaluate(self, utts, preds, trues, phones=None, n_boot=1000):
@@ -192,7 +197,7 @@ def get(name):
         spk = name[len("ema_loso_"):]
         if spk not in ALL_SPEAKERS:
             raise ValueError(f"unknown speaker {spk!r}; one of {ALL_SPEAKERS}")
-        return EMAMulti(held_out=(spk,))
+        return EMAMulti(held_out=(spk,), norm_by="norm_group")
     raise ValueError(name)
 
 

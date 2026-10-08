@@ -84,10 +84,10 @@ def evaluate_split(ds, feats, index, utts, stems, shift, ridge, W, b, n_boot):
     return ds.evaluate(us, ridge.predict(W, b, X), Y, phones=phones, n_boot=n_boot)
 
 
-def probe_layer(feats, index, utts, splits, device, n_boot=1000, ds=None):
+def probe_layer(feats, index, utts, splits, device, n_boot=1000, ds=None, shifts=None):
     ds = ds or datasets.get("mngu0")
     best = None
-    for shift in ds.shift_candidates:
+    for shift in (shifts if shifts is not None else ds.shift_candidates):
         Xtr, Ytr, _ = aligned(feats, index, utts, splits["train"], shift)
         Xva, Yva, _ = aligned(feats, index, utts, splits["valid"], shift)
         ridge = Ridge(Xtr, Ytr, device)
@@ -105,7 +105,7 @@ def probe_layer(feats, index, utts, splits, device, n_boot=1000, ds=None):
     return result, W.cpu().numpy().astype(np.float32), b.cpu().numpy().astype(np.float32)
 
 
-def run(name, root=None, layers=None, device=None, dataset="mngu0"):
+def run(name, root=None, layers=None, device=None, dataset="mngu0", shifts=None, out_name="probe_results.json"):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ds = datasets.get(dataset)
     d = Path(root or datasets.features_root(dataset)) / name
@@ -116,7 +116,7 @@ def run(name, root=None, layers=None, device=None, dataset="mngu0"):
     layers = layers if layers is not None else range(meta["num_layers"] + 1)
 
     results, heads = {}, {}
-    out_json = d / "probe_results.json"
+    out_json = d / out_name
     if out_json.exists():
         results = {int(k): v for k, v in json.loads(out_json.read_text())["layers"].items()}
     sel = lambda j: results[j].get("valid_rmse_fit_units", results[j]["valid"]["rmse"])  # noqa: E731
@@ -124,7 +124,7 @@ def run(name, root=None, layers=None, device=None, dataset="mngu0"):
         if k in results:
             continue
         feats = np.load(d / f"layer_{k:02d}.npy", mmap_mode="r").astype(np.float32)
-        res, W, b = probe_layer(feats, index, utts, splits, device, ds=ds)
+        res, W, b = probe_layer(feats, index, utts, splits, device, ds=ds, shifts=shifts)
         results[k] = res
         heads[f"W_{k:02d}"], heads[f"b_{k:02d}"] = W, b
         t = res["test"]
@@ -136,7 +136,7 @@ def run(name, root=None, layers=None, device=None, dataset="mngu0"):
         best_layer = min(results, key=sel)
         out_json.write_text(json.dumps({"model": meta["model"], "dataset": dataset, "best_layer_by_valid_rmse": best_layer,
                                         "layers": {str(j): results[j] for j in sorted(results)}}, indent=1))
-        heads_path = d / "probe_heads.npz"
+        heads_path = d / ("probe_heads.npz" if out_name == "probe_results.json" else Path(out_name).stem + "_heads.npz")
         prev = dict(np.load(heads_path)) if heads_path.exists() else {}
         prev.update(heads)
         np.savez(heads_path, **prev)
@@ -153,8 +153,10 @@ def main():
     ap.add_argument("root", nargs="?", default=None)
     ap.add_argument("--dataset", default="mngu0", choices=datasets.DATASET_NAMES)
     ap.add_argument("--layers", type=int, nargs="*", default=None)
+    ap.add_argument("--shifts", type=int, nargs="*", default=None, help="override the dataset's alignment-shift grid")
+    ap.add_argument("--out-name", default="probe_results.json", help="results file name (use another to keep the main sweep)")
     args = ap.parse_args()
-    run(args.model, args.root, args.layers, dataset=args.dataset)
+    run(args.model, args.root, args.layers, dataset=args.dataset, shifts=args.shifts, out_name=args.out_name)
 
 
 if __name__ == "__main__":

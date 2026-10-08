@@ -37,6 +37,14 @@ ADAPT = datasets.adapt_root("mngu0")
 X_CH = list(range(0, 12, 2))  # x channels: MNGU0 posterior-positive, new corpora anterior-positive
 
 
+def _best_layer(model):
+    f = FEAT / model / "probe_results.json"
+    return json.loads(f.read_text())["best_layer_by_valid_rmse"] if f.exists() else 0
+
+
+W2V2_K = _best_layer("w2v2-large")  # MNGU0 probe-selected depth of wav2vec2-large-lv60 (0 until probed)
+
+
 def mngu0_target_stats():
     ds = datasets.get("mngu0")
     Y = np.concatenate([ds.load_targets(s).ema_mm for s in ds.splits()["train"]])
@@ -164,6 +172,11 @@ def models_to_run():
         ("lora+cc xlsr-300m k18", "adapted", ADAPT / "xlsr-300m/prefix18_independent_r8_q_proj+v_proj_conv_causal_s0"),
         ("lora+cc xlsr-1b k16", "adapted", ADAPT / "xlsr-1b/prefix16_independent_r8_q_proj+v_proj_conv_causal_s0"),
         ("lora+cc xlsr-2b k11", "adapted", ADAPT / "xlsr-2b/prefix11_independent_r8_q_proj+v_proj_conv_causal_s0"),
+        # further seeds of the LoRA + causal conv models (rigor review: one checkpoint per model is not enough)
+        *[(f"lora+cc {m} k{k} s{s}", "adapted", ADAPT / f"{m}/prefix{k}_independent_r8_q_proj+v_proj_conv_causal_s{s}")
+          for m, k in (("wavlm-large", 9), ("xlsr-300m", 18), ("xlsr-1b", 16)) for s in (1, 2)],
+        *[(f"lora+cc w2v2-large k{W2V2_K} s{s}", "adapted",
+           ADAPT / f"w2v2-large/prefix{W2V2_K}_independent_r8_q_proj+v_proj_conv_causal_s{s}") for s in (0, 1, 2)],
         ("pruned xlsr-300m keep0.75", "pruned",
          ADAPT / "xlsr-300m/pruned/prefix18_independent_r8_q_proj+v_proj_conv_causal_s0_keep0.75_taylor_steps4_s0"),
         ("pruned xlsr-300m keep0.5", "pruned",
@@ -196,6 +209,9 @@ def main():
     out = json.loads(Path(args.out).read_text()) if Path(args.out).exists() else {}
     for name, kind, spec in models_to_run():
         if args.models and not any(m in name for m in args.models):
+            continue
+        if kind in ("adapted", "pruned") and not (Path(spec) / "results.json").exists():
+            print(f"skip {name}: {spec} not trained yet")
             continue
         if name in out:
             continue
