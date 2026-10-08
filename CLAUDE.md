@@ -254,6 +254,38 @@ are single-speaker results.
   `python -m sparc.compression.loso --arms <label>=<model>/prefix<k>_independent_r8_q_proj+v_proj_conv_causal ...
   <label>=<model>/prefix<k>_none_conv_causal`.
 
+### Leave-one-speaker-out CV, option A (2026-10-08)
+Summary: `/data/user_data/xoy/xlsr_ema/analysis_loso/summary.md` (`python -m sparc.compression.loso`, arms in issue
+#25). 7 folds, one recipe for all models (LoRA r8 q/v + causal conv, 3 seeds; frozen causal-conv control, 1 seed).
+Held-out speaker, mean over folds (fold sd ~0.07-0.13 rmse_z, ~0.06-0.07 PCC; folds differ far more than models):
+| model | k | GFLOPs/s | LoRA rmse_z | LoRA PCC | frozen rmse_z | frozen PCC | seen rmse_z / PCC (LoRA) |
+|---|---|---|---|---|---|---|---|
+| WavLM Large | 7 | 14.9 | 0.818 | 0.696 | 0.798 | 0.672 | 0.546 / 0.804 |
+| XLS-R 300M | 18 | 29.1 | 0.816 | 0.708 | 0.790 | 0.684 | 0.549 / 0.816 |
+| XLS-R 1B | 10 | 26.4 | 0.849 | 0.689 | 0.802 | 0.682 | 0.544 / 0.807 |
+| wav2vec2-large-lv60 | 18 | 29.1 | 0.811 | 0.688 | 0.821 | 0.667 | 0.563 / 0.804 |
+| wav2vec2-large-lv60 | 3 | 9.7 | 0.853 | 0.647 | 0.832 | 0.633 | 0.582 / 0.775 |
+Paired across folds (mean difference, 95% t CI, folds won; with 7 folds and 90 comparisons nothing survives Holm,
+so the intervals are the evidence):
+- LoRA vs frozen: PCC rises for every model (WavLM +0.024 [0.013, 0.036] 7/7, 300M +0.024 [0.010, 0.037] 6/7,
+  w2v2 k18 +0.022 7/7) but held-out rmse_z does not improve (WavLM -0.020, 300M -0.025, CIs span 0) and gets worse
+  for 1B (-0.047 [-0.114, +0.021], 2/7). Adaptation improves trajectory shape on new speakers but not their
+  normalized amplitude/offset; on seen speakers it helps both (0.546 vs 0.570 rmse_z for WavLM).
+- Model size: XLS-R 1B k10 is no better than the native models under speaker shift. WavLM k7 beats it on rmse_z
+  (+0.031 [0.006, 0.056], 6/7) at 56% of its FLOPs; 300M beats it on PCC (+0.019 [0.000, 0.037], 6/7).
+- WavLM k7 vs 300M k18: rmse_z tie (-0.002 [-0.033, +0.029]); 300M PCC higher by 0.012 [-0.002, +0.025] (5/7)
+  at 2x the FLOPs.
+- Pretraining language at matched architecture/FLOPs: multilingual XLS-R 300M beats English w2v2 k18 on PCC
+  (+0.019 [0.005, 0.034], 6/7), rmse_z tie; MNGU0 in-domain also favours 300M (0.739 vs 0.769 +/- 0.007 mm, 3 seeds).
+  Zero-shot from MNGU0 they tie (PCC 0.673 vs 0.673; calibrated 0.730 vs 0.735).
+- Validation-best layer selection fails for w2v2 on ema_multi: k3 (a near-tie with k5 and k21 on valid) is the
+  worst arm on every held-out metric (PCC -0.041 [-0.060, -0.023] vs k18, 7/7).
+- Hardest folds: usc_M3 (DTW-segmented) and 5EMO (emotion, frame offsets); 5EMO held-out rmse_z ~0.85-0.94 vs
+  USC ~0.74-0.82.
+Bottom line for SPARC (normalized space, unseen speakers): WavLM Large truncated to 7 layers is the most
+compute-efficient encoder; XLS-R 300M at 2x the FLOPs gives at most +0.012 PCC; compressed XLS-R 1B gives nothing.
+The 1B zero-shot transfer edge (MNGU0-trained k16) did not carry over to multi-speaker-trained k10.
+
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
   EMA corpus (e.g. the group's `EMA_5EMO_NSF` set, or mocha-timit / HPRC). Per-phone-class errors are in
