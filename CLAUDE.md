@@ -191,8 +191,10 @@ Zero-shot (MNGU0-trained models on all seven new speakers; mean over speakers):
 | XLS-R 1B k16 LoRA + causal conv | 0.687 | 0.755 |
 | XLS-R 2B k11 LoRA + causal conv | 0.683 | 0.751 |
 | XLS-R 300M pruned keep 0.5 | 0.642 | 0.694 |
-- Zero-shot, 1B beats 300M on all seven speakers (PCC +0.006 to +0.021), unlike MNGU0 in-domain where they tied.
-  This rests on one checkpoint per model; a rerun over all MNGU0 seeds is pending before it counts as a finding. Pruning hurts transfer.
+- Zero-shot over all 3 MNGU0 seeds (speaker-mean PCC, mean +/- sd over seeds): 1B k16 0.682 +/- 0.004, 300M k18
+  0.673 +/- 0.003, WavLM k9 0.672 +/- 0.002; after per-speaker linear calibration 0.746 / 0.730 / 0.723. 1B beats
+  300M on 7/7 speakers (seed-averaged) on both measures and every 1B seed beats every 300M seed, unlike MNGU0
+  in-domain where they tied. Small (+0.009 PCC zero-shot) but consistent. Pruning hurts transfer.
 
 Fitted on the multi-speaker data (LoRA r8 + causal conv; 3 seeds mean +/- std):
 | model | k | GFLOPs/s | seen RMSE mm | seen PCC | unseen RMSE mm | unseen PCC |
@@ -233,6 +235,24 @@ are single-speaker results.
   representations carry more (zero-shot ranking favours 1B/2B on one checkpoint each; the deepest 1B, k36, is best
   on unseen speakers in one seed), at 2-5x the FLOPs. Unseen-speaker mm RMSE is calibrated with each held-out
   speaker's own statistics; rmse_z/PCC are the primary metrics from here on. LOSO cross-validation tests this.
+
+### Pooling decision, shift grid, wav2vec2 (2026-10-08)
+- Pooling discarded (pre-registered rule, `python -m sparc.compression.pooling_decision`, output
+  `analysis_multi/pooling_decision.md`). On ema_multi, 3 seeds per arm, arms chosen on validation, the pooled arm
+  never beats unpooled h256 on seen-test rmse_z by > 2 SE: WavLM k7 -0.001, 300M k18 -0.002, 1B k10 +0.003 rmse_z
+  (SE 0.002-0.004). 0/3 models, so LOSO uses the plain recipe. Exception, single speaker only: on MNGU0 1B k16,
+  static per-articulator pooling h48 beats unpooled 0.734 vs 0.758 mm (+0.024, SE 0.004), not explained by the head
+  size (unpooled h48 0.752).
+- Shift grid -2..3 on ema_multi (probe at the selected layer): WavLM k7 0, 300M k18 +1, 1B k10 +1; none at the grid
+  edge, so the old -1..1 grid did not clip.
+- wav2vec2-large-lv60 (English LV-60k; 24 x 1024, same FLOPs per layer as XLS-R 300M). MNGU0 probe: best layer 18,
+  0.890 mm valid (300M: 18, 0.860). ema_multi probe: flat and bimodal, layer 3 0.6742 / layer 5 0.6744 / layer 21
+  0.6800 valid rmse_z; layer 3 transfers badly to unseen speakers (test_unseen rmse_z 0.939 vs 0.777 at layer 18).
+  LOSO runs it at k=3 (validation rule) and k=18 (matched to 300M k18, isolates pretraining data/language).
+- LOSO option A submitted 2026-10-08 (35 jobs `losoA_*` on preempt + `w2v2_mngu0_cc`): per fold and model, LoRA r8
+  q/v + causal conv (3 seeds) and a frozen-encoder causal conv control (1 seed). Summarize with
+  `python -m sparc.compression.loso --arms <label>=<model>/prefix<k>_independent_r8_q_proj+v_proj_conv_causal ...
+  <label>=<model>/prefix<k>_none_conv_causal`.
 
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
