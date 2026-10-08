@@ -60,6 +60,10 @@ All notable changes to this fork. Earlier history is in `git log`.
   (`datasets.target_matrices`); predictions are mapped back to per-channel z for every metric (`rmse_target` is the
   fitting-space error). `target_probe` screens them with ridge probes over LOSO folds; `loso --arms ...@<t>` summarizes
   LoRA runs trained on them. Tests: `tests/test_targets.py`.
+- `speaker_scaling`: ridge probes over every subset of 1-6 training speakers (all-data and frame-matched conditions)
+  in a 2 x 2 of training-target whitening x test-time mapping, from per-speaker sufficient statistics (exactly
+  equivalent to `probe.Ridge`); `target_probe` and `loso --arms ...@<t>` for target-space comparisons.
+  Tests: `tests/test_speaker_scaling.py`.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input

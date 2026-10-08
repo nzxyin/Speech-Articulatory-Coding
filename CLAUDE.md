@@ -302,8 +302,38 @@ speaker's map needs that speaker's own EMA statistics (enrollment data); zca12 u
   | zca12 (joint 12-D whitening) | +0.030 to +0.040 (CIs exclude 0) | 7/7 every model | +0.021 to +0.028 (6/7) |
   Ranges are over WavLM k7, 300M k18, 1B k10, w2v2 k18. Per-speaker axis alignment (pca) hurts seen speakers too;
   removing each speaker's cross-articulator correlation structure (zca12) is the one that helps, by more than any
-  model difference in LOSO. LoRA + causal conv on zca12 targets submitted (`losoZ_*`, 28 jobs) to test whether it
-  survives adaptation.
+  model difference in LOSO. But this screen mixes two things (see the next section): per-speaker whitening of the
+  training targets, and re-coloring predictions with the held-out speaker's own covariance at test time.
+- LoRA + causal conv on zca12 targets (`losoZ_*`, issue #26): 16 of 28 jobs finished, the rest held when the question
+  was reframed (2026-10-08, user: "this is not about the model architecture but about the way we can use more
+  training data"). On the 2 finished folds the zca12 gain did not clearly survive LoRA (mean rmse_z ~0, PCC -0.012).
+
+### Speaker scaling and per-speaker whitening (2026-10-08)
+`speaker_scaling.py`; results `/data/user_data/xoy/xlsr_ema/analysis_scaling/summary.md`. Fixed model (ridge probe at
+the LOSO layer/shift; WavLM k7, 300M k18, 1B k10, w2v2 k18), every subset of 1-6 training speakers, scored on every
+excluded speaker in its per-channel z units. A design review showed that ridge is exactly equivariant to linear target
+mixing, so "the space" itself cannot matter for a linear probe; a 2 x 2 separates what can: training targets z vs
+each training group whitened with its own correlation matrix ("w"), and mapping back with the subset's average
+whitening ("shared", uses only the new speaker's means/stds) vs the new speaker's own covariance ("own" = enrollment
+data). The train effect is exactly 0 with one training group (checked to 1e-15). Conditions: all data, and a
+frame-matched budget (constant total frames across k). Unseen r2 (z units; mean over held-out speakers and subsets):
+| encoder | z r2 k=1 -> k=6 (all) | train effect zca12 k=2 / 3 / 6 (all) | k=6 frame-matched | per-articulator zca k=6 | own-covariance recolor k=1 / k=6 |
+|---|---|---|---|---|---|
+| WavLM k7 | 0.108 -> 0.344 | +0.014 / +0.022 / +0.019 (6/7) | +0.016 | +0.003 | +0.076 / +0.039 |
+| XLS-R 300M k18 | 0.146 -> 0.362 | +0.012 / +0.018 / +0.018 (6/7) | +0.007 | +0.008 | +0.082 / +0.029 |
+| XLS-R 1B k10 | 0.111 -> 0.339 | +0.014 / +0.020 / +0.020 (6/7) | +0.007 | +0.002 | +0.074 / +0.036 |
+| w2v2 k18 | 0.075 -> 0.350 | +0.018 / +0.019 / +0.007 (4/7) | +0.012 | +0.002 | +0.089 / +0.035 |
+- More training speakers is by far the largest effect (7/7 speakers, every arm), and it is speaker diversity rather
+  than data amount: with total frames fixed, 6 speakers still beat 1 by about as much (z r2 at k=6 0.33-0.38).
+- Whitening each training speaker jointly over all 12 channels (zca12) before pooling makes pooled speakers modestly
+  more useful to a new speaker: about +0.02 r2 (RMSE ~-0.012 z, PCC ~+0.007) from k=3 with all data, smaller and less
+  consistent when frames are matched. It shows on USC-TIMIT held-out speakers, not on EMA_5EMO; 5emo_jr is the usual
+  exception. Per-articulator whitening (zca) does nothing (<= +0.008).
+- Re-coloring predictions with the new speaker's own covariance at test time is the larger effect (+0.07-0.09 r2 with
+  one training speaker, +0.02-0.04 with six), but it requires that speaker's EMA (enrollment), and it shrinks as more
+  speakers are pooled. Together (= the earlier zca12 targets) unseen r2 at k=6 is 0.39-0.42 vs 0.34-0.36 for z.
+- For SPARC: a per-speaker 12-D whitened articulatory space is a small, consistent improvement for pooling speakers;
+  adding speakers matters much more than the choice of space.
 
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
