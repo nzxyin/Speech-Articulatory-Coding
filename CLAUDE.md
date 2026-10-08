@@ -182,10 +182,26 @@ Fitted on the multi-speaker data (LoRA r8 + causal conv; 3 seeds mean +/- std):
 | XLS-R 1B (1 seed) | 36 | 78.5 | 2.362 | 0.823 | 3.355 | 0.723 |
 - Best probe layers: WavLM 7, 300M 18 (as on MNGU0), 1B 10 (its layer 36 has the best unseen-speaker probe,
   3.208 mm / PCC 0.699, the best of any probe).
-- Seen speakers: truncated 1B (k10) has lower RMSE than 300M at less compute (2.331 vs 2.401 mm), but 300M has
-  higher PCC (0.815 vs 0.804); WavLM k7 is within 0.04 mm at half the FLOPs. No model wins on both metrics.
-- Unseen speakers: LoRA raises PCC but worsens RMSE vs frozen encoders (e.g. WavLM 3.453 vs 3.335 mm with a frozen
-  causal-conv head): adaptation partly fits training-speaker specifics. 1B k10 is the most seed-sensitive here.
+- Seen speakers: truncated 1B (k10) has lower pooled RMSE than 300M at less compute (2.331 vs 2.401 mm), but 300M
+  has higher PCC (0.815 vs 0.804); WavLM k7 is within 0.04 mm at half the FLOPs. Per corpus (below) the 1B RMSE
+  edge comes only from EMA_5EMO; on USC-TIMIT 300M wins both metrics.
+- Unseen speakers: pooled over both held-out speakers, LoRA raises PCC but worsens RMSE vs frozen encoders. Per
+  corpus this is only 5emo_kf: on usc_F1 LoRA improves RMSE too (WavLM 1.914 -> 1.759, 300M 1.894 -> 1.779 mm),
+  on 5emo_kf it worsens (3.750 -> 3.917, 3.717 -> 3.969 mm), plausibly emotional variability and the 5EMO block
+  frame offsets. 1B k10 is the most seed-sensitive here.
+
+Per corpus (speaker-averaged within corpus; RMSE mm / PCC; LoRA r8 + causal conv, 3 seeds unless noted).
+EMA_5EMO is much harder than USC-TIMIT (seen RMSE ~2.6-2.8 vs ~1.5-1.6 mm), so pooled mm figures are dominated by it.
+| model | k | USC seen | 5EMO seen | USC unseen (F1) | 5EMO unseen (kf) |
+|---|---|---|---|---|---|
+| WavLM Large | 7 | 1.575 / 0.862 | 2.675 / 0.747 | 1.759 / 0.794 | 3.917 / 0.641 |
+| XLS-R 1B | 10 | 1.550 / 0.865 | 2.626 / 0.748 | 1.946 / 0.784 | 4.083 / 0.639 |
+| XLS-R 300M | 18 | 1.514 / 0.874 | 2.730 / 0.763 | 1.779 / 0.829 | 3.969 / 0.653 |
+| XLS-R 1B (1 seed) | 36 | 1.550 / 0.880 | 2.667 / 0.771 | 1.814 / 0.804 | 3.788 / 0.668 |
+Zero-shot per corpus (PCC, USC / 5EMO): 300M LoRA+cc 0.701 / 0.633, 1B LoRA+cc 0.715 / 0.648, 2B 0.715 / 0.641;
+after per-speaker linear calibration 0.791 / 0.638 vs 0.800 / 0.695 (1B): the larger-model transfer advantage
+holds in both corpora and is largest on 5EMO. Each corpus has one held-out speaker, so per-corpus unseen numbers
+are single-speaker results.
 - Component pruning of 300M (multi): keep 0.75 2.447 mm / 0.806 at 23.2; keep 0.5 2.433 / 0.796 at 17.4 vs WavLM
   k7 2.374 / 0.801 at 14.9; random control 2.628 / 0.762. Same conclusion as MNGU0.
 - Greedy non-contiguous selection on 1B: prefix is optimal from 10-24 layers; at 8-9 layers skipping layers 5/6

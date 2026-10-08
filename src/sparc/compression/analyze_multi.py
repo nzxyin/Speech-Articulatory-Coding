@@ -78,6 +78,53 @@ def zero_shot_rows():
             for name, res in z.items()]
 
 
+def corpus_of(speaker):
+    return "USC-TIMIT" if speaker.startswith("usc") else "EMA_5EMO"
+
+
+def corpus_mean(per_speaker, key):
+    """{corpus: mean over that corpus's speakers (equal weight per speaker)} of per_speaker[spk][key]."""
+    out = {}
+    for c in ("USC-TIMIT", "EMA_5EMO"):
+        vals = [v[key] for s, v in per_speaker.items() if corpus_of(s) == c and key in v]
+        if vals:
+            out[c] = float(np.mean(vals))
+    return out
+
+
+def corpus_breakdown(zs, adapted):
+    """USC-TIMIT vs EMA_5EMO tables (speaker-averaged within each corpus); seeds averaged for adapted runs."""
+    parts = []
+    if zs:
+        parts.append("\n## Per corpus: zero-shot (MNGU0-trained), PCC\n")
+        parts.append("| model | USC zero-shot | 5EMO zero-shot | USC calibrated | 5EMO calibrated | USC calibrated RMSE | 5EMO calibrated RMSE |")
+        parts.append("|---|---|---|---|---|---|---|")
+        for z in zs:
+            a, b, c = (corpus_mean(z["per_speaker"], k) for k in ("zero_shot_pcc", "linear_pcc", "linear_rmse"))
+            parts.append(f"| {z['model']} | {a['USC-TIMIT']:.3f} | {a['EMA_5EMO']:.3f} | {b['USC-TIMIT']:.3f} | "
+                         f"{b['EMA_5EMO']:.3f} | {c['USC-TIMIT']:.2f} | {c['EMA_5EMO']:.2f} |")
+    groups = {}
+    for a in adapted:
+        key = (a["model"], a["run"][:-3] if a["kind"] == "adapted" and a["run"][-3:-1] == "_s" else a["run"])
+        groups.setdefault(key, []).append(a)
+    if groups:
+        parts.append("\n## Per corpus: multi-speaker trained runs, RMSE mm / PCC (unseen: usc_F1, 5emo_kf)\n")
+        parts.append("| model | run | n | USC seen | 5EMO seen | USC unseen | 5EMO unseen |")
+        parts.append("|---|---|---|---|---|---|---|")
+        for (m, run), v in sorted(groups.items()):
+            cells = []
+            for split, c in [("seen", "USC-TIMIT"), ("seen", "EMA_5EMO"), ("unseen", "USC-TIMIT"), ("unseen", "EMA_5EMO")]:
+                ps = [{s: x for s, x in a["per_speaker"].items() if (s in HELD) == (split == "unseen")} for a in v]
+                r = [corpus_mean(p, "rmse").get(c, np.nan) for p in ps]
+                p = [corpus_mean(q, "pcc").get(c, np.nan) for q in ps]
+                cells.append(f"{np.mean(r):.3f} / {np.mean(p):.3f}")
+            parts.append(f"| {m} | {run} | {len(v)} | " + " | ".join(cells) + " |")
+    return parts
+
+
+HELD = set(datasets.HELD_OUT)
+
+
 def figure(probes, adapted, out):
     import matplotlib
 
@@ -181,6 +228,7 @@ def main():
                               if k in ev and "test_unseen" in ev[k] else "-")
             parts.append(f"| {n} | {cell(f'prefix_{n}')} | {cell(f'greedy_{n}')} | {cell(f'bi_{n}')} | "
                          f"{ev.get(f'greedy_{n}', {}).get('layers', [])} |")
+    parts += corpus_breakdown(zs, adapted)
     if probes:
         figure(probes, adapted, out)
     (out / "summary.md").write_text("\n".join(parts) + "\n")
