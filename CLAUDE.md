@@ -286,6 +286,25 @@ Bottom line for SPARC (normalized space, unseen speakers): WavLM Large truncated
 compute-efficient encoder; XLS-R 300M at 2x the FLOPs gives at most +0.012 PCC; compressed XLS-R 1B gives nothing.
 The 1B zero-shot transfer edge (MNGU0-trained k16) did not carry over to multi-speaker-trained k10.
 
+### PCA reparameterization of the articulators (2026-10-08)
+Code: `datasets.target_matrices` (`--dataset ema_loso_<spk>_<t>` / `ema_multi_<t>`), `target_probe.py`. Each target
+space is an invertible per-normalization-group linear map fitted on that group's training frames; predictions are
+mapped back to per-channel z for every metric, so all numbers are comparable with target z. Like the z-score, a new
+speaker's map needs that speaker's own EMA statistics (enrollment data); zca12 uses more of them (12x12 covariance).
+- Diagnostic: tongue sensors are nearly isotropic in x/y (sd ratio 1.03-1.5), lips and incisor elongated (2-4).
+  Matching each group's principal axes to shared axes needs 20-45 deg rotations, and for the same group the
+  rotation can flip sign between folds (axes near 45 deg from the reference, or near-round distributions).
+- Probe screen (ridge at the LOSO layer/shift, 7 folds, held-out speaker; difference vs z, + = better):
+  | target | rmse_z | folds | PCC |
+  |---|---|---|---|
+  | zca (per-articulator whitening, orientation kept) | +0.007 to +0.010 | 4-6/7 | +0.008 to +0.010 |
+  | pca (per-articulator principal axes aligned to shared axes) | -0.032 to -0.039 | 0-1/7 | -0.044 to -0.050 |
+  | zca12 (joint 12-D whitening) | +0.030 to +0.040 (CIs exclude 0) | 7/7 every model | +0.021 to +0.028 (6/7) |
+  Ranges are over WavLM k7, 300M k18, 1B k10, w2v2 k18. Per-speaker axis alignment (pca) hurts seen speakers too;
+  removing each speaker's cross-articulator correlation structure (zca12) is the one that helps, by more than any
+  model difference in LOSO. LoRA + causal conv on zca12 targets submitted (`losoZ_*`, 28 jobs) to test whether it
+  survives adaptation.
+
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
   EMA corpus (e.g. the group's `EMA_5EMO_NSF` set, or mocha-timit / HPRC). Per-phone-class errors are in
