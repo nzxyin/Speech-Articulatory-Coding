@@ -334,7 +334,7 @@ def fit(model, head, bank, data, args, ym, ys, device, epochs, state_path):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, choices=sorted(MODELS))
-    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
+    ap.add_argument("--dataset", default="mngu0", choices=datasets.DATASET_NAMES)
     ap.add_argument("--layers", required=True, help="e.g. 1-12 or 1,2,4,7")
     ap.add_argument("--variant", default="none", choices=("none",) + VARIANTS)
     ap.add_argument("--rank", type=int, default=8)

@@ -108,7 +108,7 @@ def full_eval(runner, layers, data, device, ds=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
-    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
+    ap.add_argument("--dataset", default="mngu0", choices=datasets.DATASET_NAMES)
     ap.add_argument("--start", type=int, required=True, help="K: start from the prefix 1..K")
     ap.add_argument("--min", type=int, required=True, help="smallest subset size to reach")
     ap.add_argument("--train-subsample", type=int, default=400)

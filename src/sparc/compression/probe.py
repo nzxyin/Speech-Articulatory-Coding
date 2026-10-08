@@ -151,7 +151,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
     ap.add_argument("root", nargs="?", default=None)
-    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
+    ap.add_argument("--dataset", default="mngu0", choices=datasets.DATASET_NAMES)
     ap.add_argument("--layers", type=int, nargs="*", default=None)
     args = ap.parse_args()
     run(args.model, args.root, args.layers, dataset=args.dataset)

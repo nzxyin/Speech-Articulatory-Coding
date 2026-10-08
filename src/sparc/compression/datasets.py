@@ -188,7 +188,16 @@ def get(name):
         return MNGU0()
     if name == "ema_multi":
         return EMAMulti()
+    if name.startswith("ema_loso_"):  # leave-one-speaker-out fold: train on the other six speakers
+        spk = name[len("ema_loso_"):]
+        if spk not in ALL_SPEAKERS:
+            raise ValueError(f"unknown speaker {spk!r}; one of {ALL_SPEAKERS}")
+        return EMAMulti(held_out=(spk,))
     raise ValueError(name)
+
+
+ALL_SPEAKERS = ("usc_M1", "usc_F1", "usc_M3", "usc_F5", "5emo_jn", "5emo_jr", "5emo_kf")
+DATASET_NAMES = ("mngu0", "ema_multi") + tuple(f"ema_loso_{s}" for s in ALL_SPEAKERS)
 
 
 XLSR_EMA = Path("/data/user_data/xoy/xlsr_ema")

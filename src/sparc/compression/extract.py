@@ -93,7 +93,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model", choices=sorted(MODELS))
     ap.add_argument("out_root", nargs="?", default=None)
-    ap.add_argument("--dataset", default="mngu0", choices=("mngu0", "ema_multi"))
+    ap.add_argument("--dataset", default="mngu0", choices=datasets.DATASET_NAMES)
     ap.add_argument("--limit", type=int, default=None, help="debug: N train + N val/test utterances")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
