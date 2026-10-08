@@ -10,6 +10,23 @@ non-contiguous layer removal, LoRA adaptation) give a better compact encoder for
 prediction than a natively compact SSL model at the same inference compute? Primary model XLS-R 1B;
 baselines XLS-R 300M and WavLM Large; XLS-R 2B only if the 1B result calls for a scaling test.
 
+Framing (user, 2026-10-07): the question is (1) model FLOPs at inference time and (2) generalization to multiple
+speakers, languages and styles. The end goal is to improve SPARC, which resynthesizes speech from the normalized
+articulatory space, so z-unit RMSE (rmse_z) and PCC are the primary metrics; mm RMSE is secondary. Smaller SSL models
+are not added (they need not carry articulatory information). Streaming is not required, though conceptually
+interesting. Model set for the multi-speaker work: WavLM Large, XLS-R 300M, XLS-R 1B, plus wav2vec2-large-lv60
+(English, same architecture as XLS-R 300M) to separate pretraining language from pretraining objective; HuBERT
+is not added (WavLM builds on it); XLS-R 2B is dropped.
+
+Current plan (2026-10-07):
+1. Does pooling help? Pre-registered rule: pooling helps a model if its validation-best pooled arm (3-seed mean)
+   beats the validation-best unpooled arm (hidden 256 or 48) on seen-test rmse_z by more than 2x the SE of the
+   seed-paired difference, without hurting unseen speakers. Keep pooling only if this holds for >= 2 of 3 models;
+   otherwise discard it.
+2. Leave-one-speaker-out CV (7 folds, F5 normalized per session group) with one identical recipe for all models
+   (LoRA r8 + causal 9-frame conv, 3 seeds) plus a frozen-encoder control; paired fold statistics
+   (`compression/loso.py`). Shift per model fixed from a -2..3 shift grid on ema_multi.
+
 Code: `src/sparc/compression/` (see the module docstrings), jobs: `scripts/xlsr_ema_*_slurm.sh`.
 Outputs: `/data/user_data/xoy/xlsr_ema/{features/<model>,adapt/<model>/<run>,analysis}`.
 Feature caches are large (XLS-R 1B: ~29 GB fp16) and can be regenerated with `sparc.compression.extract`.
@@ -31,7 +48,8 @@ Feature caches are large (XLS-R 1B: ~29 GB fp16) and can be regenerated with `sp
 ### Bottom line (2026-10-06)
 On MNGU0, compressing XLS-R 1B or 2B does **not** beat the native compact models at matched inference
 compute, by any method tried: truncation, non-contiguous layer selection, LoRA variants, temporal heads.
-WavLM Large truncated to 9 layers is the most compute-efficient encoder throughout. The best absolute
+WavLM Large truncated to 7-9 layers is the most compute-efficient encoder in the 14-17 GFLOPs/s range (the only
+budget where all models were compared at matched compute). The best absolute
 results come from XLS-R 300M k=18 with LoRA and a causal conv head. Larger pretraining gives a slightly better
 best single layer (2B layer 11: 0.876 mm vs ~0.89 for the others), but that layer sits so deep in a much wider
 model that it is never competitive per FLOP. Full analysis: `/data/user_data/xoy/xlsr_ema/analysis/summary.md`
@@ -51,18 +69,20 @@ Lower depths, same recipe (1 seed): WavLM k=6 0.785 @ 13.6, 300M k=8 0.783 @ 16.
 Other findings:
 - Temporal context is the largest single gain. A causal 9-frame conv head on a frozen encoder takes every model
   from ~0.89 to ~0.79-0.81 mm. A centered (non-causal) conv head on frozen 1B k=16 reaches 0.763, as good as LoRA.
-  A windowed attention head (±25 frames) is no better than the causal conv (0.816).
+  A windowed attention head (±25 frames) is no better than the causal conv (0.816). Every head also passes through a
+  non-causal ±1 s FIR output smoother, so all numbers are offline (non-streaming) results.
 - Frozen XLS-R 2B (k=11) + causal conv head is the best frozen encoder (0.772 vs 0.793 for 300M/WavLM, 0.810 for 1B),
-  so larger pretraining does give richer features. But LoRA closes the gap for the smaller models, and 2B needs
-  2-3x their FLOPs to get there.
-- Cross-layer LoRA: with the causal conv head, shared-A/B with per-layer rank gates (41k LoRA params) matches
-  independent LoRA (655k): 0.759 vs 0.758 on 1B k=16. With a linear head the shared variants trail
+  (single seed). This suggests richer features from larger pretraining, but LoRA closes the gap for the smaller
+  models, and 2B needs 2-3x their FLOPs to get there.
+- Cross-layer LoRA: with the causal conv head, shared-A/B with per-layer rank gates (41k LoRA params) matched
+  independent LoRA (655k) on MNGU0: 0.759 vs 0.758 on 1B k=16 (single seed; not replicated on multi-speaker data,
+  where it was not better). Not carried forward. With a linear head the shared variants trail
   (shared-gated 0.800, shared-A 0.769, independent 0.760). Merged LoRA weights reproduce the unmerged test
   RMSE in every run, so LoRA adds no inference cost.
 - Non-contiguous selection on 1B (prefix 24 -> 8 layers): greedy backward elimination matches the prefix from
   10-24 layers (it picks exactly 1..16 at 16 layers). It only helps at aggressive compression (8 layers: 0.926
-  vs prefix 0.981, by skipping layers 3 and 6 and reaching layer 10), which still only ties 300M k=8 at fewer
-  FLOPs. Block-Influence (ShortGPT) selection is worse than the prefix at every size.
+  vs prefix 0.981, by skipping layers 3 and 6 and reaching layer 10), which needs ~1.4x the FLOPs of
+  300M k=8 (22.3 vs 16.1 GFLOPs/s) and is still worse than WavLM k=9. Block-Influence (ShortGPT) selection is worse than the prefix at every size.
 - Robustness (white noise, +-10% speed): all adapted models degrade similarly (~1.4-1.5 mm at 0 dB SNR).
   300M is the most robust at 20-5 dB SNR, 1B marginally at 0 dB.
 
@@ -97,12 +117,14 @@ head/FFN masks, 4 iterative rounds with LoRA recovery, physical removal, 40-epoc
 | 0.4 | 115/288 | 29k/74k | 104M | 15.1 | 0.812 | 0.926 | 300M k=8 0.783 @ 16.1 |
 | 0.3 | 86/288 | 22k/74k | 81M | 12.8 | 0.835 | 0.919 | WavLM k=6 0.785 @ 13.6 |
 - Taylor importance clearly beats random (0.786 vs 0.858 at keep 0.5), so the scores carry real information.
-- Mild pruning (keep 0.75) beats truncation at that cost. From keep 0.5 down, pruning inside the layers is no
+- Mild pruning (keep 0.75, single seed, no matched random control) is better than truncation at that cost, but the
+  margin is within seed noise. From keep 0.5 down, pruning inside the layers is no
   better than dropping late layers, and clearly worse than WavLM at the same FLOPs.
 - Overall: no compression of XLS-R (1B or 300M; truncation, non-contiguous layers, pooling, head/FFN pruning)
   beats WavLM Large k=9 + LoRA + causal conv at its 17.4 GFLOPs/s (0.753 mm unpooled). The best result at that
   budget is pooled WavLM k=9 itself (0.745 mm, attention per-articulator or static per-articulator h48; single
-  seed). (Claims in this section were checked against the raw results by an independent verification pass;
+  seed, and the pooled variant was picked by test RMSE, so this is optimistic; pooling is being re-decided with
+  3 seeds and validation selection, see below). (Claims in this section were checked against the raw results by an independent verification pass;
   six corrections were applied.)
 
 ### Probe results (linear probes, test set; 2026-10-06)
@@ -169,8 +191,8 @@ Zero-shot (MNGU0-trained models on all seven new speakers; mean over speakers):
 | XLS-R 1B k16 LoRA + causal conv | 0.687 | 0.755 |
 | XLS-R 2B k11 LoRA + causal conv | 0.683 | 0.751 |
 | XLS-R 300M pruned keep 0.5 | 0.642 | 0.694 |
-- Larger pretrained models transfer better to new speakers: 1B beats 300M on all seven speakers (zero-shot PCC
-  +0.006 to +0.021), unlike MNGU0 in-domain where they tied. Pruning hurts transfer.
+- Zero-shot, 1B beats 300M on all seven speakers (PCC +0.006 to +0.021), unlike MNGU0 in-domain where they tied.
+  This rests on one checkpoint per model; a rerun over all MNGU0 seeds is pending before it counts as a finding. Pruning hurts transfer.
 
 Fitted on the multi-speaker data (LoRA r8 + causal conv; 3 seeds mean +/- std):
 | model | k | GFLOPs/s | seen RMSE mm | seen PCC | unseen RMSE mm | unseen PCC |
@@ -207,8 +229,10 @@ are single-speaker results.
 - Greedy non-contiguous selection on 1B: prefix is optimal from 10-24 layers; at 8-9 layers skipping layers 5/6
   helps (8 layers: 2.972 vs prefix 3.056 mm seen), still only tying WavLM k7's probe at more FLOPs.
 - Overall: in-domain (seen speakers) the compression picture is unchanged (WavLM most efficient, no XLS-R
-  compression wins on both metrics). Under speaker shift, larger and deeper representations do carry more:
-  the zero-shot ranking favours 1B/2B and the deepest 1B (k36) is best on unseen speakers, but at 2-5x the FLOPs.
+  compression wins on both metrics). Under speaker shift there are hints that larger and deeper
+  representations carry more (zero-shot ranking favours 1B/2B on one checkpoint each; the deepest 1B, k36, is best
+  on unseen speakers in one seed), at 2-5x the FLOPs. Unseen-speaker mm RMSE is calibrated with each held-out
+  speaker's own statistics; rmse_z/PCC are the primary metrics from here on. LOSO cross-validation tests this.
 
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
@@ -216,6 +240,5 @@ are single-speaker results.
   each run's `results.json` but haven't been analyzed yet.
 - All encoders are bidirectional transformers, so "causal" applies only to the head.
 - Adaptation used one recipe (r=8 on q/v, lr 2e-4, 40 epochs, early stopping). It wasn't tuned per model.
-- Directions the data does support: cheap temporal heads, cross-layer shared LoRA (16x fewer adapter
-  parameters at equal accuracy), and WavLM-based compact encoders. Distillation, or structured pruning inside
+- Directions the data does support: cheap temporal heads and WavLM-based compact encoders. Distillation, or structured pruning inside
   layers (heads/FFN width) rather than whole layers, would be the next way to test the large-model hypothesis.

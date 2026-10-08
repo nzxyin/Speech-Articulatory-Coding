@@ -48,6 +48,13 @@ All notable changes to this fork. Earlier history is in `git log`.
   `analyze_multi` (multi-speaker tables and figure).
 - Job scripts read models from a personal cache copy when present: the shared cache lost the XLS-R 1B / 2B
   snapshot directories (blobs intact), which had made jobs fail with "couldn't find them in the cached files".
+- Leave-one-speaker-out folds (`--dataset ema_loso_<speaker>`): `EMAMulti(norm_by="norm_group")` z-scores targets per
+  normalization group (usc_F5's two sessions separately); `loso` summarizes held-out-speaker rmse_z / PCC / mm RMSE
+  per fold and corpus, with paired fold comparisons (95% t interval, sign test, Holm correction).
+- `wav2vec2-large-lv60` encoder (`w2v2-large`); `probe --shifts` / `--out-name` to override the shift grid;
+  `crossspeaker` evaluates every MNGU0 seed and the w2v2 runs, skipping runs that are not finished.
+- CLAUDE.md: the project framing (inference FLOPs, generalization; rmse_z/PCC primary), the pre-registered pooling
+  rule, and corrections to claims that rested on single seeds or test-set selection.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
