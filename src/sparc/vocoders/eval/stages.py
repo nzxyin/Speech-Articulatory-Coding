@@ -885,6 +885,25 @@ def stage_probes(ctx: EvalContext, spec: SystemSpec) -> None:
         raise RuntimeError(f"run_probes({spec.name}) finished without writing {results}")
 
 
+def stage_probes_xy(ctx: EvalContext, spec: SystemSpec) -> None:
+    """Paired X-Y EMA probes of a vocoder, delegated to ``eval.probes_xy.run_probes_xy`` (output ``probes_xy/<system>``)."""
+    from sparc.vocoders.eval.probes_xy import run_probes_xy
+
+    out_dir = ctx.paths.probes_xy_dir(spec.name)
+    results = out_dir / str(ctx.cfg.eval_features.probes_xy.results_name)
+    cfg, info = pinned_checkpoint(ctx, spec)
+    meta_path = out_dir / "probes_xy_meta.json"
+    recorded = read_json(meta_path).get("checkpoint") if meta_path.is_file() else None
+    check_recorded_checkpoint(ctx, out_dir, recorded, info)
+    if results.is_file():
+        return
+    with hydra_cleared():
+        run_probes_xy(cfg, spec.name, ctx.device, out_dir, ctx.stop.is_set, ctx.limit)
+    if not results.is_file():
+        ctx.stop.raise_if_set()
+        raise RuntimeError(f"run_probes_xy({spec.name}) finished without writing {results}")
+
+
 def stage_efficiency(ctx: EvalContext, system: str) -> None:
     """Parameters, RTF and receptive field (EVALUATION 7), delegated to ``eval.efficiency.run_efficiency``.
 
@@ -963,7 +982,7 @@ CHUNK_STAGES: dict[str, Callable[..., Any]] = {
     "reextract": stage_reextract,
     "prosody": stage_prosody,
 }
-SYSTEM_STAGES = ("probes", "efficiency")
+SYSTEM_STAGES = ("probes", "probes_xy", "efficiency")
 ALWAYS_RERUN = ("aggregate", "samples")  # cheap and dependent on other stages: never short-circuited by a DONE marker
 
 
@@ -1021,6 +1040,8 @@ def run_stage(ctx: EvalContext, stage: str, system: str = "all", condition: str 
         for name in targets:
             if stage == "probes":
                 attempt(f"probes {name}", lambda name=name: stage_probes(ctx, ctx.systems[name]))
+            elif stage == "probes_xy":
+                attempt(f"probes_xy {name}", lambda name=name: stage_probes_xy(ctx, ctx.systems[name]))
             else:
                 attempt(f"efficiency {name}", lambda name=name: stage_efficiency(ctx, name))
     elif stage in CHUNK_STAGES:

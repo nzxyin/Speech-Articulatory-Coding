@@ -35,6 +35,7 @@ STOP_SIGNALS = (signal.SIGUSR1, signal.SIGTERM)
 PREDICT_STREAM = 2  # stream of VocoderDataModule.predict_ids; the eval limit uses the same draw
 T2_CONDITION = "T2"
 SPEAKER_MEAN_REF = "speaker_mean"
+PRIMARY_SPLIT = "test.clean"  # its samples keep the path samples/; other splits write samples_<split>/
 MAIN_TABLE = "main"  # eval.table_name of the main systems: their tables keep the path tables/<split>/
 EXTRA_PACKAGES = (
     "numpy",
@@ -470,6 +471,9 @@ class EvalPaths:
     def probes_dir(self, system: str) -> Path:
         return self.root / "probes" / system
 
+    def probes_xy_dir(self, system: str) -> Path:
+        return self.root / "probes_xy" / system
+
     def efficiency_path(self, system: str, suffix: str = "") -> Path:
         return self.root / "efficiency" / f"{system}{suffix}.json"
 
@@ -479,7 +483,17 @@ class EvalPaths:
         return base if self.table_name == MAIN_TABLE else base / self.table_name
 
     def samples_dir(self) -> Path:
-        return self.root / ("samples" if self.table_name == MAIN_TABLE else f"samples_{self.table_name}")
+        """``samples`` for test.clean; ``samples_<split>`` for another split; ``_<table_name>`` is appended for a table set.
+
+        Examples: ``samples`` (test.clean, main), ``samples_ablations`` (test.clean, ablations), ``samples_test.other``
+        (test.other, main), ``samples_test.other_ablations`` (test.other, ablations).
+        """
+        name = "samples"
+        if self.split != PRIMARY_SPLIT:
+            name += f"_{self.split}"
+        if self.table_name != MAIN_TABLE:
+            name += f"_{self.table_name}"
+        return self.root / name
 
 
 def read_system_audio(paths: EvalPaths, spec: "SystemSpec", condition: str, utterance_id: str) -> np.ndarray:

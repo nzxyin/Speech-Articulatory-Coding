@@ -55,6 +55,11 @@ All notable changes to this fork. Earlier history is in `git log`.
   paired comparisons, controllability, efficiency and failure-case analyses).
 - Results: section 5.3 of `docs/vocoders/RESULTS.md` (paired X-Y EMA probes) and `docs/vocoders/results/xy_probes.md`.
 
+- Evaluation stage `probes_xy` (`eval/probes_xy.py`): EMA edits per sensor along X only, Y only, the natural principal
+  and the orthogonal direction, as constant offsets, speech-only offsets, dynamic scaling and local bumps; projection
+  gain, leakage and angle from stored moments. System set `eval_systems=seeds` (seed-0 and seed-1 runs, seed-to-seed
+  pairs).
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);
@@ -66,3 +71,5 @@ All notable changes to this fork. Earlier history is in `git log`.
   use for spoken parentheticals (40 test-clean texts), so they counted as insertions for every system (absolute WER
   was about 11 % too high). The bracket characters are now removed first; stage `asr_rescore` recomputes stored counts.
 - Efficiency stage: GPU and CPU timing runs shared one DONE marker, so the first to finish made the other skip.
+- Evaluation samples: the samples directory now depends on the split (`samples_<split>` for splits other than
+  test.clean), so a test.other run cannot overwrite the test.clean samples.

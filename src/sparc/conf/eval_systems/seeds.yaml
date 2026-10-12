@@ -1,0 +1,93 @@
+# @package eval
+# Seed set (`eval_systems=seeds`): the three main systems (400k, experiment main, seed 0) next to their second training seed
+# (experiment main_seed1, seed 1), plus the gt reference. The main systems keep their names, so their results are reused from
+# the main evaluation (same files, read only here; stages for them are not run again). Seed-1 systems carry the suffix _s1.
+# Use together with `eval.table_name=seeds`, which is also set by this file, so the main tables are never overwritten.
+# Each system is one training run per seed; the seed-to-seed pairs give the run-to-run variation of every metric.
+table_name: seeds
+aggregate:
+  reference_systems: []
+  # (a, b) = a minus b. The first three are the seed-to-seed pairs (seed 1 minus seed 0 of the same vocoder).
+  pairs:
+    - [hifigan_s1, hifigan]
+    - [ddsp_s1, ddsp]
+    - [vocos_s1, vocos]
+    - [hifigan, ddsp]
+    - [hifigan, vocos]
+    - [vocos, ddsp]
+    - [hifigan_s1, ddsp_s1]
+    - [hifigan_s1, vocos_s1]
+    - [vocos_s1, ddsp_s1]
+    - [hifigan_s1, ddsp]
+    - [hifigan_s1, vocos]
+    - [vocos_s1, ddsp]
+    - [ddsp_s1, hifigan]
+    - [vocos_s1, hifigan]
+    - [ddsp_s1, vocos]
+systems:
+  gt:
+    kind: gt
+    sr: 24000
+    conditions: [T1]
+    head: refit
+    label: ground truth
+  hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN
+  ddsp:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: ddsp
+    ckpt: null
+    overrides: []
+    label: DDSP
+  vocos:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos
+  hifigan_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN (seed 1)
+  ddsp_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: ddsp
+    ckpt: null
+    overrides: []
+    label: DDSP (seed 1)
+  vocos_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos (seed 1)

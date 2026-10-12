@@ -54,6 +54,31 @@ probes:
   results_name: results.parquet
   head: refit                      # head of the re-extraction that measures the effect
 
+probes_xy:                         # paired X-Y EMA edits (src/sparc/vocoders/eval/probes_xy.py); the subset is that of `probes`
+  split: test.clean
+  sensors: [TD, TB, TT, LI, UL, LL]   # channel pairs (X, Y) = (0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11)
+  directions: [x, y, major, minor]    # unit vectors in the z-scored sensor plane (major/minor: 2-D PCA of training frames)
+  profiles: [const, speech, dyn, bump]
+  norm: 1.0                        # Euclidean norm (training std units) of const, speech and bump edits
+  signs: [-1, 1]
+  dyn_alphas: [-0.5, 0.5]          # dyn: component along the direction scaled by 1 + alpha around the utterance mean
+  speech:
+    db_below_p95: 20.0             # speech frames: loudness above this many dB under the utterance 95th percentile
+    gap_frames: 5                  # gaps of at most this many frames between speech frames are closed
+    ramp_frames: 5                 # Hann ramp (100 ms) at the speech edges of the speech-only profile
+  bump:
+    length_ms: 300
+    positions: [0.2, 0.5, 0.8]     # fractions of the speech frames at which the three bumps are centred
+  pca:
+    split: train.clean.100
+    stride: 20
+  n_utterances: null               # null: the whole probe subset; N keeps every k-th of it (smoke runs)
+  only: null                       # null: all edits; else a list of fnmatch patterns of edit names (smoke runs)
+  example_utterances: 1            # utterances whose unedited and edited audio is written under wav/<id>/ (16-bit)
+  edit_dir: edits
+  results_name: results.parquet
+  head: refit
+
 efficiency:
   n_utterances: 50                 # the probe subset (3-10 s, at most 2 per speaker)
   warmup_calls: 5
