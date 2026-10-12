@@ -11,14 +11,23 @@ periodicity), the same speaker conditioning (FiLM from a SPARC speaker embedding
 and the same training recipe and budget. The EMA comes from the per-utterance MNGU0 refit of the linear AAI head
 (`linear_aai_mngu0_refit_peralign.pkl`), not from the head embedded in the `en+` checkpoint.
 
-Status (2026-10-05): Phase 1 approved in full (decisions D1-D10). Phase 2 code is complete on branch
-`vocoder-comparison` (contract: `docs/vocoders/INTERFACES.md`; 304 tests). All three vocoders pass an end-to-end GPU
-smoke run (train, validate, preempt/resume, predict) and an overfit check on 4 utterances (aligned within 0.6 ms by
-envelope cross-correlation; Whisper transcripts match the reference audio). The feature cache is complete: 358,332
-utterances in all 7 splits (171 too short to encode), training statistics over 339,007 utterances (97.2 M frames).
-All training is fp32; the bf16 precision pilot was dropped. Running on `preempt` (tracking issue #19): the HiFi-GAN and
-DDSP primary runs (400k generator steps) and the Vocos option A and B pilots (25k steps). The Vocos primary run uses
-the pilot winner (lower dev mel L1 at 25k; option B wins within 2 %).
+Status (2026-10-12): all three phases are done. The three primary runs (400k generator steps, fp32, one GPU each) and 12
+ablation runs (100k steps) are trained, and the Phase 3 evaluation on test.clean is complete (code `sparc.vocoders.eval`,
+contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.md`; tables are in
+`docs/vocoders/results/`. Large outputs (checkpoints, audio, per-utterance results, samples, failure cases) are under
+`/data/user_data/xoy/sparc-vocoders/` (`runs/`, `eval/`).
+
+## Main findings (test.clean, single training run per arm; see RESULTS.md for paired CIs)
+
+- HiFi-GAN leads on quality and speaker similarity: UTMOS 4.17 against 3.90 (Vocos) and 3.83 (DDSP), ground truth 4.21.
+- WER does not separate the vocoders (2.45, 2.52, 2.55 percent; ground truth 1.89 percent).
+- Prosody failures differ: DDSP follows F0 best (18 cents RMSE) but has the worst voicing and loudness; Vocos has the
+  largest F0 error (35 cents, broad deviations, not octave errors); HiFi-GAN is best on voicing and loudness.
+- F0 and loudness edits are followed closely; single-channel EMA edits are not (gain about 0.1), although natural EMA
+  variation is reproduced with slope 1.0. The cause is open.
+- Vocos is the cheapest (RTF 0.0008 on an L40S, 0.027 on one CPU thread) and has the shortest lookahead (196 ms).
+- Ablations at 100k: Vocos option B beats A; MSD instead of MRD does not change the ranking; the native SPARC recipe
+  raises UTMOS but worsens mel L1, PESQ and WER; at about 6 M parameters the HiFi-GAN lead over DDSP is not supported.
 
 ## Measurements so far
 
@@ -28,6 +37,10 @@ the pilot winner (lower dev mel L1 at 25k; option B wins within 2 %).
 - Overfit regime (4 utterances, 4k steps): final mel L1 HiFi-GAN 0.18, DDSP 0.29 (plateaus from about 2k steps),
   Vocos 0.08; HiFi-GAN output about 3 dB quieter than the reference at that point.
 - "fp32" runs use cuDNN TF32 convolutions (PyTorch default); the feature extractor disables TF32.
+- RTX A6000 nodes (21 % of `preempt` GPUs) run this fp32 training about 4 times slower (HiFi-GAN 1.35 s/step);
+  submit with `SBATCH_CONSTRAINT="L40S|L40|6000Ada|RTX_PRO_6000|A100_80GB|A100_80G|A100_40GB|H100|H200"`.
+- Evaluation of one vocoder on test.clean (3 conditions): about 1.5 GPU-hours plus about 45 CPU-minutes (signal
+  metrics, one process per system and condition).
 
 ## Findings that constrain the implementation
 

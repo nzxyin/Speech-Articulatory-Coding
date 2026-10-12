@@ -50,6 +50,8 @@ All notable changes to this fork. Earlier history is in `git log`.
 - Dependencies jiwer, pesq, pysptk, vocos, speechbrain; pytest marker `slow`.
 - Ablation evaluation: `eval_systems=ablations` selects the ablation systems and `eval.table_name` writes their
   tables under `tables/<split>/<name>/`, leaving the main tables untouched.
+- Results: `docs/vocoders/RESULTS.md` (Phase 3 write-up) and `docs/vocoders/results/` (main and ablation tables,
+  paired comparisons, controllability, efficiency and failure-case analyses).
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
