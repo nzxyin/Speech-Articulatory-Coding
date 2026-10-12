@@ -27,8 +27,8 @@ amount of training data is constant across |S|.
 
 Ridge strength is chosen once per (S, condition, train factor) from probe.ALPHAS on the validation sentences of S,
 by mean per-channel RMSE in z units (training groups mapped with their own transforms). All primary metrics are in the
-scored speaker's per-channel z units: rmse (mean over channels of the pooled RMSE), pcc (per-utterance, per-channel
-mean) and r2 (mean over channels of 1 - MSE / variance of the speaker's test targets). For the 'w'/'own' arm the error
+scored speaker's per-channel z units: rmse (rmse_z: mean over channels of the pooled RMSE) and pcc (per-utterance,
+per-channel mean), the standard AAI metrics. r2 is also stored per fit but not reported. For the 'w'/'own' arm the error
 in the whitened space is also kept ("own_space"), for reference only: whitening gives a speaker's low-variance
 directions unit weight, so it is not comparable with z-unit numbers.
 
@@ -326,7 +326,7 @@ def summary(out=None):
         L.append(f"Ridge strength at a grid edge in {edge} of {sum(len(r['fits']) for r in recs)} fits.\n")
         for cond in CONDS:
             L.append(f"\n### condition: {cond}\n")
-            for metric in ("r2", "pcc", "rmse"):
+            for metric in ("rmse", "pcc"):
                 sign = -1 if metric == "rmse" else 1
                 L.append(f"\n{metric} (unseen speakers; slope per doubling of training speakers, + = improves)\n")
                 L.append("| arm | " + " | ".join(f"k={k}" for k in range(1, 7)) + " | slope (mean) | speakers with + slope | seen k=6 |")
@@ -357,7 +357,7 @@ def summary(out=None):
                                  f" | {sum(v > 0 for v in d6.values())}/7 | " +
                                  ", ".join(f"{h} {v:+.3f}" for h, v in d6.items()) + " |")
         # per corpus, k = 6, all data
-        L.append("\n### Per corpus at k=6 (all data, unseen r2)\n")
+        L.append("\n### Per corpus at k=6 (all data, unseen rmse_z / PCC)\n")
         L.append("| arm | USC-TIMIT held out | EMA_5EMO held out |")
         L.append("|---|---|---|")
         for kind in KINDS:
@@ -365,10 +365,14 @@ def summary(out=None):
                 lab, sp, arm = lab.format(k=kind), sp.format(k=kind), arm.format(k=kind)
                 if kind == KINDS[1] and lab == "z":
                     continue
-                un, _ = curves(recs, "all", sp, arm, "r2")
-                usc = np.mean([un[h][6] for h in SPK if h.startswith("usc")])
-                emo = np.mean([un[h][6] for h in SPK if h.startswith("5emo")])
-                L.append(f"| {lab} | {usc:.4f} | {emo:.4f} |")
+                cell = []
+                for corp in ("usc", "5emo"):
+                    vals = []
+                    for m in ("rmse", "pcc"):
+                        un, _ = curves(recs, "all", sp, arm, m)
+                        vals.append(np.mean([un[h][6] for h in SPK if h.startswith(corp)]))
+                    cell.append(f"{vals[0]:.4f} / {vals[1]:.4f}")
+                L.append(f"| {lab} | {cell[0]} | {cell[1]} |")
     (root / "summary.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
 

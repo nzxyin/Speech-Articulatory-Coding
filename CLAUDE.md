@@ -316,22 +316,24 @@ mixing, so "the space" itself cannot matter for a linear probe; a 2 x 2 separate
 each training group whitened with its own correlation matrix ("w"), and mapping back with the subset's average
 whitening ("shared", uses only the new speaker's means/stds) vs the new speaker's own covariance ("own" = enrollment
 data). The train effect is exactly 0 with one training group (checked to 1e-15). Conditions: all data, and a
-frame-matched budget (constant total frames across k). Unseen r2 (z units; mean over held-out speakers and subsets):
-| encoder | z r2 k=1 -> k=6 (all) | train effect zca12 k=2 / 3 / 6 (all) | k=6 frame-matched | per-articulator zca k=6 | own-covariance recolor k=1 / k=6 |
-|---|---|---|---|---|---|
-| WavLM k7 | 0.108 -> 0.344 | +0.014 / +0.022 / +0.019 (6/7) | +0.016 | +0.003 | +0.076 / +0.039 |
-| XLS-R 300M k18 | 0.146 -> 0.362 | +0.012 / +0.018 / +0.018 (6/7) | +0.007 | +0.008 | +0.082 / +0.029 |
-| XLS-R 1B k10 | 0.111 -> 0.339 | +0.014 / +0.020 / +0.020 (6/7) | +0.007 | +0.002 | +0.074 / +0.036 |
-| w2v2 k18 | 0.075 -> 0.350 | +0.018 / +0.019 / +0.007 (4/7) | +0.012 | +0.002 | +0.089 / +0.035 |
-- More training speakers is by far the largest effect (7/7 speakers, every arm), and it is speaker diversity rather
-  than data amount: with total frames fixed, 6 speakers still beat 1 by about as much (z r2 at k=6 0.33-0.38).
+frame-matched budget (constant total frames across k). Unseen speakers, rmse_z / PCC (mean over held-out speakers and
+subsets; effects are improvements, + = better):
+| encoder | z rmse_z k=1 -> 6 | z PCC k=1 -> 6 | zca12 train effect k=2 / 3 / 6, rmse_z | same, PCC | k=6 frame-matched rmse_z / PCC | own-covariance recolor k=1 / 6, rmse_z |
+|---|---|---|---|---|---|---|
+| WavLM k7 | 0.908 -> 0.789 | 0.581 -> 0.667 | +0.007 / +0.012 / +0.013 (6/7) | +0.005 / +0.007 / +0.008 (6/7) | +0.011 / +0.006 | +0.036 / +0.024 |
+| XLS-R 300M k18 | 0.887 -> 0.777 | 0.608 -> 0.683 | +0.007 / +0.010 / +0.011 (6/7) | +0.003 / +0.005 / +0.006 (7/7) | +0.005 / +0.005 | +0.039 / +0.019 |
+| XLS-R 1B k10 | 0.907 -> 0.793 | 0.595 -> 0.665 | +0.008 / +0.011 / +0.013 (6/7) | +0.004 / +0.006 / +0.008 (6/7) | +0.005 / +0.006 | +0.035 / +0.023 |
+| w2v2 k18 | 0.916 -> 0.785 | 0.592 -> 0.675 | +0.009 / +0.010 / +0.005 (4/7) | +0.003 / +0.004 / +0.003 (4/7) | +0.007 / +0.005 | +0.038 / +0.022 |
+- More training speakers is by far the largest effect (7/7 speakers, every arm): rmse_z -0.11 to -0.13, PCC +0.07 to
+  +0.09 from 1 to 6 speakers, and about as much with total frames fixed, so it is speaker diversity, not data amount.
 - Whitening each training speaker jointly over all 12 channels (zca12) before pooling makes pooled speakers modestly
-  more useful to a new speaker: about +0.02 r2 (RMSE ~-0.012 z, PCC ~+0.007) from k=3 with all data, smaller and less
-  consistent when frames are matched. It shows on USC-TIMIT held-out speakers, not on EMA_5EMO; 5emo_jr is the usual
-  exception. Per-articulator whitening (zca) does nothing (<= +0.008).
-- Re-coloring predictions with the new speaker's own covariance at test time is the larger effect (+0.07-0.09 r2 with
-  one training speaker, +0.02-0.04 with six), but it requires that speaker's EMA (enrollment), and it shrinks as more
-  speakers are pooled. Together (= the earlier zca12 targets) unseen r2 at k=6 is 0.39-0.42 vs 0.34-0.36 for z.
+  more useful to a new speaker: about -0.011 to -0.013 rmse_z and +0.006 to +0.008 PCC at k=6 with all data (w2v2
+  half that), smaller when frames are matched. The rmse_z gain is on USC-TIMIT held-out speakers; on EMA_5EMO it is ~0.
+  5emo_jr is the usual exception. Per-articulator whitening (zca) does nothing (<= 0.005 rmse_z).
+- Re-coloring predictions with the new speaker's own covariance at test time is the larger effect (-0.035 to -0.040
+  rmse_z, +0.023 to +0.027 PCC with one training speaker; -0.019 to -0.024 / +0.016 to +0.019 with six), but it needs
+  that speaker's EMA (enrollment) and shrinks as more speakers are pooled. Both together (= the earlier zca12 targets)
+  give rmse_z 0.744-0.759 / PCC 0.691-0.711 at k=6 vs 0.777-0.793 / 0.665-0.683 for z.
 - For SPARC: a per-speaker 12-D whitened articulatory space is a small, consistent improvement for pooling speakers;
   adding speakers matters much more than the choice of space.
 
