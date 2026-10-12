@@ -33,15 +33,32 @@ All notable changes to this fork. Earlier history is in `git log`.
   logging, and preemption-safe checkpoints at batch boundaries with exact resume; `sparc-train` dispatches between the
   new and the legacy 16 kHz training; Slurm launch scripts for `preempt`.
 - Tests for every module (`tests/`, 297 tests).
-
 - Experiment config `ablation_100k` (100k generator steps, main recipe) for ablations and the Vocos option that lost
   the A/B pilot.
 - Ablation experiment configs (decision D10), 100k generator steps each: `abl_pcross0` (speaker reference always the
   target utterance), `abl_msd` (MPD + MSD), `abl_native` (the fork's loss, Adam 0.5/0.9 at lr 1e-4, no mel-only
   warm-up). Each is compared with `ablation_100k` for the same vocoder.
+- Phase 3 evaluation (`sparc.vocoders.eval`, `sparc-eval`, contract `docs/vocoders/EVALUATION.md`): resumable chunked
+  stages for gt audio, reference systems (Vocos mel copy synthesis, the authors' en+ decoder at 16 kHz), vocoder
+  synthesis, signal metrics (PESQ wb, MCD, MR-STFT, mel L1 and three bands), UTMOS, Whisper large-v3 WER/CER, ECAPA and
+  WavLM-SV speaker embeddings, no-dither SPARC re-extraction with prosody and EMA consistency, controllability probes,
+  efficiency (parameters, RTF, measured lookahead), aggregation with speaker-cluster bootstrap CI95 and paired
+  differences, and matched samples; Slurm scripts `eval.sh` and `submit_eval.sh`; tests under `tests/eval/`.
+- `SparcFeatureExtractor`: opt-in `extractor.dither=false` disables CREPE's pitch dither (default unchanged).
+- `sparc-predict`: `predict.skip_existing` (default false) leaves out utterances whose WAV exists; `run()` accepts
+  extra callbacks.
+- Dependencies jiwer, pesq, pysptk, vocos, speechbrain; pytest marker `slow`.
+- Ablation evaluation: `eval_systems=ablations` selects the ablation systems and `eval.table_name` writes their
+  tables under `tables/<split>/<name>/`, leaving the main tables untouched.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);
   `CUBLAS_WORKSPACE_CONFIG` is set for deterministic runs; the Slurm training step passes `--cpus-per-task` to srun;
   committed Slurm scripts default to relative log paths; `cudnn.benchmark` is off by default.
+
+### Fixed
+- Evaluation WER: Whisper's text normalizer deleted words in parentheses and brackets, which LibriTTS-R references
+  use for spoken parentheticals (40 test-clean texts), so they counted as insertions for every system (absolute WER
+  was about 11 % too high). The bracket characters are now removed first; stage `asr_rescore` recomputes stored counts.
+- Efficiency stage: GPU and CPU timing runs shared one DONE marker, so the first to finish made the other skip.

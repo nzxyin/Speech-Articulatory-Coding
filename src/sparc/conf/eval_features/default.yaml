@@ -1,0 +1,67 @@
+# Hydra group `eval_features` (keys at cfg.eval_features.*): re-extraction, prosody, references, probes, efficiency.
+# See docs/vocoders/EVALUATION.md sections 3 (vocos_mel, enplus16), 4.5, 5, 6 and 7.
+# Locations of the pinned checkpoints come from the same environment variables as the feature cache.
+
+reextract:
+  seed: 0                    # CREPE dither is off, so the seed has no effect; kept so the call is fully specified
+  sample_rate: 24000         # audio of other rates is resampled to this rate before the extractor
+  resample_type: soxr_hq
+  heads: [refit, shipped]    # refit: the MNGU0 refit head of the cache; shipped: the linear head inside the en+ checkpoint
+
+prosody:
+  within_cents: 50.0         # f0_within50: share of voiced-in-both frames with |error| <= this many cents
+  loud_floor_percentile: 5.0 # loudness error only on frames where the reference is above this percentile
+  loud_eps: 1.0e-4
+
+references:
+  hub_cache: ${oc.env:HF_HUB_CACHE}
+  vocos_mel:
+    repo: charactr/vocos-mel-24khz
+    revision: 0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21
+    weights_file: pytorch_model.bin
+    weights_sha256: 97ec976ad1fd67a33ab2682d29c0ac7df85234fae875aefcc5fb215681a91b2a
+    config_file: config.yaml
+  enplus:
+    # sparc.load_model("en+") with the pinned snapshot; the shipped linear head stays in place
+    repo: cheoljun95/Speech-Articulatory-Coding
+    snapshot: 2e6a07d4b35022d4366a2896a6293fe16aaed78a
+    ckpt: model_englishplus_2M.ckpt
+    ckpt_sha256: 2bec34081dd71455ac9b74046d55b894ce967d123d0de1d106142f60cee230fb
+    yaml: model_englishplus_2M.yaml
+    wavlm_repo: microsoft/wavlm-large
+    wavlm_snapshot: c1423ed94bb01d80a3f5ce5bc39f6026a0f4828c
+    input_sample_rate: 16000 # en+ analyses 16 kHz audio and synthesizes at 16 kHz
+    hop: 320                 # samples per feature frame at 16 kHz
+    peak_dbfs: -3.0          # SPARC z-scores its input, so its output level is arbitrary: peak-normalized to this level
+    seed: 0                  # numpy seed set before each encode (the shipped CREPE pitch dither stays on)
+    dither: true
+    allow_tf32: false
+
+probes:
+  split: test.clean
+  n_utterances: 50
+  duration_range_s: [3.0, 10.0]
+  max_per_speaker: 2
+  seed: 0
+  f0_semitones: [-4, -2, 2, 4]     # F0 x 2^(k/12) on voiced frames only
+  loudness_scales: [0.5, 2.0]
+  periodicity_zero: true           # periodicity set to 0 on every frame
+  ema_std_multiples: [-1.0, 1.0]   # each EMA channel c plus s * (training std of c)
+  floor_percentile: 5.0            # loudness change only on frames above this percentile of the unedited loudness
+  loud_eps: 1.0e-4
+  example_utterances: 3            # utterances whose edited audio is written under wav/<id>/<edit>.wav
+  edit_dir: edits                  # per-edit parquet files under <out_dir>/<edit_dir>/
+  results_name: results.parquet
+  head: refit                      # head of the re-extraction that measures the effect
+
+efficiency:
+  n_utterances: 50                 # the probe subset (3-10 s, at most 2 per speaker)
+  warmup_calls: 5
+  gpu: true                        # time the CUDA device when device="cuda"
+  cpu_threads: [1, 8]
+  receptive_field:
+    frames: 400
+    perturb_frame: 200
+    perturb_std: 0.5               # in units of the training std of the normalized (z-scored, log for F0 and loudness) input
+    threshold: 1.0e-4              # of max |y|
+    crop: centre                   # a centred window of `frames` frames of the first probe utterance that is long enough

@@ -1,0 +1,156 @@
+# @package eval
+# Ablation systems (decision D10) plus the gt reference, selected with `eval_systems=ablations`. Every ablation is compared
+# with the 100k baseline of the same vocoder (experiment ablation_100k, same schedule); the 400k main runs are not part of
+# this set. System names carry a prefix so that results never collide with the main systems (results/, embeddings/ and
+# arrays/ are keyed by system name); the gt results are shared with the main set (same name, same files, read only here).
+# Use together with `eval.table_name=ablations`, which is also set by this file, so the main tables are never overwritten.
+# Each arm is a single training run; see eval.aggregate.note.
+table_name: ablations
+aggregate:
+  reference_systems: []
+  # (a, b) = a minus b. Baseline name a100k_<vocoder>.
+  pairs:
+    - [a100k_vocos_a, a100k_vocos]               # Vocos option A versus B
+    - [pcross0_hifigan, a100k_hifigan]           # p_cross 0 versus 0.5 (T2 and T3 matter most)
+    - [native_hifigan, a100k_hifigan]            # native SPARC recipe versus shared recipe
+    - [msd_hifigan, a100k_hifigan]               # MSD versus MRD
+    - [msd_vocos, a100k_vocos]
+    - [msd_ddsp, a100k_ddsp]
+    - [a100k_hifigan_c320, a100k_hifigan]        # size within a family
+    - [a100k_vocos_d336, a100k_vocos]
+    - [a100k_ddsp_c448, a100k_ddsp]
+    - [a100k_hifigan_c320, a100k_ddsp]           # about 6 M parameters
+    - [a100k_vocos_d336, a100k_ddsp]
+    - [a100k_hifigan_c320, a100k_vocos_d336]
+    - [a100k_ddsp_c448, a100k_hifigan]           # about 14 M parameters
+    - [a100k_ddsp_c448, a100k_vocos]
+    - [a100k_hifigan, a100k_vocos]               # the 100k baselines among each other
+    - [a100k_hifigan, a100k_ddsp]
+    - [a100k_vocos, a100k_ddsp]
+systems:
+  gt:
+    kind: gt
+    sr: 24000
+    conditions: [T1]
+    head: refit
+    label: ground truth
+  a100k_hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN 100k (MRD)
+  a100k_vocos:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos B 100k (MRD)
+  a100k_ddsp:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: ddsp
+    ckpt: null
+    overrides: []
+    label: DDSP 100k (MRD)
+  a100k_vocos_a:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: vocos_a
+    ckpt: null
+    overrides: []
+    label: Vocos A 100k
+  a100k_hifigan_c320:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: hifigan_c320
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN c320 100k (about 6 M)
+  a100k_vocos_d336:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: vocos_d336
+    ckpt: null
+    overrides: []
+    label: Vocos d336 100k (about 6 M)
+  a100k_ddsp_c448:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: ablation_100k
+    vocoder: ddsp_c448
+    ckpt: null
+    overrides: []
+    label: DDSP c448 100k (about 14 M)
+  pcross0_hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: abl_pcross0
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN p_cross 0
+  native_hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: abl_native
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN native recipe
+  msd_hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: abl_msd
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN MSD
+  msd_vocos:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: abl_msd
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos MSD
+  msd_ddsp:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: abl_msd
+    vocoder: ddsp
+    ckpt: null
+    overrides: []
+    label: DDSP MSD

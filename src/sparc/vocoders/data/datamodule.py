@@ -236,19 +236,51 @@ class VocoderDataModule(L.LightningDataModule):
         chosen = np.random.default_rng([self.cfg.seed, PREDICT_STREAM]).permutation(len(ids))[: int(limit)]
         return sorted(ids[chosen].tolist())
 
-    def predict_dataloader(self) -> list[DataLoader]:
-        data = self.cfg.data
+    def predict_output_dir(self) -> Path | None:
+        """``<predict.output_dir>/<split>`` when ``predict.skip_existing`` is on, else ``None`` (nothing is skipped)."""
+        predict = self.cfg.get("predict")
+        if predict is None or not predict.get("skip_existing", False):
+            return None
+        return Path(predict.output_dir) / self.cfg.data.predict_split
+
+    def pending_ids(self, condition: str) -> list[str] | None:
+        """Target ids of ``condition`` whose WAV does not exist yet; ``None`` means every utterance of the split.
+
+        Only used with ``predict.skip_existing``. Dropping ids before the dataset is built does not change the
+        T2/T3 references of the others (they come from the whole packed split), and an id without a reference pool
+        stays absent from T2/T3 as before.
+        """
+        out = self.predict_output_dir()
         ids = self.predict_ids()
-        return [
-            self._eval_loader(
-                FullUtteranceDataset(
-                    self._packed(data.predict_split),
-                    ids=ids,
-                    gain_db=data.eval_gain_db,
-                    condition=condition,
-                    speaker_layer=self.cfg.speaker.layer,
-                    ref_min_dur=data.ref_min_dur,
-                )
+        if out is None:
+            return ids
+        if ids is None:
+            index = pd.read_parquet(self._packed(self.cfg.data.predict_split) / "index.parquet", columns=["id"])
+            ids = sorted(index["id"].astype(str))
+        return [i for i in ids if not (out / condition / f"{i}.wav").is_file()]
+
+    def predict_dataloader(self) -> list[DataLoader]:
+        """One loader per condition. With ``predict.skip_existing`` utterances whose WAV exists are left out, and a
+        condition with nothing left gets no loader (the writer reads the condition from each prediction)."""
+        data = self.cfg.data
+        loaders = []
+        for condition in data.predict_conditions:
+            ids = self.pending_ids(condition)
+            if ids is not None and not ids:
+                continue
+            dataset = FullUtteranceDataset(
+                self._packed(data.predict_split),
+                ids=ids,
+                gain_db=data.eval_gain_db,
+                condition=condition,
+                speaker_layer=self.cfg.speaker.layer,
+                ref_min_dur=data.ref_min_dur,
             )
-            for condition in data.predict_conditions
-        ]
+            if self.predict_output_dir() is not None and len(dataset) == 0:
+                continue
+            loaders.append(self._eval_loader(dataset))
+        return loaders
+
+    def has_pending_prediction(self) -> bool:
+        """False when ``predict.skip_existing`` is on and every wanted WAV exists (nothing to run)."""
+        return len(self.predict_dataloader()) > 0
