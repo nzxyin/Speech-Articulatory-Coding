@@ -323,3 +323,16 @@ def test_system_spec_lookup_is_validated(root, monkeypatch):
     bad = toy_config(root, "+eval.systems.x={kind:vocoder,sr:24000,conditions:[T1]}")
     with pytest.raises(ValueError, match="experiment"):
         load_systems(bad)
+
+
+def test_samples_dir_depends_on_split_and_table_name(tmp_path):
+    def sdir(split, table_name="main", limit=None):
+        return io.EvalPaths(tmp_path / "eval", tmp_path / "runs", split, limit, table_name).samples_dir()
+
+    root = tmp_path / "eval"
+    assert sdir("test.clean") == root / "samples"  # unchanged path of the primary split
+    assert sdir("test.clean", "ablations") == root / "samples_ablations"
+    assert sdir("test.other") == root / "samples_test.other"
+    assert sdir("test.other", "ablations") == root / "samples_test.other_ablations"
+    assert sdir("test.other", limit=4) == root / "smoke_4" / "samples_test.other"
+    assert len({sdir("test.clean"), sdir("test.other"), sdir("test.clean", "ablations"), sdir("test.other", "ablations")}) == 4

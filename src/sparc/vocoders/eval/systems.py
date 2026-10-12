@@ -28,6 +28,7 @@ STAGES = (
     "reextract",
     "prosody",
     "probes",
+    "probes_xy",
     "efficiency",
     "aggregate",
     "samples",
@@ -46,6 +47,7 @@ STAGE_KINDS: dict[str, tuple[str, ...]] = {
     "reextract": KINDS,
     "prosody": KINDS,
     "probes": ("vocoder",),
+    "probes_xy": ("vocoder",),
     "efficiency": ("reference", "vocoder"),
 }
 

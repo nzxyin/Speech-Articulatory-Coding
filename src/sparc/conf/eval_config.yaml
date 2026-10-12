@@ -9,7 +9,7 @@ defaults:
   - _self_
   - eval_systems: main     # the system registry (name -> spec); eval_systems=ablations selects the ablation systems
 
-# stage: gt | synth | refs | signal | utmos | asr | spk | reextract | prosody | probes | efficiency | aggregate | samples
+# stage: gt | synth | refs | signal | utmos | asr | spk | reextract | prosody | probes | probes_xy | efficiency | aggregate | samples
 stage: ???
 system: all          # a name of eval.systems, or all (every system the stage applies to)
 condition: all       # T1 | T2 | T3 | all (every condition of the system)
