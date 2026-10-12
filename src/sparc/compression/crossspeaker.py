@@ -12,6 +12,13 @@ new speakers (USC-TIMIT M1/F1/M3/F5, EMA_5EMO jn/jr/kf) it is evaluated on that 
                   differences), fitted and evaluated the same way: how much of the articulatory signal the
                   model's output carries, given a per-speaker readout calibration.
 
+With --z-units, every mapping is also scored in the new speaker's per-channel z units (rmse_z and PCC, the
+primary metrics), and three unpaired mappings are added that need only the new speaker's EMA statistics from its
+training split (no paired audio): z_transfer (MNGU0 z-score -> the speaker's z: its means / stds) and recolor_zca /
+recolor_zca12 (whiten with MNGU0's correlation, re-color with the speaker's: A_h^-1 A_M, symmetric whitening of
+z-correlation matrices, per articulator or over all 12 channels). Models trained on whitened MNGU0 targets
+(dataset mngu0_zca12) are mapped back to MNGU0 mm first.
+
 Outputs: <features_ema_multi>/crossspeaker_zero_shot.json and a printed table.
 Usage: python -m sparc.compression.crossspeaker [--calib-utts 120]
 """
@@ -75,6 +82,7 @@ class AdaptedModel:
         run_dir = Path(run_dir)
         res = json.loads((run_dir / "results.json").read_text())
         args = Namespace(**res["config"])
+        self.target_ds = datasets.get(args.dataset) if getattr(args, "dataset", "mngu0").startswith("mngu0_") else None
         args.dataset = "mngu0"
         args.bf16 = device == "cuda"
         model, head, _ = build(args, device)
@@ -96,7 +104,8 @@ class AdaptedModel:
     def __call__(self, wav):
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.args.bf16):
             y, _ = forward(self.model, self.head, [normalize_wav(wav)], self.device, self.args.layer_pool, train=False)
-        return y[0].float().cpu().numpy() * self.ys + self.ym
+        out = y[0].float().cpu().numpy() * self.ys + self.ym
+        return out if self.target_ds is None else self.target_ds.to_mm(None, out).astype(np.float32)
 
 
 class SparcModel:
@@ -133,7 +142,7 @@ def fit_linear(P, Y, alpha=1e-3):
     return lambda X: np.concatenate([X, np.ones((len(X), 1))], 1) @ W
 
 
-def evaluate_model(fn, calib, test, ds, to_mm):
+def evaluate_model(fn, calib, test, ds, to_mm, mstats=None):
     """calib / test: lists of Utterance (targets in the speaker's mm after to_mm)."""
     pc = [fn(u.wav) for u in calib]
     pt = [fn(u.wav) for u in test]
@@ -156,9 +165,51 @@ def evaluate_model(fn, calib, test, ds, to_mm):
     zs = ema_metrics(raw, true, n_boot=0)
     a = ema_metrics([aff(x) for x in raw], true, n_boot=0)
     li = ema_metrics([lin(x) for x in raw], true, n_boot=0)
-    return {"shift": shift, "zero_shot_pcc": zs["pcc"], "zero_shot_pcc_per_channel": {k: v["pcc"] for k, v in zs["per_channel"].items()},
-            "affine_rmse": a["rmse"], "affine_pcc": a["pcc"], "linear_rmse": li["rmse"], "linear_pcc": li["pcc"],
-            "n_test": len(test)}
+    res = {"shift": shift, "zero_shot_pcc": zs["pcc"], "zero_shot_pcc_per_channel": {k: v["pcc"] for k, v in zs["per_channel"].items()},
+           "affine_rmse": a["rmse"], "affine_pcc": a["pcc"], "linear_rmse": li["rmse"], "linear_pcc": li["pcc"],
+           "n_test": len(test)}
+    if mstats is not None:
+        res["z_units"] = evaluate_z_units(pc, pt, calib, test, shift, ds, test[0].speaker, mstats)
+    return res
+
+
+def zunit_metrics(P, Y):
+    Pc, Yc = np.concatenate(P), np.concatenate(Y)
+    m = ema_metrics(P, Y, n_boot=0)
+    return {"rmse_z": float(np.sqrt(((Pc - Yc) ** 2).mean(0)).mean()), "pcc": m["pcc"]}
+
+
+def mngu0_flipped_stats():
+    """MNGU0 training-split mean, std and z-correlation in the new corpora's frame (x negated)."""
+    ds = datasets.get("mngu0")
+    Y = np.concatenate([ds.load_targets(s).ema_mm for s in ds.splits()["train"]]).astype(np.float64)
+    Y[:, X_CH] *= -1
+    m, sd = Y.mean(0), Y.std(0)
+    return m, sd, np.corrcoef(Y.T)
+
+
+def evaluate_z_units(pc, pt, calib, test, shift, ds, spk, mstats):
+    """Scores in the speaker's z units. pc / pt: raw predictions (mm, x already negated)."""
+    m, sd, CM = mstats
+    tp = [paired(p, u, shift) for p, u in zip(pt, test)]
+    raw = [a.astype(np.float64) for a, _ in tp]
+    true = [b.astype(np.float64) for _, b in tp]
+    zM = [(x - m) / sd for x in raw]
+    out = {"z_transfer": zunit_metrics(zM, true)}
+    g = test[0].norm_key or spk
+    Ch = ds._cov[g] / np.outer(ds._stats[g][1], ds._stats[g][1])
+    for kind in ("zca", "zca12"):
+        AM = datasets.target_matrices(kind, CM, np.ones(12))[0]
+        _, Ah_inv = datasets.target_matrices(kind, Ch, np.ones(12))
+        Mx = (Ah_inv @ AM).T
+        out[f"recolor_{kind}"] = zunit_metrics([z @ Mx for z in zM], true)
+    cp = [paired(p, u, shift) for p, u in zip(pc, calib)]
+    P = np.concatenate([a for a, _ in cp]).astype(np.float64)
+    Y = np.concatenate([b for _, b in cp]).astype(np.float64)
+    aff, lin = fit_affine(P, Y), fit_linear(P, Y)
+    out["paired_affine"] = zunit_metrics([aff(x) for x in raw], true)
+    out["paired_linear"] = zunit_metrics([lin(x) for x in raw], true)
+    return out
 
 
 def models_to_run():
@@ -177,6 +228,10 @@ def models_to_run():
           for m, k in (("wavlm-large", 9), ("xlsr-300m", 18), ("xlsr-1b", 16)) for s in (1, 2)],
         *[(f"lora+cc w2v2-large k{W2V2_K} s{s}", "adapted",
            ADAPT / f"w2v2-large/prefix{W2V2_K}_independent_r8_q_proj+v_proj_conv_causal_s{s}") for s in (0, 1, 2)],
+        # trained on zca12-whitened MNGU0 targets (SPARC-style single speaker, whitened)
+        *[(f"lora+cc[w] {m} k{k} s{s}", "adapted",
+           datasets.adapt_root("mngu0_zca12") / f"{m}/prefix{k}_independent_r8_q_proj+v_proj_conv_causal_s{s}")
+          for m, k in (("wavlm-large", 9), ("xlsr-300m", 18), ("xlsr-1b", 16), ("w2v2-large", W2V2_K)) for s in (0, 1, 2)],
         ("pruned xlsr-300m keep0.75", "pruned",
          ADAPT / "xlsr-300m/pruned/prefix18_independent_r8_q_proj+v_proj_conv_causal_s0_keep0.75_taylor_steps4_s0"),
         ("pruned xlsr-300m keep0.5", "pruned",
@@ -190,6 +245,7 @@ def main():
     ap.add_argument("--max-test", type=int, default=None, help="debug: cap test utterances per speaker")
     ap.add_argument("--models", nargs="*", default=None, help="subset of model names (substring match)")
     ap.add_argument("--out", default=str(datasets.features_root("ema_multi") / "crossspeaker_zero_shot.json"))
+    ap.add_argument("--z-units", action="store_true", help="also score in the speaker's z units, with unpaired mappings")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ds = datasets.EMAMulti(held_out=())  # every speaker is unseen for MNGU0-trained models
@@ -206,6 +262,7 @@ def main():
         data[spk] = ([ds.load_utterance(s) for s in calib], [ds.load_utterance(s) for s in test])
         print(spk, "calibration", len(calib), "test", len(test), flush=True)
     ym, ys = mngu0_target_stats()
+    mstats = mngu0_flipped_stats() if args.z_units else None
     out = json.loads(Path(args.out).read_text()) if Path(args.out).exists() else {}
     for name, kind, spec in models_to_run():
         if args.models and not any(m in name for m in args.models):
@@ -221,13 +278,20 @@ def main():
             fn = ProbeModel(*spec, device)
         else:
             fn = AdaptedModel(spec, device, ym, ys, pruned=kind == "pruned")
-        res = {spk: evaluate_model(fn, calib, test, ds, ds.to_mm) for spk, (calib, test) in data.items()}
-        res["mean"] = {k: float(np.mean([v[k] for s, v in res.items() if s != "mean"]))
+        res = {spk: evaluate_model(fn, calib, test, ds, ds.to_mm, mstats) for spk, (calib, test) in data.items()}
+        if mstats is not None:
+            res["mean_z_units"] = {mp: {k: float(np.mean([v["z_units"][mp][k] for s, v in res.items() if s in data]))
+                                        for k in ("rmse_z", "pcc")}
+                                   for mp in next(iter(res.values()))["z_units"]}
+        res["mean"] = {k: float(np.mean([v[k] for s, v in res.items() if s in data]))
                        for k in ("zero_shot_pcc", "affine_rmse", "affine_pcc", "linear_rmse", "linear_pcc")}
         out[name] = res
         print(f"{name:32s} zero-shot PCC {res['mean']['zero_shot_pcc']:.3f}  affine RMSE {res['mean']['affine_rmse']:.3f} mm "
               f"PCC {res['mean']['affine_pcc']:.3f}  linear RMSE {res['mean']['linear_rmse']:.3f} mm PCC {res['mean']['linear_pcc']:.3f}",
               flush=True)
+        if mstats is not None:
+            print("    z units (rmse_z / PCC): " + ", ".join(f"{mp} {v['rmse_z']:.3f} / {v['pcc']:.3f}"
+                                                         for mp, v in res["mean_z_units"].items()), flush=True)
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(out, indent=1))
         del fn

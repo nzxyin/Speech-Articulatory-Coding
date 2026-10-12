@@ -53,8 +53,25 @@ class Utterance:
 
 
 class MNGU0:
+    """MNGU0 in mm; target 'zca' / 'zca12' fits on the whitened EMA instead (datasets.target_matrices with MNGU0's
+    training-split mean / covariance) and maps predictions back to mm for every metric (rmse_target: whitened space)."""
     name = "mngu0"
     shift_candidates = mngu0.SHIFT_CANDIDATES
+
+    def __init__(self, target="mm"):
+        if target not in ("mm", "zca", "zca12"):
+            raise ValueError(target)
+        self.target = target
+        if target != "mm":
+            Y = np.concatenate([mngu0.load_ema_mm(s) for s in mngu0.stems_by_split()["train"]]).astype(np.float64)
+            self.mean, cov = Y.mean(0), np.cov(Y.T, bias=True)
+            self.std = np.sqrt(np.diag(cov))
+            self.A, self.Ainv = target_matrices(target, cov, self.std)
+
+    def _fwd(self, e):
+        if self.target == "mm":
+            return e
+        return (((e - self.mean) / self.std) @ self.A.T).astype(np.float32)
 
     def splits(self):
         return mngu0.stems_by_split()
@@ -67,7 +84,7 @@ class MNGU0:
 
     def load_utterance(self, stem):
         u = mngu0.load_utterance(stem)
-        return Utterance(stem=stem, wav=u.wav, ema_mm=u.ema_mm, base_offset=u.base_offset, phones=u.phones,
+        return Utterance(stem=stem, wav=u.wav, ema_mm=self._fwd(u.ema_mm), base_offset=u.base_offset, phones=u.phones,
                          speaker="mngu0", sil_end=u.sil_end)
 
     def load_targets(self, stem):
@@ -75,7 +92,7 @@ class MNGU0:
         phones = mngu0.load_phones(stem)
         sil_end = phones[0][1] if phones and phones[0][2] == mngu0.SILENCE else 0.0
         u = mngu0.Utterance(stem=stem, wav=None, ema_mm=mngu0.load_ema_mm(stem), sil_end=sil_end, phones=phones)
-        return Utterance(stem=stem, wav=None, ema_mm=u.ema_mm, base_offset=u.base_offset, phones=phones,
+        return Utterance(stem=stem, wav=None, ema_mm=self._fwd(u.ema_mm), base_offset=u.base_offset, phones=phones,
                          speaker="mngu0", sil_end=sil_end)
 
     def frame_phones(self, u, offset, n):
@@ -83,10 +100,18 @@ class MNGU0:
                                                   phones=u.phones), offset, n)
 
     def to_mm(self, u, arr):
-        return arr
+        if self.target == "mm":
+            return arr
+        return (arr @ self.Ainv.T) * self.std + self.mean
 
     def evaluate(self, utts, preds, trues, phones=None, n_boot=1000):
-        return ema_metrics(preds, trues, phones=phones, n_boot=n_boot)
+        if self.target == "mm":
+            return ema_metrics(preds, trues, phones=phones, n_boot=n_boot)
+        P, Y = np.concatenate(preds), np.concatenate(trues)
+        out = ema_metrics([self.to_mm(None, p) for p in preds], [self.to_mm(None, t) for t in trues],
+                          phones=phones, n_boot=n_boot)
+        out["rmse_target"] = float(np.sqrt(((P - Y) ** 2).mean(0)).mean())
+        return out
 
 
 EMA_ROOT = Path("/data/user_data/xoy/ema_corpora")
@@ -304,6 +329,8 @@ def get(name):
     if name == "mngu0":
         return MNGU0()
     base, target = split_target(name)
+    if base == "mngu0":
+        return MNGU0(target=target)
     if base == "ema_multi":
         return EMAMulti(target=target)
     if base.startswith("ema_loso_"):  # leave-one-speaker-out fold: train on the other six speakers
@@ -316,7 +343,8 @@ def get(name):
 
 ALL_SPEAKERS = ("usc_M1", "usc_F1", "usc_M3", "usc_F5", "5emo_jn", "5emo_jr", "5emo_kf")
 _BASES = ("ema_multi",) + tuple(f"ema_loso_{s}" for s in ALL_SPEAKERS)
-DATASET_NAMES = ("mngu0",) + _BASES + tuple(f"{b}_{t}" for b in _BASES for t in TARGETS[1:])
+DATASET_NAMES = (("mngu0", "mngu0_zca", "mngu0_zca12") + _BASES
+                 + tuple(f"{b}_{t}" for b in _BASES for t in TARGETS[1:]))
 
 
 XLSR_EMA = Path("/data/user_data/xoy/xlsr_ema")
