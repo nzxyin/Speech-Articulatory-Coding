@@ -35,6 +35,7 @@ STOP_SIGNALS = (signal.SIGUSR1, signal.SIGTERM)
 PREDICT_STREAM = 2  # stream of VocoderDataModule.predict_ids; the eval limit uses the same draw
 T2_CONDITION = "T2"
 SPEAKER_MEAN_REF = "speaker_mean"
+MAIN_TABLE = "main"  # eval.table_name of the main systems: their tables keep the path tables/<split>/
 EXTRA_PACKAGES = (
     "numpy",
     "pandas",
@@ -420,12 +421,16 @@ def gt_audio(store: PackedStore, utt: int, gain_db: float) -> np.ndarray:
 
 @dataclass(frozen=True)
 class EvalPaths:
-    """Locations under ``eval_root`` (contract section 2). A smoke run (``limit``) lives under ``eval_root/smoke_<N>``."""
+    """Locations under ``eval_root`` (contract section 2). A smoke run (``limit``) lives under ``eval_root/smoke_<N>``.
+
+    ``table_name`` separates the aggregate output of a second set of systems from the main tables (see ``tables_dir``).
+    """
 
     eval_root: Path
     runs_root: Path
     split: str
     limit: int | None = None
+    table_name: str = MAIN_TABLE
 
     @property
     def root(self) -> Path:
@@ -469,10 +474,12 @@ class EvalPaths:
         return self.root / "efficiency" / f"{system}{suffix}.json"
 
     def tables_dir(self) -> Path:
-        return self.root / "tables" / self.split
+        """``tables/<split>`` for the main set; ``tables/<split>/<table_name>`` for any other table set (ablations)."""
+        base = self.root / "tables" / self.split
+        return base if self.table_name == MAIN_TABLE else base / self.table_name
 
     def samples_dir(self) -> Path:
-        return self.root / "samples"
+        return self.root / ("samples" if self.table_name == MAIN_TABLE else f"samples_{self.table_name}")
 
 
 def read_system_audio(paths: EvalPaths, spec: "SystemSpec", condition: str, utterance_id: str) -> np.ndarray:

@@ -1,0 +1,15 @@
+# @package _global_
+# Ablation (decision D10): MPD + MSD in place of MPD + MRD (loss=msd), 100k generator steps; compare with
+# experiment=ablation_100k for the same vocoder. Run for all three vocoders, since the MRD's spectral domain is the
+# native output domain of Vocos and of the DDSP noise branch.
+defaults:
+  - override /loss: msd
+experiment_name: abl_msd
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64

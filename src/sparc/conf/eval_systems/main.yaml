@@ -1,0 +1,62 @@
+# @package eval
+# The main systems of the evaluation (group `eval_systems`, default). `eval_systems=ablations` selects the ablation set instead.
+# name -> spec (io/systems.py). A vocoder names a trained run by `experiment` and `vocoder`; ablation runs are added
+# on the command line, e.g. `+eval.systems.hifigan_c256='{kind: vocoder, sr: 24000, conditions: [T1,T2,T3], experiment: main, vocoder: hifigan_c256}'`.
+systems:
+  gt:
+    kind: gt
+    sr: 24000
+    conditions: [T1]
+    head: refit
+    label: ground truth
+  gt_shipped:            # the gt audio re-extracted with the shipped en+ head: the pitch/EMA reference of enplus16
+    kind: gt
+    sr: 24000
+    conditions: [T1]
+    head: shipped
+    audio_from: gt
+    stages: [reextract]
+    label: ground truth (shipped head)
+  vocos_mel:
+    kind: reference
+    sr: 24000
+    conditions: [T1]
+    head: refit
+    label: Vocos mel copy synthesis
+  enplus16:
+    kind: reference
+    sr: 16000
+    conditions: [T1, T2]
+    head: shipped
+    ema_ref: gt_shipped
+    label: SPARC en+ (16 kHz)
+  hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: hifigan
+    ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
+    overrides: []   # extra vocoder_config overrides, e.g. eval.systems.hifigan.overrides=['train.max_g_steps=2']
+    label: HiFi-GAN
+  ddsp:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: ddsp
+    ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
+    overrides: []   # extra vocoder_config overrides, e.g. eval.systems.ddsp.overrides=['train.max_g_steps=2']
+    label: DDSP
+  vocos:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: vocos
+    ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
+    overrides: []   # extra vocoder_config overrides, e.g. eval.systems.vocos.overrides=['train.max_g_steps=2']
+    label: Vocos

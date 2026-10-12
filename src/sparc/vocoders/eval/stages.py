@@ -24,6 +24,7 @@ from sparc.vocoders.constants import SAMPLE_RATE
 from sparc.vocoders.data.dataset import PackedStore
 from sparc.vocoders.data.gain import gain_factor
 from sparc.vocoders.eval.io import (
+    MAIN_TABLE,
     ChunkReport,
     EvalPaths,
     StageMeta,
@@ -101,7 +102,9 @@ class EvalContext:
         self.cfg = cfg
         self.split = str(cfg.eval.split)
         self.limit = int(cfg.eval.limit) if cfg.eval.limit else None
-        self.paths = EvalPaths(Path(cfg.paths.eval_root), Path(cfg.paths.runs_root), self.split, self.limit)
+        self.paths = EvalPaths(
+            Path(cfg.paths.eval_root), Path(cfg.paths.runs_root), self.split, self.limit, str(cfg.eval.get("table_name", MAIN_TABLE))
+        )
         self.systems = load_systems(cfg)
         self.stop = stop if stop is not None else StopFlag()
         self.chunk_size = int(cfg.eval.chunk_size)

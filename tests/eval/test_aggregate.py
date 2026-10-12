@@ -210,9 +210,9 @@ def toy(tmp_path):
     return tmp_path
 
 
-def fake_results(paths, systems, table, rng, skip=()):
+def fake_results(paths, systems, table, rng, skip=(), quality=None):
     """Result parts and 4-d speaker embeddings for every reported system; ``skip`` lists (system, condition, group)."""
-    quality = {"gt": 4.2, "vocos_mel": 3.8, "enplus16": 3.3, "hifigan": 3.0, "ddsp": 2.5, "vocos": 3.5}
+    quality = quality or {"gt": 4.2, "vocos_mel": 3.8, "enplus16": 3.3, "hifigan": 3.0, "ddsp": 2.5, "vocos": 3.5}
     chunks_all = io.chunk_plan(table["id"].tolist(), 8)
     for spec in agg.reported_systems(systems):
         for cond in spec.conditions:

@@ -1,0 +1,20 @@
+# @package _global_
+# Ablation (decision D10): the SPARC fork's native HiFi-GAN recipe (loss=native_hifigan: MPD + MSD, LSGAN, fork
+# weights) with the fork's optimizer settings (Adam betas 0.5/0.9, lr 1e-4, no weight decay) and no mel-only warm-up,
+# 100k generator steps. The fork's step decay halves the learning rate every 8k steps (issue #10, a bug), so the shared
+# warm-up + cosine schedule replaces it. Batch stays 16 x 1.28 s (the fork's 64 x 0.32 s is the same audio per step).
+defaults:
+  - override /loss: native_hifigan
+experiment_name: abl_native
+optim:
+  lr: 1.0e-4
+  betas: [0.5, 0.9]
+  weight_decay: 0.0
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 0
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64

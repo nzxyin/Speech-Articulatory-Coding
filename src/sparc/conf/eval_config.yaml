@@ -7,6 +7,7 @@ defaults:
   - eval_metrics: default
   - eval_features: default
   - _self_
+  - eval_systems: main     # the system registry (name -> spec); eval_systems=ablations selects the ablation systems
 
 # stage: gt | synth | refs | signal | utmos | asr | spk | reextract | prosody | probes | efficiency | aggregate | samples
 stage: ???
@@ -20,6 +21,7 @@ paths:
 
 eval:
   split: test.clean
+  table_name: main         # main: tables/<split>/ (as before); any other name writes tables/<split>/<name>/ (and samples_<name>/)
   limit: null              # N: a fixed random subset of N ids, written under eval_root/smoke_<N>/ (never mixed with full results)
   seed: ${seed}            # seed of the limit subset (the same draw as data.predict_limit) and of the samples
   chunk_size: 256          # utterances per chunk of the sorted id list; chunk k writes part-<k:04d>
@@ -45,69 +47,10 @@ eval:
     ci: 0.95
     split_chapters: true   # T2 reported also stratified by same / different chapter
     reference_systems: [vocos_mel, enplus16]   # every vocoder is also compared with these on shared ids
+    pairs: null            # null: every pair of vocoders; else a list of [system a, system b] (a - b, under their shared conditions)
     note: >-
       Each arm is a single training run: differences between vocoders include run-to-run variance that this table
       cannot separate from an architecture effect. Intervals are speaker-cluster bootstrap CI95 over test speakers.
-  # name -> spec (io/systems.py). A vocoder names a trained run by `experiment` and `vocoder`; ablation runs are added
-  # on the command line, e.g. `+eval.systems.hifigan_c256='{kind: vocoder, sr: 24000, conditions: [T1,T2,T3], experiment: main, vocoder: hifigan_c256}'`.
-  systems:
-    gt:
-      kind: gt
-      sr: 24000
-      conditions: [T1]
-      head: refit
-      label: ground truth
-    gt_shipped:            # the gt audio re-extracted with the shipped en+ head: the pitch/EMA reference of enplus16
-      kind: gt
-      sr: 24000
-      conditions: [T1]
-      head: shipped
-      audio_from: gt
-      stages: [reextract]
-      label: ground truth (shipped head)
-    vocos_mel:
-      kind: reference
-      sr: 24000
-      conditions: [T1]
-      head: refit
-      label: Vocos mel copy synthesis
-    enplus16:
-      kind: reference
-      sr: 16000
-      conditions: [T1, T2]
-      head: shipped
-      ema_ref: gt_shipped
-      label: SPARC en+ (16 kHz)
-    hifigan:
-      kind: vocoder
-      sr: 24000
-      conditions: [T1, T2, T3]
-      head: refit
-      experiment: main
-      vocoder: hifigan
-      ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
-      overrides: []   # extra vocoder_config overrides, e.g. eval.systems.hifigan.overrides=['train.max_g_steps=2']
-      label: HiFi-GAN
-    ddsp:
-      kind: vocoder
-      sr: 24000
-      conditions: [T1, T2, T3]
-      head: refit
-      experiment: main
-      vocoder: ddsp
-      ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
-      overrides: []   # extra vocoder_config overrides, e.g. eval.systems.ddsp.overrides=['train.max_g_steps=2']
-      label: DDSP
-    vocos:
-      kind: vocoder
-      sr: 24000
-      conditions: [T1, T2, T3]
-      head: refit
-      experiment: main
-      vocoder: vocos
-      ckpt: null      # null: the newest loadable step*.ckpt of the run (must be final unless eval.require_final=false)
-      overrides: []   # extra vocoder_config overrides, e.g. eval.systems.vocos.overrides=['train.max_g_steps=2']
-      label: Vocos
 
 hydra:
   run:

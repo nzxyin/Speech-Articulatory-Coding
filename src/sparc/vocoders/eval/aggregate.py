@@ -24,6 +24,7 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from sparc.vocoders.eval.io import (
+    MAIN_TABLE,
     EvalPaths,
     base_columns,
     chapter_of,
@@ -472,12 +473,22 @@ def per_speaker_table(cells: dict[tuple[str, str], pd.DataFrame]) -> pd.DataFram
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
-def paired_pairs(systems: dict[str, SystemSpec], references: Sequence[str]) -> list[tuple[SystemSpec, str, SystemSpec, str]]:
-    """``(a, condition a, b, condition b)``: every pair of vocoders under each shared condition, and each vocoder against
-    each reference system (same condition if the reference has it, else its ``T1``)."""
+def paired_pairs(
+    systems: dict[str, SystemSpec], references: Sequence[str], only: Sequence[Sequence[str]] | None = None
+) -> list[tuple[SystemSpec, str, SystemSpec, str]]:
+    """``(a, condition a, b, condition b)``: every pair of vocoders under each shared condition (or only the named
+    ``only`` pairs ``[a, b]``, in that order), and each vocoder against each reference system (same condition if the
+    reference has it, else its ``T1``)."""
     vocoders = [s for s in systems.values() if s.kind == "vocoder"]
     pairs = []
-    for a, b in combinations(vocoders, 2):
+    if only is None:
+        chosen = list(combinations(vocoders, 2))
+    else:
+        unknown = sorted({str(n) for pair in only for n in pair if str(n) not in systems})
+        if unknown:
+            raise ValueError(f"eval.aggregate.pairs names unknown systems {unknown}")
+        chosen = [(systems[str(a)], systems[str(b)]) for a, b in only]
+    for a, b in chosen:
         pairs.extend((a, c, b, c) for c in a.conditions if c in b.conditions)
     for v in vocoders:
         for ref in references:
@@ -490,7 +501,9 @@ def paired_pairs(systems: dict[str, SystemSpec], references: Sequence[str]) -> l
 
 def paired_table(cells: dict[tuple[str, str], pd.DataFrame], systems: dict[str, SystemSpec], options: DictConfig) -> pd.DataFrame:
     rows = []
-    for a, cond_a, b, cond_b in paired_pairs(systems, list(options.reference_systems)):
+    for a, cond_a, b, cond_b in paired_pairs(
+        systems, list(options.reference_systems), None if options.get("pairs") is None else list(options.pairs)
+    ):
         if (a.name, cond_a) not in cells or (b.name, cond_b) not in cells:
             continue
         strata_a = with_strata(cells[(a.name, cond_a)], cond_a, bool(options.split_chapters))
@@ -532,7 +545,8 @@ def render_markdown(
     table: pd.DataFrame, status: list[dict], meta: dict, options: DictConfig, split: str, limit: int | None
 ) -> str:
     """``table.md``: header with the single-run statement, one table per metric section, and the missing-data list."""
-    lines = [f"# Evaluation tables: {split}" + (f" (smoke run, {limit} utterances)" if limit else ""), ""]
+    name = meta.get("table_name")
+    lines = [f"# Evaluation tables: {split}" + (f" ({name})" if name else "") + (f" (smoke run, {limit} utterances)" if limit else ""), ""]
     lines += [str(options.note).strip(), ""]
     primary = meta.get("speaker_primary")
     lines += [
@@ -670,6 +684,8 @@ def run_aggregate(cfg: DictConfig, paths: EvalPaths, systems: dict[str, SystemSp
         "versions": package_versions(),
         "note": str(options.note).strip(),
     }
+    if paths.table_name != MAIN_TABLE:
+        meta["table_name"] = paths.table_name
     try:
         from sparc.vocoders.features.extractor import fork_commit
 
