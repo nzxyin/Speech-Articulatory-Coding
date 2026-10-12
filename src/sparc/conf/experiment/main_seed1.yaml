@@ -1,0 +1,15 @@
+# @package _global_
+# Second training seed of the primary run (experiment main): the same schedule and recipe, only the root key `seed` differs.
+# `seed` drives pl.seed_everything (model initialisation), RNGStateCallback (per-rank torch seed), the resumable sampler, the
+# crop start, gain and p_cross draws of the dataset, and the data loader generator. The validation subset and the logging
+# utterances follow data.val_subset_seed (unchanged, 0), so the dev curves of both seeds use the same utterances.
+experiment_name: main_seed1
+seed: 1
+train:
+  max_g_steps: 400000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64

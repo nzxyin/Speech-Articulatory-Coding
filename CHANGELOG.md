@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Experiment `main_seed1`: the primary run (`main`) with training seed 1, for a seed-to-seed comparison of the three vocoders.
 - `CLAUDE.md` with the project's current direction and findings, and this changelog.
 - `docs/vocoders/INTERFACES.md`: module contract for the 24 kHz articulatory vocoder comparison (feature cache, data,
   models, losses, training, CLI and SLURM scripts).
