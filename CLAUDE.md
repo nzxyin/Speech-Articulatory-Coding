@@ -279,7 +279,8 @@ so the intervals are the evidence):
   (+0.019 [0.005, 0.034], 6/7), rmse_z tie; MNGU0 in-domain also favours 300M (0.739 vs 0.769 +/- 0.007 mm, 3 seeds).
   Zero-shot from MNGU0 they tie (PCC 0.673 vs 0.673; calibrated 0.730 vs 0.735).
 - Validation-best layer selection fails for w2v2 on ema_multi: k3 (a near-tie with k5 and k21 on valid) is the
-  worst arm on every held-out metric (PCC -0.041 [-0.060, -0.023] vs k18, 7/7).
+  worst LoRA arm and has the highest held-out rmse_z of all 10 arms (vs k18: rmse_z -0.042 [-0.074, -0.010] 6/7,
+  PCC -0.041 [-0.060, -0.023] 7/7; its frozen control has lower PCC still, 0.633). It is also 3x cheaper (9.7 GFLOPs/s).
 - Hardest folds: usc_M3 (DTW-segmented) and 5EMO (emotion, frame offsets); 5EMO held-out rmse_z ~0.85-0.94 vs
   USC ~0.74-0.82.
 Bottom line for SPARC (normalized space, unseen speakers): WavLM Large truncated to 7 layers is the most
@@ -328,14 +329,77 @@ subsets; effects are improvements, + = better):
   +0.09 from 1 to 6 speakers, and about as much with total frames fixed, so it is speaker diversity, not data amount.
 - Whitening each training speaker jointly over all 12 channels (zca12) before pooling makes pooled speakers modestly
   more useful to a new speaker: about -0.011 to -0.013 rmse_z and +0.006 to +0.008 PCC at k=6 with all data (w2v2
-  half that), smaller when frames are matched. The rmse_z gain is on USC-TIMIT held-out speakers; on EMA_5EMO it is ~0.
-  5emo_jr is the usual exception. Per-articulator whitening (zca) does nothing (<= 0.005 rmse_z).
+  half that), smaller when frames are matched. Per speaker (k=6, shared map) it is largest for usc_F5 (~+0.036 rmse_z),
+  +0.006 to +0.019 for the other USC speakers and 5emo_jn, ~0 for 5emo_kf and negative for 5emo_jr. Per-articulator
+  whitening (zca) does nothing (<= 0.006 rmse_z).
 - Re-coloring predictions with the new speaker's own covariance at test time is the larger effect (-0.035 to -0.040
   rmse_z, +0.023 to +0.027 PCC with one training speaker; -0.019 to -0.024 / +0.016 to +0.019 with six), but it needs
   that speaker's EMA (enrollment) and shrinks as more speakers are pooled. Both together (= the earlier zca12 targets)
   give rmse_z 0.744-0.759 / PCC 0.691-0.711 at k=6 vs 0.777-0.793 / 0.665-0.683 for z.
 - For SPARC: a per-speaker 12-D whitened articulatory space is a small, consistent improvement for pooling speakers;
   adding speakers matters much more than the choice of space.
+
+### Whitened training vs test-time re-coloring with real models; SPARC-style single speaker (2026-10-12)
+LOSO, LoRA r8 + causal conv (3 seeds) and frozen + causal conv (1 seed), all 7 folds (`loso_recolor.py`, results
+`/data/user_data/xoy/xlsr_ema/analysis_loso_recolor/summary.md`). z-trained checkpoints were re-run on the held-out
+speaker (reproduce stored rmse_z to <= 5e-4) and re-colored with that speaker's covariance; zca12-trained runs
+(`ema_loso_<h>_zca12`) are mapped back with the speaker's own transform. Held-out rmse_z / PCC changes, + = better:
+| encoder | recolor effect, LoRA | train effect (zca12-trained - z+recolor), LoRA | recolor effect, frozen | train effect, frozen |
+|---|---|---|---|---|
+| WavLM k7 | +0.035 (7/7) / +0.017 | +0.007 / -0.006 | +0.023 / +0.017 | -0.004 / -0.005 |
+| XLS-R 300M k18 | +0.034 (6/7) / +0.016 | -0.004 / -0.011 | +0.023 / +0.018 | +0.000 / +0.005 |
+| XLS-R 1B k10 | +0.037 (6/7) / +0.015 | +0.021 (6/7) / -0.003 | +0.018 / +0.012 | +0.008 / -0.003 |
+| w2v2 k18 | +0.022 (6/7) / +0.017 | -0.011 / -0.005 | +0.022 / +0.019 | -0.000 / +0.000 |
+- With real models, the benefit of the zca12 targets is re-coloring with the new speaker's covariance at test time;
+  training on whitened targets adds nothing consistent (XLS-R 1B rmse_z the one partial exception) and slightly
+  lowers PCC. Most fold CIs span 0 (7 folds); the direction is consistent across encoders.
+- Plain ridge probes beat the adapted models on held-out rmse_z (same folds, z targets): probe 0.777-0.793 vs frozen
+  causal conv 0.790-0.821 vs LoRA causal conv 0.811-0.849 (LoRA - probe -0.026 to -0.055, CIs span 0, LoRA better on
+  1-3/7 folds), while LoRA has higher PCC (+0.013 to +0.029, 6-7/7). Under speaker shift adaptation improves
+  trajectory shape but fits the training speakers' amplitudes; the causal conv head, a large gain within MNGU0, adds
+  nothing for a new speaker.
+
+SPARC-style single-speaker training (MNGU0 -> 7 new speakers zero-shot; `crossspeaker.py --z-units`, results
+`features_ema_multi/crossspeaker_unpaired.json`; 3 seeds per LoRA model). Mappings needing only the new speaker's EMA
+statistics: z_transfer (means/stds) and recolor (zca / zca12, A_h^-1 A_MNGU0); paired references fit on 120
+utterances of the speaker. Mean over speakers, rmse_z / PCC:
+| model | z_transfer | recolor zca12 | paired affine | paired linear |
+|---|---|---|---|---|
+| SPARC shipped (WavLM k9 linear) | 0.951 / 0.656 | 0.995 / 0.632 | 0.786 / 0.656 | 0.736 / 0.720 |
+| LoRA+cc WavLM k9, mm-trained | 0.914 / 0.672 | 0.938 / 0.672 | 0.765 / 0.672 | 0.705 / 0.727 |
+| LoRA+cc WavLM k9, whitened-trained | 0.896 / 0.677 | 0.913 / 0.678 | 0.763 / 0.677 | 0.703 / 0.736 |
+| LoRA+cc 300M k18, mm / whitened | 0.881 / 0.673, 0.878 / 0.669 | 0.898 / 0.673, 0.899 / 0.667 | 0.764 / 0.670 | 0.703 / 0.733 |
+| LoRA+cc 1B k16, mm / whitened | 0.885 / 0.682, 0.865 / 0.680 | 0.903 / 0.680, 0.887 / 0.679 | 0.762 / 0.682 | 0.700 / 0.749 |
+| LoRA+cc w2v2 k18, mm / whitened | 0.890 / 0.673, 0.883 / 0.671 | 0.911 / 0.673, 0.905 / 0.670 | 0.767 / 0.665 | 0.698 / 0.739 |
+- From a single training speaker, re-coloring with the new speaker's covariance does not help: mean rmse_z is worse
+  by 0.012-0.024 (shipped SPARC 0.044, worse for 6/7 speakers), PCC unchanged; per speaker it is mixed (3-4/7 worse
+  for trained models), so the mean is driven by large losses on some speakers. The symmetric-whitening map is only a
+  good speaker map when the source is an average over many speakers (LOSO above), not one speaker.
+- Training on whitened MNGU0 targets costs 0.012-0.033 mm in-domain (all 12 seeds; e.g. WavLM 0.753 -> 0.772 mm) but
+  slightly improves zero-shot rmse_z for WavLM (+0.018, 7/7), 1B (+0.019, 7/7) and w2v2 (+0.007, 6/7); 300M flat;
+  PCC flat. Paired linear calibration with 120 utterances (rmse_z ~0.70, PCC 0.72-0.75) beats every unpaired mapping.
+
+### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
+- Encoder / FLOPs: WavLM Large truncated to 7-9 layers is the cheapest encoder that is never clearly beaten. LOSO held
+  out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI touches
+  0). MNGU0: 300M k18 is better by 0.014 mm (0.739 vs 0.753) at 1.7x FLOPs. Each model ran at one depth in LOSO, so
+  there is no multi-speaker efficiency frontier, only these points.
+- Compressing large SSL models: no truncation, non-contiguous selection or head/FFN pruning of XLS-R 300M/1B/2B beats
+  WavLM at matched FLOPs; XLS-R 1B k10 is the weakest LOSO model (WavLM better on rmse_z +0.031 [+0.006, +0.056] at
+  56% of its FLOPs). 1B's only edge is zero-shot from MNGU0 (+0.009 PCC over 300M, 3 seeds) and it is not in rmse_z.
+  1B was run at one validation-chosen depth in LOSO (k10), so "k10 was a bad pick" is not excluded.
+- Adaptation and heads: within one speaker, the causal conv head (MNGU0 WavLM 0.889 -> 0.793 mm frozen) and LoRA
+  (-> 0.753) are the large gains. Under speaker shift, a plain ridge probe has the best rmse_z and LoRA the best PCC;
+  the conv head adds nothing for new speakers. Layer pooling was discarded (0/3 models; MNGU0 1B the exception).
+- Pretraining: multilingual XLS-R 300M beats English w2v2 at identical architecture/FLOPs on held-out PCC (+0.019
+  [0.005, 0.034], 6/7) and on MNGU0 (0.739 vs 0.769 mm); rmse_z ties. All test speakers are English, so this says
+  nothing about generalization to other languages.
+- Data and target space matter more than architecture: 1 -> 6 training speakers lowers ridge rmse_z by 0.11-0.13
+  (larger than any encoder difference, ~0.03); re-coloring with the new speaker's covariance (enrollment) gains
+  0.02-0.04 rmse_z in pooled multi-speaker models; per-speaker whitening at training time is a small effect.
+- Evidence limits: 7 LOSO folds from 2 English corpora, fold sd (0.07-0.13 rmse_z) exceeds most model differences, no
+  LOSO contrast survives Holm over 90 comparisons; LoRA 3 seeds, frozen/2B/pruning/1B k36 single seed; layer depth and
+  shift were selected on ema_multi validation, which contains sentences of speakers later held out in LOSO.
 
 ### Caveats and open directions
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another

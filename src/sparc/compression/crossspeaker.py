@@ -17,7 +17,8 @@ primary metrics), and three unpaired mappings are added that need only the new s
 training split (no paired audio): z_transfer (MNGU0 z-score -> the speaker's z: its means / stds) and recolor_zca /
 recolor_zca12 (whiten with MNGU0's correlation, re-color with the speaker's: A_h^-1 A_M, symmetric whitening of
 z-correlation matrices, per articulator or over all 12 channels). Models trained on whitened MNGU0 targets
-(dataset mngu0_zca12) are mapped back to MNGU0 mm first.
+(dataset mngu0_zca12) are mapped back to MNGU0 mm first. The shipped SPARC model's output is not in MNGU0 mm, so its
+source statistics are those of its own outputs on 150 MNGU0 training utterances.
 
 Outputs: <features_ema_multi>/crossspeaker_zero_shot.json and a printed table.
 Usage: python -m sparc.compression.crossspeaker [--calib-utts 120]
@@ -99,6 +100,9 @@ class AdaptedModel:
             load_trainable(model, head, torch.load(run_dir / "best_trainable.pt"))
         self.model, self.head, self.args, self.device = model.eval(), head.eval(), args, device
         self.ym, self.ys = ym, ys
+        if self.target_ds is not None:  # trained on whitened targets: de-normalize with their own statistics
+            Y = np.concatenate([self.target_ds.load_targets(s).ema_mm for s in self.target_ds.splits()["train"]])
+            self.ym, self.ys = Y.mean(0), Y.std(0)
 
     @torch.no_grad()
     def __call__(self, wav):
@@ -186,6 +190,16 @@ def mngu0_flipped_stats():
     Y[:, X_CH] *= -1
     m, sd = Y.mean(0), Y.std(0)
     return m, sd, np.corrcoef(Y.T)
+
+
+def output_stats(fn, n=150):
+    """Mean, std and correlation of a model's own outputs on MNGU0 training audio (x negated): source-side statistics
+    for models whose output is not in MNGU0 mm (the shipped SPARC model). Needs no target-speaker data."""
+    ds = datasets.get("mngu0")
+    stems = ds.splits()["train"][:n]
+    Y = np.concatenate([fn(ds.load_utterance(s).wav) for s in stems]).astype(np.float64)
+    Y[:, X_CH] *= -1
+    return Y.mean(0), Y.std(0), np.corrcoef(Y.T)
 
 
 def evaluate_z_units(pc, pt, calib, test, shift, ds, spk, mstats):
@@ -278,7 +292,8 @@ def main():
             fn = ProbeModel(*spec, device)
         else:
             fn = AdaptedModel(spec, device, ym, ys, pruned=kind == "pruned")
-        res = {spk: evaluate_model(fn, calib, test, ds, ds.to_mm, mstats) for spk, (calib, test) in data.items()}
+        src = output_stats(fn) if (mstats is not None and kind == "sparc") else mstats
+        res = {spk: evaluate_model(fn, calib, test, ds, ds.to_mm, src) for spk, (calib, test) in data.items()}
         if mstats is not None:
             res["mean_z_units"] = {mp: {k: float(np.mean([v["z_units"][mp][k] for s, v in res.items() if s in data]))
                                         for k in ("rmse_z", "pcc")}

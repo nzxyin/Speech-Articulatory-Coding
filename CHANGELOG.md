@@ -64,6 +64,10 @@ All notable changes to this fork. Earlier history is in `git log`.
   in a 2 x 2 of training-target whitening x test-time mapping, from per-speaker sufficient statistics (exactly
   equivalent to `probe.Ridge`); `target_probe` and `loso --arms ...@<t>` for target-space comparisons.
   Tests: `tests/test_speaker_scaling.py`.
+- `mngu0_zca` / `mngu0_zca12` datasets (MNGU0 trained on whitened EMA, evaluated in mm); `crossspeaker --z-units`
+  scores zero-shot transfer in each new speaker's z units with unpaired mappings (z_transfer, covariance re-coloring)
+  and paired references; `loso_recolor` re-runs z-trained LOSO checkpoints with the held-out speaker's covariance and
+  compares them with zca12-trained runs.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
