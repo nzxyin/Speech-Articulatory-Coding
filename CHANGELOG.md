@@ -53,6 +53,7 @@ All notable changes to this fork. Earlier history is in `git log`.
   tables under `tables/<split>/<name>/`, leaving the main tables untouched.
 - Results: `docs/vocoders/RESULTS.md` (Phase 3 write-up) and `docs/vocoders/results/` (main and ablation tables,
   paired comparisons, controllability, efficiency and failure-case analyses).
+- Results: section 5.3 of `docs/vocoders/RESULTS.md` (paired X-Y EMA probes) and `docs/vocoders/results/xy_probes.md`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).

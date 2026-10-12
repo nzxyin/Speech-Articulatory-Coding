@@ -14,6 +14,7 @@ Every number in this document is copied from one of the files listed below; the 
 | [abl] | `phase3/E_ablations.md` (ablation design and evaluation jobs) |
 | [abl-table] | `phase3/final/tables/ablations/{table.md, table.csv, paired.csv, per_speaker.csv, meta.json}` (copy of `$SV_ROOT/eval/tables/test.clean/ablations/`) |
 | [abl-extra] | paired differences not in `paired.csv`, recomputed from `per_speaker.csv`; method and script in `phase3/I_ablation_section.md` |
+| [xy] | `phase3/analysis/xy_probes.md` (paired X-Y probes; copy in `docs/vocoders/results/xy_probes.md`), `xy_probes_long.csv`, notes `phase3/M_xyprobes.md` |
 | [status] | `STATUS.md` |
 | [p1] | `phase1_report.md` |
 | [eval] | `~/sparc-eval-wt/docs/vocoders/EVALUATION.md` (the evaluation contract) |
@@ -184,6 +185,38 @@ Findings:
 - **The loop itself preserves natural EMA variation.** On all 4,686 re-extracted test.clean utterances (1,512,210 frames, 39 speakers) the centred slope of re-extracted on input EMA is 1.00 for the ground-truth floor, HiFi-GAN and Vocos, 0.96 for DDSP and 0.97 for the mel copy synthesis. The regression of the centred re-extracted EMA on all 12 centred input channels has a diagonal of 0.93 to 0.98 and predicts a leakage of only 0.02 to 0.03 for an isolated one-channel edit [control section 5]. Isolated single-channel edits therefore fail while natural dynamics pass.
 - **The failure is not only an off-manifold direction.** A constant edit of one natural standard deviation along principal components 1 to 4 of natural EMA gives a gain of 0.09 to 0.14 (DDSP 0.09 to 0.11), against 0.96 to 1.02 predicted by the regression. This probe used 6 of the 50 utterances per vocoder (CPU synthesis), so its intervals come from an utterance bootstrap and cover few utterances [control section 6].
 - **Open explanation.** The data show that a constant offset of the articulatory input is poorly reproduced. They do not say why. Candidate explanations that were not tested: the vocoder responds to change over time and not to the absolute position; the offset is added to silence and pause frames as well; the inversion (WavLM and a linear head) responds mostly to phonetic content and reflects a shifted tongue position only weakly [control]. The EMA gain is also not corrected for attenuation by the inversion, which is neutral on natural audio (slope 1.00) but was not tested on audio with an artificially shifted tongue.
+
+### 5.3 Paired X-Y edits of one sensor (follow-up, 2026-10-12)
+
+Question: are the single-channel EMA edits followed poorly because a sensor must be moved in two dimensions at once?
+Probe (`probes_xy`, same 50 utterances and protocol as 5.2, all three vocoders): for each of the six sensors, edits of
+equal norm along X only, Y only, the sensor's natural principal direction and the orthogonal direction, each as a
+constant offset, a constant offset on speech frames only, a dynamic scaling of the movement around the utterance mean
+(alpha = plus or minus 0.5) and three 300 ms bumps; 192 edits per vocoder. Full tables:
+`docs/vocoders/results/xy_probes.md` [xy].
+
+| profile (mean of 6 sensors, both signs) | X only | Y only | principal | orthogonal |
+|---|---|---|---|---|
+| constant offset | 0.09-0.11 | 0.10-0.12 | 0.10-0.12 | 0.10-0.11 |
+| constant offset, speech frames only | 0.10-0.12 | 0.11-0.13 | 0.11-0.13 | 0.11-0.13 |
+| dynamic scaling around the mean | 0.16-0.18 | 0.19-0.20 | 0.19-0.21 | 0.19-0.21 |
+| three local 300 ms bumps | 0.18-0.20 | 0.24-0.27 | 0.20-0.24 | 0.22-0.24 |
+
+Cells give the range of the gain over the three vocoders (1 = followed; the natural-dynamics regression predicts 0.93
+to 0.98 for every cell) [xy].
+
+- **Pairing is not what is missing.** The paired principal direction is followed no better than X or Y alone (paired
+  minus single gain between -0.015 and +0.004 under constant offsets, speaker-cluster CI95) [xy].
+- **Time course matters.** Dynamic scaling and local bumps are followed about twice as well as constant offsets (+0.06
+  to +0.14 gain); restricting an offset to speech frames adds only about +0.01 [xy].
+- **Direction within a sensor matters, consistently across vocoders.** Under dynamic scaling the tongue body follows
+  its principal axis (gain 0.57, 0.44, 0.54 for HiFi-GAN, DDSP, Vocos) but not X alone (0.07, 0.00, 0.06); the tongue
+  tip follows X (0.35 to 0.37) and its orthogonal direction (0.34 to 0.35) but not its principal axis (0.10 to 0.13).
+  Shrinking movement (alpha = -0.5) is followed with gain about 0.3, exaggerating it with 0.03 to 0.15 [xy].
+- **Open.** The best cell reaches about 0.57 of the prediction and leakage into other sensors (0.25 to 0.49 std) exceeds
+  the on-target gain in most cells. The loop includes the linear inversion, so the probe cannot separate a vocoder that
+  ignores an isolated edit from one whose acoustics the inversion reads as a different articulation. An inversion-free
+  acoustic measure (formant or spectral shift) or coherent 12-D edits would separate the two.
 
 ## 6. Efficiency and streaming
 
