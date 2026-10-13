@@ -442,6 +442,28 @@ the exception).
   0.757; w2v2 k16-17 0.784): to select for generalization, validate on held-out speakers.
 - LoRA + causal conv at new frontier depths (WavLM k12, 300M k10, 1B k19; 3 seeds x 7 folds) running (`fr_*`).
 
+### Multi-speaker inverter heads dropped into SPARC (2026-10-12)
+`sparc_multihead.py` (`/data/user_data/xoy/xlsr_ema/sparc_multihead/summary.md`, UTMOS in `utmos/`). Ridge heads on
+WavLM layer 9 computed through the deployed `Inversion` pipeline, trained on the multi-speaker EMA (per held-out
+speaker 'loso', or all seven 'all'), mapped into the shipped head's output space (per-channel sign/scale, or a full
+12x12 least-squares adapter '_lin' fitted on the head's own training audio, no EMA), then resynthesized with the
+shipped `load_model('en')` vocoder (shared pitch / loudness / speaker embedding). WER: whisper-large-v3 on USC-TIMIT
+and LibriTTS only (many EMA_5EMO reference texts are prompt codes such as digit strings).
+| system | USC-TIMIT WER | LibriTTS-R WER | SIM ECAPA (EMA / Libri) | UTMOSv2 (EMA / Libri) |
+|---|---|---|---|---|
+| original audio | 3.4 % | 2.3 % | - | 2.47 / 3.24 |
+| shipped head | 8.6 % | 3.1 % | 0.45 / 0.81 | 2.74 / 3.15 |
+| loso head, sign/scale map | 94.7 % | - | 0.31 | 2.06 |
+| loso head, 12x12 adapter | 48.1 % | - | 0.35 | 2.38 |
+| all-speaker head, sign/scale map | 82.6 % | 42.2 % | 0.30 / 0.56 | 2.08 / 2.50 |
+| all-speaker head, 12x12 adapter | 38.8 % | 15.2 % | 0.35 / 0.65 | 2.43 / 2.85 |
+| measured EMA (approximate mapping) | 145.7 % | - | 0.25 | 1.85 |
+- SPARC's shipped vocoder is coupled to its own inverter's output space, not to articulation: measured EMA from
+  these speakers gives the worst speech, and even the best linear adapter from a multi-speaker head explains only
+  56-78% of the shipped head's output variance per channel. A better multi-speaker inverter therefore cannot be
+  judged (or deployed) with the shipped vocoder; the vocoder must be retrained on the new inverter's outputs.
+- The heads' held-out articulation is normal (rmse_z 0.64-0.88, PCC 0.61-0.78 per speaker, as the layer-9 probes).
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Encoder / FLOPs: WavLM Large truncated to 7-9 layers is the cheapest encoder that is never clearly beaten. LOSO held
   out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI touches
