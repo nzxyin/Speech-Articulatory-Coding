@@ -230,7 +230,9 @@ def evaluate():
     asr = WhisperForConditionalGeneration.from_pretrained(wdir, torch_dtype=torch.float16).to("cuda").eval()
     from speechbrain.inference.speaker import EncoderClassifier
     edir = snapshot_download("speechbrain/spkrec-ecapa-voxceleb", cache_dir=cache, local_files_only=True)
-    spk = EncoderClassifier.from_hparams(source=edir, savedir=str(OUT / "ecapa"), run_opts={"device": "cuda"})
+    # the hyperparams.yaml points pretrained_path at the Hub repo id; point it at the local snapshot (offline)
+    spk = EncoderClassifier.from_hparams(source=edir, savedir=str(OUT / "ecapa"), run_opts={"device": "cuda"},
+                                         overrides={"pretrained_path": edir})
     manifest = json.loads((OUT / "resynth_manifest.json").read_text())
     res_f = OUT / "eval.json"
     res = json.loads(res_f.read_text()) if res_f.exists() else {}
