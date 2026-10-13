@@ -305,9 +305,8 @@ speaker's map needs that speaker's own EMA statistics (enrollment data); zca12 u
   removing each speaker's cross-articulator correlation structure (zca12) is the one that helps, by more than any
   model difference in LOSO. But this screen mixes two things (see the next section): per-speaker whitening of the
   training targets, and re-coloring predictions with the held-out speaker's own covariance at test time.
-- LoRA + causal conv on zca12 targets (`losoZ_*`, issue #26): 16 of 28 jobs finished, the rest held when the question
-  was reframed (2026-10-08, user: "this is not about the model architecture but about the way we can use more
-  training data"). On the 2 finished folds the zca12 gain did not clearly survive LoRA (mean rmse_z ~0, PCC -0.012).
+- LoRA + causal conv on zca12 targets (`losoZ_*`, issue #26, closed): all 7 folds finished; the gain is test-time
+  re-coloring, not whitened training (see "Whitened training vs test-time re-coloring" below).
 
 ### Speaker scaling and per-speaker whitening (2026-10-08)
 `speaker_scaling.py`; results `/data/user_data/xoy/xlsr_ema/analysis_scaling/summary.md`. Fixed model (ridge probe at
@@ -407,5 +406,7 @@ utterances of the speaker. Mean over speakers, rmse_z / PCC:
   each run's `results.json` but haven't been analyzed yet.
 - All encoders are bidirectional transformers, so "causal" applies only to the head.
 - Adaptation used one recipe (r=8 on q/v, lr 2e-4, 40 epochs, early stopping). It wasn't tuned per model.
-- Directions the data does support: cheap temporal heads and WavLM-based compact encoders. Distillation, or structured pruning inside
-  layers (heads/FFN width) rather than whole layers, would be the next way to test the large-model hypothesis.
+- Directions the data does support: WavLM-based compact encoders; more training speakers; re-coloring with a new
+  speaker's covariance when its EMA is available. Temporal heads and LoRA help within a speaker but not on held-out
+  rmse_z. Open: depth sweeps under LOSO (no multi-speaker efficiency frontier yet), non-English test data,
+  distillation.
