@@ -440,7 +440,12 @@ the exception).
   depths used in LOSO option A, which were chosen the same way on ema_multi. Choosing depth by held-out performance
   on the other six folds (cross-fold) is better for every encoder (WavLM k10-13 0.766; 300M k12-17 0.767; 1B k35-37
   0.757; w2v2 k16-17 0.784): to select for generalization, validate on held-out speakers.
-- LoRA + causal conv at new frontier depths (WavLM k12, 300M k10, 1B k19; 3 seeds x 7 folds) running (`fr_*`).
+- LoRA + causal conv at new frontier depths (`analysis_loso_frontier/summary.md`; 3 seeds x 7 folds; held-out
+  rmse_z / PCC): WavLM k12 (21.3 GFLOPs/s) 0.803 / 0.706 vs k7 0.818 / 0.696 (PCC +0.010 [0.001, 0.019], 6/7);
+  XLS-R 1B k19 (44.4) 0.814 / 0.704 vs k10 0.849 / 0.689 (rmse_z +0.035, PCC +0.015 [0.003, 0.028], 6/7);
+  XLS-R 300M k10 (18.7) 0.830 / 0.697 is worse than its k18 (29.1) 0.816 / 0.708 (PCC -0.011, 7/7). WavLM k12,
+  300M k18 and 1B k19 are tied (all paired CIs span 0); WavLM k12 is the cheapest of the three (73% of 300M's
+  FLOPs, 48% of 1B's). As before, every LoRA arm's held-out rmse_z is worse than the probe's; the probe blend fixes it.
 
 ### Multi-speaker inverter heads dropped into SPARC (2026-10-12)
 `sparc_multihead.py` (`/data/user_data/xoy/xlsr_ema/sparc_multihead/summary.md`, UTMOS in `utmos/`). Ridge heads on
@@ -465,6 +470,9 @@ and LibriTTS only (many EMA_5EMO reference texts are prompt codes such as digit 
 - The heads' held-out articulation is normal (rmse_z 0.64-0.88, PCC 0.61-0.78 per speaker, as the layer-9 probes).
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
+- Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
+  WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
+  FLOPs; blended 0.75/0.25 with the frozen-encoder probe it also gets the probe's rmse_z.
 - Encoder / FLOPs: WavLM Large truncated to 7-9 layers is the cheapest encoder that is never clearly beaten. LOSO held
   out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI touches
   0). MNGU0: 300M k18 is better by 0.014 mm (0.739 vs 0.753) at 1.7x FLOPs. Each model ran at one depth in LOSO, so
