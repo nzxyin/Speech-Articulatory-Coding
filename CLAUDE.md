@@ -378,6 +378,50 @@ utterances of the speaker. Mean over speakers, rmse_z / PCC:
   slightly improves zero-shot rmse_z for WavLM (+0.018, 7/7), 1B (+0.019, 7/7) and w2v2 (+0.007, 6/7); 300M flat;
   PCC flat. Paired linear calibration with 120 utterances (rmse_z ~0.70, PCC 0.72-0.75) beats every unpaired mapping.
 
+### LoRA + probe blend, enrollment curve, emotion and phone breakdowns (2026-10-12)
+LoRA readout variants under LOSO (`lora_readout.py`, `analysis_readout/summary.md`; 7 folds, 3 seeds; held-out
+rmse_z / PCC). Blend = 0.75 x LoRA + 0.25 x frozen-encoder ridge probe (weight chosen on the training speakers'
+validation; 0.75 every time):
+| encoder | probe | LoRA | ridge refit on LoRA features | blend | 2-seed LoRA ensemble (same 2x cost) |
+|---|---|---|---|---|---|
+| WavLM k7 | 0.789 / 0.667 | 0.818 / 0.696 | 0.822 / 0.688 | 0.787 / 0.709 | 0.806 / 0.707 |
+| XLS-R 300M k18 | 0.777 / 0.683 | 0.816 / 0.708 | 0.804 / 0.708 | 0.780 / 0.721 | 0.804 / 0.717 |
+| XLS-R 1B k10 | 0.793 / 0.665 | 0.849 / 0.689 | 0.851 / 0.690 | 0.811 / 0.705 | 0.835 / 0.703 |
+| w2v2 k18 | 0.785 / 0.675 | 0.811 / 0.688 | 0.790 / 0.698 | 0.780 / 0.705 | 0.799 / 0.699 |
+- The blend matches the probe's rmse_z (-0.018 to +0.005) and gives the best PCC (+0.030 to +0.042 over the probe, 7/7
+  folds every encoder). At equal inference cost it beats a 2-seed LoRA ensemble on rmse_z by 0.019-0.024 (CIs exclude
+  0 for all four, 5-7/7) and on PCC by 0.003-0.006, and it matches a 3-seed ensemble's PCC at lower rmse_z. So the
+  frozen encoder carries speaker-robust amplitude information that LoRA loses; it is not just variance reduction.
+  Cost: two encoder passes (frozen + LoRA). The single-pass alternative (ridge refit on LoRA features) does not get
+  the probe's rmse_z.
+
+Enrollment curve (`loso_posthoc.py enroll`, `analysis_posthoc/enroll.md`; LoRA, 7 folds; the new speaker's statistics
+from N random training-split utterances, re-scored in its true z units). rmse_z, z-score / covariance re-color:
+| encoder | N=1 | N=5 | N=10 | N=20 | all |
+|---|---|---|---|---|---|
+| WavLM k7 | 0.977 / 0.963 | 0.847 / 0.818 | 0.830 / 0.795 | 0.822 / 0.788 | 0.818 / 0.783 |
+| XLS-R 300M k18 | 0.913 / 0.903 | 0.849 / 0.821 | 0.842 / 0.817 | 0.829 / 0.801 | 0.816 / 0.782 |
+| XLS-R 1B k10 | 0.909 / 0.902 | 0.868 / 0.839 | 0.861 / 0.827 | 0.856 / 0.820 | 0.849 / 0.812 |
+| w2v2 k18 | 0.924 / 0.921 | 0.845 / 0.830 | 0.820 / 0.801 | 0.828 / 0.809 | 0.811 / 0.789 |
+- Roughly 10-20 utterances (well under a minute of EMA) recover most of both the means/stds and the re-coloring
+  benefit (N=10-50 differences are within single-draw noise); N=1-2 is not enough for re-coloring. Without any of
+  the speaker's EMA (training speakers' average statistics) rmse_z is ~6.4: absolute sensor positions differ between
+  speakers by many standard deviations (hypothesis consistent with the per-speaker offsets; not separately checked).
+  PCC does not depend on means/stds. Caveat: N is per normalization group, so usc_F5 (two groups) enrolls 2N.
+
+Emotion (held-out EMA_5EMO speakers jn, jr, kf; `analysis_posthoc/emotion.md`; LoRA rmse_z / PCC over encoders):
+fear 0.72-0.76 / 0.65-0.67, sadness 0.78-0.82 / 0.58-0.60, happiness 0.90-0.93 / 0.56-0.60, anger 0.91-0.95 /
+0.66-0.67, neutral 1.03-1.05 / 0.66-0.67. Pooled neutral is worst only because of speaker jr's neutral block (frame
+offset ~7.6 mm, rmse_z ~1.10); for jn and kf neutral is not the worst, and kf's highest-offset block (anger) is its
+worst, so block frame offsets (not emotion per se) drive rmse_z differences. LoRA >= frozen on PCC in 19/20 encoder x
+emotion cells (one tie; frozen is 1 seed); re-coloring raises anger PCC by 0.019-0.025.
+
+MNGU0 phone classes (`analysis_posthoc/phones.md`; mm, single speaker; no phone alignments exist for the multi-speaker
+corpora): coronal frames are easiest for every encoder (0.66-0.71 mm with LoRA); dorsal, silence and labial are
+hardest (0.80-0.90; order varies by encoder). LoRA's largest gain over the frozen encoder is on silence frames (e.g.
+WavLM 1.02 -> 0.86 mm). Whitened-target training is worse in 43 of 44 class x encoder cells (w2v2 glottal, 121 frames,
+the exception).
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Encoder / FLOPs: WavLM Large truncated to 7-9 layers is the cheapest encoder that is never clearly beaten. LOSO held
   out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI touches
