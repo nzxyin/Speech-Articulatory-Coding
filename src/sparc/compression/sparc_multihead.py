@@ -120,7 +120,12 @@ def fit():
         a_ = sgn * S.std(0) / Z.std(0)
         c_ = S.mean(0) - a_ * Z.mean(0)
         Wsh, bsh = W * a_, b * a_ + c_
+        Za = np.concatenate([Z, np.ones((len(Z), 1))], 1)
+        M = np.linalg.lstsq(Za, S, rcond=None)[0]  # (13, 12): full linear adapter onto the shipped outputs
+        Wlin, blin = W @ M[:12], b @ M[:12] + M[12]
+        r2 = 1 - ((Za @ M - S) ** 2).sum(0) / ((S - S.mean(0)) ** 2).sum(0)
         res = {"shift": int(shift), "alpha": float(alpha), "sign": sgn.tolist(), "scale": a_.tolist(), "offset": c_.tolist(),
+               "adapter_fit_r2": r2.tolist(),
                "corr_shipped": [float(np.corrcoef(S[:, c], Z[:, c])[0, 1]) for c in range(12)]}
         if name.startswith("loso_"):
             h = name[5:]
@@ -130,7 +135,7 @@ def fit():
             Pc, Yc = np.concatenate(P), np.concatenate(Y)
             res["heldout"] = {"rmse_z": float(np.sqrt(((Pc - Yc) ** 2).mean(0)).mean()), "pcc": ema_metrics(P, Y, n_boot=0)["pcc"]}
         heads[name] = res
-        np.savez(OUT / f"head_{name}.npz", W=W, b=b, Wsh=Wsh, bsh=bsh)
+        np.savez(OUT / f"head_{name}.npz", W=W, b=b, Wsh=Wsh, bsh=bsh, Wlin=Wlin, blin=blin)
         print(name, json.dumps({k: v for k, v in res.items() if k in ("shift", "alpha", "heldout")}),
               "min |corr| with shipped %.2f" % np.min(np.abs(res["corr_shipped"])), flush=True)
     (OUT / "heads.json").write_text(json.dumps(heads, indent=1))
@@ -166,14 +171,15 @@ def resynth(n_libri=200):
     done = {(m["system"], m["stem"]) for m in manifest}
     a_all = heads["all"]
     for i, (src, spk, stem, path, text) in enumerate(items):
-        systems = ["orig", "shipped"] + (["loso", "all", "true_ema"] if src == "ema" else ["all"])
-        if all((s, stem) in done for s in systems):
+        systems = ["orig", "shipped"] + (["loso", "all", "true_ema", "loso_lin", "all_lin"] if src == "ema" else ["all", "all_lin"])
+        todo = [s for s in systems if (s, stem) not in done]
+        if not todo:
             continue
         inv.linear_model.load_state_dict(ship_sd)
         code = coder.encode(path, seed=SEED)
         st = inverter_states(inv, path).astype(np.float64)
-        out_paths = {}
-        for s in systems:
+        out_paths = {s: str(OUT / "wav" / s / spk / f"{stem}.wav") for s in systems}
+        for s in todo:
             o = OUT / "wav" / s / spk / f"{stem}.wav"
             o.parent.mkdir(parents=True, exist_ok=True)
             if s == "orig":
@@ -181,9 +187,10 @@ def resynth(n_libri=200):
                 sf.write(o, ref, sr)
             else:
                 c = dict(code)
-                if s in ("loso", "all"):
-                    h = hw[f"loso_{spk}" if s == "loso" else "all"]
-                    c["ema"] = (st @ h["Wsh"] + h["bsh"]).astype(np.float32)[: len(code["ema"])]
+                if s in ("loso", "all", "loso_lin", "all_lin"):
+                    h = hw[f"loso_{spk}" if s.startswith("loso") else "all"]
+                    Wk, bk = ("Wlin", "blin") if s.endswith("_lin") else ("Wsh", "bsh")
+                    c["ema"] = (st @ h[Wk] + h[bk]).astype(np.float32)[: len(code["ema"])]
                 elif s == "true_ema":
                     e = (st @ Ws + bs)
                     u = ds.load_targets(stem)
@@ -198,9 +205,10 @@ def resynth(n_libri=200):
                 wav = coder.decode(**c)
                 sf.write(o, wav, coder.sr)
             out_paths[s] = str(o)
-        for s in systems:
+        for s in todo:
             manifest.append({"src": src, "speaker": spk, "stem": stem, "system": s, "path": out_paths[s],
                              "ref": out_paths["orig"], "text": text})
+            done.add((s, stem))
         if i % 25 == 0:
             man_f.write_text(json.dumps(manifest))
             print("resynth", i, len(items), flush=True)
@@ -285,31 +293,35 @@ def summary():
     res = json.loads((OUT / "eval.json").read_text())
     L = ["# Multi-speaker inverter heads in SPARC: resynthesis with the shipped vocoder\n",
          "Heads: ridge on WavLM layer 9 (deployed inverter pipeline). 'loso' never saw the speaker; 'all' did; "
-         "'true_ema' uses measured EMA. WER from whisper-large-v3 (corpus-level over words), SIM = ECAPA cosine to the "
-         "original, PESQ wide-band, MCD dB (no DTW). Mean over utterances.\n",
+         "'true_ema' uses measured EMA (approximate mapping); '_lin' = full 12x12 linear adapter onto the shipped head's "
+         "outputs instead of per-channel sign/scale. WER from whisper-large-v3 (corpus-level over words) on USC-TIMIT "
+         "and LibriTTS only: many EMA_5EMO reference texts are prompt codes (digit strings), not transcripts. SIM = ECAPA "
+         "cosine to the original, PESQ wide-band, MCD from librosa dB-mel MFCC c1-c24 (no DTW; comparable between "
+         "systems only, not on the usual dB scale). Mean over utterances.\n",
          "\nHead held-out articulation (rmse_z / PCC, ridge on layer 9, speaker never seen): " +
          ", ".join(f"{k[5:]} {v['heldout']['rmse_z']:.3f}/{v['heldout']['pcc']:.3f}" for k, v in heads.items() if "heldout" in v)]
     for src in ("ema", "libri"):
         rows = [r for r in res.values() if r["src"] == src]
+        wer_rows = [r for r in rows if not r["speaker"].startswith("5emo")]
         if not rows:
             continue
         L.append(f"\n## {'EMA speakers (test sentences)' if src == 'ema' else 'LibriTTS-R test-clean (200 utterances)'}\n")
         L.append("| system | n | WER % | SIM | PESQ (n failed) | MCD dB |")
         L.append("|---|---|---|---|---|---|")
-        for s in ("orig", "shipped", "loso", "all", "true_ema"):
+        for s in ("orig", "shipped", "loso", "loso_lin", "all", "all_lin", "true_ema"):
             rs = [r for r in rows if r["system"] == s]
             if not rs:
                 continue
-            w = [r for r in rs if r["wer"] is not None]
+            w = [r for r in wer_rows if r["system"] == s and r["wer"] is not None]
             wer = 100 * sum(r["wer"] * r["n_words"] for r in w) / max(1, sum(r["n_words"] for r in w))
             f = lambda k: np.mean([r[k] for r in rs if r.get(k) is not None]) if any(r.get(k) is not None for r in rs) else float("nan")  # noqa: E731
             nfail = sum(1 for r in rs if s != "orig" and r.get("pesq") is None)
             L.append(f"| {s} | {len(rs)} | {wer:.2f} | {f('sim'):.3f} | {f('pesq'):.3f} ({nfail}) | {f('mcd'):.2f} |")
         if src == "ema":
-            L.append("\nPer speaker WER % (shipped / loso / all / true_ema):")
+            L.append("\nPer speaker WER % (orig / shipped / loso / loso_lin / all / all_lin / true_ema; EMA_5EMO references unreliable):")
             for h in datasets.ALL_SPEAKERS:
                 cells = []
-                for s in ("shipped", "loso", "all", "true_ema"):
+                for s in ("orig", "shipped", "loso", "loso_lin", "all", "all_lin", "true_ema"):
                     w = [r for r in rows if r["system"] == s and r["speaker"] == h and r["wer"] is not None]
                     nw = sum(r['n_words'] for r in w)
                     cells.append(f"{100 * sum(r['wer'] * r['n_words'] for r in w) / nw:.1f}" if nw else "n/a")
