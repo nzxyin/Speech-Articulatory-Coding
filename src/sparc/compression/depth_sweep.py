@@ -37,14 +37,24 @@ def gflops(model):
     return {p["layers"][-1]: p["gflops_per_audio_s"] for p in prof["prefixes"]}
 
 
-def run(model, layers=None, device=None):
+def load_all(model):
+    """Merged results of the main file and any part files (parallel layer-range jobs write separate files)."""
+    res = {}
+    for f in sorted(OUT.glob(f"{model}*.json")):
+        if f.stem == model or f.stem.startswith(f"{model}_part"):
+            res.update(json.loads(f.read_text()))
+    return res
+
+
+def run(model, layers=None, device=None, tag=None):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     d = datasets.features_root("ema_multi") / model
     index = json.loads((d / "index.json").read_text())
     meta = json.loads((d / "meta.json").read_text())
     layers = layers if layers is not None else range(1, meta["num_layers"] + 1)
     OUT.mkdir(parents=True, exist_ok=True)
-    out_f = OUT / f"{model}.json"
+    out_f = OUT / (f"{model}_part{tag}.json" if tag else f"{model}.json")
+    done = load_all(model)
     res = json.loads(out_f.read_text()) if out_f.exists() else {}
     folds = {}
     for h in datasets.ALL_SPEAKERS:
@@ -55,7 +65,7 @@ def run(model, layers=None, device=None):
     ds0 = folds[datasets.ALL_SPEAKERS[0]][0]
     utts = load_targets(sorted({s for _, sp in folds.values() for v in sp.values() for s in v}), ds0)
     for k in layers:
-        if all(f"{k}/{h}" in res for h in datasets.ALL_SPEAKERS):
+        if all(f"{k}/{h}" in res or f"{k}/{h}" in done for h in datasets.ALL_SPEAKERS):
             continue
         feats = np.load(d / f"layer_{k:02d}.npy", mmap_mode="r").astype(np.float32)
         for h, (ds, splits) in folds.items():
@@ -82,10 +92,9 @@ def summary():
          "shallower-or-equal-cost depth of any encoder.\n"]
     pts = []
     for model in MODELS:
-        f = OUT / f"{model}.json"
-        if not f.exists():
+        res = load_all(model)
+        if not res:
             continue
-        res = json.loads(f.read_text())
         fl = gflops(model)
         ks = sorted({int(x.split("/")[0]) for x in res if all(f"{x.split('/')[0]}/{h}" in res for h in datasets.ALL_SPEAKERS)})
         L.append(f"\n## {model}\n")
@@ -132,9 +141,10 @@ def main():
     ap.add_argument("cmd", choices=("run", "summary"))
     ap.add_argument("--model")
     ap.add_argument("--layers", type=int, nargs="*", default=None)
+    ap.add_argument("--tag", default=None, help="write to <model>_part<tag>.json (parallel layer ranges)")
     args = ap.parse_args()
     if args.cmd == "run":
-        run(args.model, args.layers)
+        run(args.model, args.layers, tag=args.tag)
     else:
         summary()
 
