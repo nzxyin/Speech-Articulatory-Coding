@@ -12,11 +12,12 @@ fit      -- inverter states for every utterance; ridge heads (alignment shift -2
             and nothing of the held-out speaker). Also reports each head's held-out rmse_z / PCC.
 resynth  -- every EMA speaker's test sentences with text: 'orig', 'shipped' (load_model('en') encode/decode),
             'loso' (head that never saw the speaker), 'all' (head trained with the speaker: seen upper bound) and
-            'true_ema' (measured EMA mapped with the 'all' mapping, shipped head outside the EMA window); and 200
+            'true_ema' (approximate reference: measured EMA mapped with the 'all' head's scale, which was fitted on
+            ridge-shrunken predictions, not low-passed, spliced into the shipped prediction); and 200
             LibriTTS-R test-clean utterances with 'orig', 'shipped', 'all'. Pitch, loudness and speaker embedding
             are shared (one encode per utterance, seeded CREPE); only the EMA differs.
 eval     -- WER (whisper-large-v3, Whisper English normalizer), speaker similarity to the original (ECAPA
-            VoxCeleb cosine), wide-band PESQ and MCD (25 MFCC without c0, frame-aligned, no DTW) vs the original.
+            VoxCeleb cosine), wide-band PESQ and MCD (MFCC c1-c24, frame-aligned, no DTW) vs the original.
 
 Usage: python -m sparc.compression.sparc_multihead {fit,resynth,eval,summary}
 """
@@ -223,7 +224,7 @@ def evaluate():
     from pesq import pesq
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-    cache = "/data/hf_cache/hub"
+    cache = "/data/user_data/xoy/.cache/huggingface/hub"  # the shared /data/hf_cache lost these snapshot dirs
     wdir = snapshot_download("openai/whisper-large-v3", cache_dir=cache, local_files_only=True)
     proc = WhisperProcessor.from_pretrained(wdir)
     asr = WhisperForConditionalGeneration.from_pretrained(wdir, torch_dtype=torch.float16).to("cuda").eval()
@@ -291,7 +292,7 @@ def summary():
         if not rows:
             continue
         L.append(f"\n## {'EMA speakers (test sentences)' if src == 'ema' else 'LibriTTS-R test-clean (200 utterances)'}\n")
-        L.append("| system | n | WER % | SIM | PESQ | MCD dB |")
+        L.append("| system | n | WER % | SIM | PESQ (n failed) | MCD dB |")
         L.append("|---|---|---|---|---|---|")
         for s in ("orig", "shipped", "loso", "all", "true_ema"):
             rs = [r for r in rows if r["system"] == s]
@@ -300,14 +301,16 @@ def summary():
             w = [r for r in rs if r["wer"] is not None]
             wer = 100 * sum(r["wer"] * r["n_words"] for r in w) / max(1, sum(r["n_words"] for r in w))
             f = lambda k: np.mean([r[k] for r in rs if r.get(k) is not None]) if any(r.get(k) is not None for r in rs) else float("nan")  # noqa: E731
-            L.append(f"| {s} | {len(rs)} | {wer:.2f} | {f('sim'):.3f} | {f('pesq'):.3f} | {f('mcd'):.2f} |")
+            nfail = sum(1 for r in rs if s != "orig" and r.get("pesq") is None)
+            L.append(f"| {s} | {len(rs)} | {wer:.2f} | {f('sim'):.3f} | {f('pesq'):.3f} ({nfail}) | {f('mcd'):.2f} |")
         if src == "ema":
             L.append("\nPer speaker WER % (shipped / loso / all / true_ema):")
             for h in datasets.ALL_SPEAKERS:
                 cells = []
                 for s in ("shipped", "loso", "all", "true_ema"):
                     w = [r for r in rows if r["system"] == s and r["speaker"] == h and r["wer"] is not None]
-                    cells.append(f"{100 * sum(r['wer'] * r['n_words'] for r in w) / max(1, sum(r['n_words'] for r in w)):.1f}")
+                    nw = sum(r['n_words'] for r in w)
+                    cells.append(f"{100 * sum(r['wer'] * r['n_words'] for r in w) / nw:.1f}" if nw else "n/a")
                 L.append(f"- {h}: " + " / ".join(cells))
     (OUT / "summary.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
