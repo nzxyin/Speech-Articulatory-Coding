@@ -118,6 +118,18 @@ def summary():
         L.append(f"Nested held-out rmse_z {np.mean([u['rmse_z'] for _, _, u in nested]):.4f}, "
                  f"PCC {np.mean([u['pcc'] for _, _, u in nested]):.4f}; mean GFLOPs/s "
                  f"{np.mean([fl[k] for _, k, _ in nested]):.1f}")
+        # cross-fold depth selection: for held-out h, the depth with the best mean held-out rmse_z on the OTHER six
+        # folds (h's own test sentences are never used; those folds' models were trained with h's training data)
+        cross = []
+        for h in datasets.ALL_SPEAKERS:
+            others = [o for o in datasets.ALL_SPEAKERS if o != h]
+            kbest = min(ks, key=lambda k: np.mean([res[f"{k}/{o}"]["unseen"]["rmse_z"] for o in others]))
+            cross.append((h, kbest, res[f"{kbest}/{h}"]["unseen"]))
+        L.append("Cross-fold depth (best mean held-out rmse_z on the other six folds): "
+                 + ", ".join(f"{h} k={k}" for h, k, _ in cross))
+        L.append(f"Cross-fold held-out rmse_z {np.mean([u['rmse_z'] for _, _, u in cross]):.4f}, "
+                 f"PCC {np.mean([u['pcc'] for _, _, u in cross]):.4f}; mean GFLOPs/s "
+                 f"{np.mean([fl[k] for _, k, _ in cross]):.1f}")
         kf = FIXED[model]
         if kf in ks:
             rs = [res[f"{kf}/{h}"]["unseen"] for h in datasets.ALL_SPEAKERS]

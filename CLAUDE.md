@@ -422,6 +422,26 @@ hardest (0.80-0.90; order varies by encoder). LoRA's largest gain over the froze
 WavLM 1.02 -> 0.86 mm). Whitened-target training is worse in 43 of 44 class x encoder cells (w2v2 glottal, 121 frames,
 the exception).
 
+### LOSO depth sweep: multi-speaker FLOPs frontier and leak-free depth selection (2026-10-12)
+`depth_sweep.py` (`analysis_depth/summary.md`): ridge probe at every cached depth of each encoder, 7 LOSO folds; shift
+(-2..3) and ridge strength chosen on the fold's training speakers only. Held-out frontier (rmse_z / PCC):
+| GFLOPs/s | best encoder, depth | held-out rmse_z / PCC |
+|---|---|---|
+| 13.6 | w2v2 k6 | 0.794 / 0.656 |
+| 17.4 | XLS-R 300M k9 ~ WavLM k9 | 0.772 / 0.679, 0.771 / 0.675 |
+| 21-23 | XLS-R 300M k12 ~ WavLM k13 | 0.763 / 0.678, 0.762 / 0.675 |
+| 44-50 | XLS-R 1B k19-22 | 0.754-0.759 / 0.686-0.688 |
+| 78.5 | XLS-R 1B k36 | 0.751 / 0.696 |
+- Beyond ~22 GFLOPs/s, 2-3.5x more compute buys only 0.008-0.012 rmse_z and +0.01-0.02 PCC, all from deep XLS-R 1B.
+  Compressed 1B reaches the best probe scores under speaker shift, but only at its deep layers, never cheaply.
+- The best held-out depth is deeper than the best seen-speaker depth (WavLM: k9 for seen, k12-13 for new speakers).
+- Depth selection: choosing depth on the training speakers' validation sentences (nested, leak-free) picks shallow,
+  speaker-specific depths (WavLM k6-9, held-out 0.787; 1B k10, 0.793; 300M k18, 0.777; w2v2 k21, 0.800) -- the same
+  depths used in LOSO option A, which were chosen the same way on ema_multi. Choosing depth by held-out performance
+  on the other six folds (cross-fold) is better for every encoder (WavLM k10-13 0.766; 300M k12-17 0.767; 1B k35-37
+  0.757; w2v2 k16-17 0.784): to select for generalization, validate on held-out speakers.
+- LoRA + causal conv at new frontier depths (WavLM k12, 300M k10, 1B k19; 3 seeds x 7 folds) running (`fr_*`).
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Encoder / FLOPs: WavLM Large truncated to 7-9 layers is the cheapest encoder that is never clearly beaten. LOSO held
   out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI touches
