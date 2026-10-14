@@ -62,6 +62,8 @@ All notable changes to this fork. Earlier history is in `git log`.
 
 - Experiment `main_800k` (the primary run with an 800k-step budget, seed 0) and evaluation system set
   `eval_systems=long` (800k against the two 400k seeds of HiFi-GAN and Vocos), to test whether 400k steps suffice.
+- Results: sections 3.1 (test.other), 4.1 (run-to-run variation, second seeds) and 6.1 (compute and training length)
+  of `docs/vocoders/RESULTS.md`; tables in `docs/vocoders/results/{test.other,seeds}/` and `results/convergence.md`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).

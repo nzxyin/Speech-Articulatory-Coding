@@ -11,21 +11,26 @@ periodicity), the same speaker conditioning (FiLM from a SPARC speaker embedding
 and the same training recipe and budget. The EMA comes from the per-utterance MNGU0 refit of the linear AAI head
 (`linear_aai_mngu0_refit_peralign.pkl`), not from the head embedded in the `en+` checkpoint.
 
-Status (2026-10-12): all three phases are done. The three primary runs (400k generator steps, fp32, one GPU each) and 12
+Status (2026-10-14): all three phases and the follow-ups (test.other, second seeds, X-Y probes) are done; 800k runs are training. The three primary runs (400k generator steps, fp32, one GPU each) and 12
 ablation runs (100k steps) are trained, and the Phase 3 evaluation on test.clean is complete (code `sparc.vocoders.eval`,
 contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.md`; tables are in
 `docs/vocoders/results/`. Large outputs (checkpoints, audio, per-utterance results, samples, failure cases) are under
 `/data/user_data/xoy/sparc-vocoders/` (`runs/`, `eval/`).
 
-## Main findings (test.clean, single training run per arm; see RESULTS.md for paired CIs)
+## Main findings (test.clean; robust = same sign and supported in both training seeds and larger than the seed spread)
 
-- HiFi-GAN leads on quality and speaker similarity: UTMOS 4.17 against 3.90 (Vocos) and 3.83 (DDSP), ground truth 4.21.
-- WER does not separate the vocoders (2.45, 2.52, 2.55 percent; ground truth 1.89 percent).
-- Prosody failures differ: DDSP follows F0 best (18 cents RMSE) but has the worst voicing and loudness; Vocos has the
-  largest F0 error (35 cents, broad deviations, not octave errors); HiFi-GAN is best on voicing and loudness.
-- F0 and loudness edits are followed closely; single-channel EMA edits are not (gain about 0.1), although natural EMA
-  variation is reproduced with slope 1.0. The cause is open.
-- Vocos is the cheapest (RTF 0.0008 on an L40S, 0.027 on one CPU thread) and has the shortest lookahead (196 ms).
+- HiFi-GAN leads on quality and speaker similarity (robust, also on test.other): UTMOS 4.17 / 4.16 (two seeds) against
+  3.90 / 3.94 (Vocos) and 3.83 / 3.82 (DDSP); ground truth 4.21. On test.other HiFi-GAN equals ground-truth UTMOS (4.03).
+- WER does not separate the vocoders in either seed or on test.other (about 2.5 percent on test.clean, 5.0 percent on
+  test.other; ground truth 1.9 and 3.4 percent).
+- Prosody failures differ (robust): Vocos has the largest F0 error (about 35 cents RMSE); DDSP has the largest voicing and
+  loudness errors. The HiFi-GAN-DDSP F0 ordering and the Vocos-DDSP UTMOS ordering are not robust.
+- F0 and loudness edits are followed closely; single EMA channel edits are not (gain about 0.1). Pairing the X and Y
+  edits of a sensor does not help; time-varying edits and the direction within a sensor do (best about 0.57).
+- Compute: Vocos uses 11.5 times fewer FLOPs than HiFi-GAN and is 7-10 times faster at inference, but only 1.5 times
+  faster to train; the SPARC feature extractor dominates the end-to-end cost.
+- Training length: DDSP has converged at 400k steps; Vocos is about 2 percent and HiFi-GAN 3-8 percent above their fitted
+  dev mel L1 asymptotes. 800k-step runs of HiFi-GAN and Vocos are running (issue #28).
 - Ablations at 100k: Vocos option B beats A; MSD instead of MRD does not change the ranking; the native SPARC recipe
   raises UTMOS but worsens mel L1, PESQ and WER; at about 6 M parameters the HiFi-GAN lead over DDSP is not supported.
 
