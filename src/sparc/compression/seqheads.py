@@ -112,11 +112,36 @@ class SSMHead(nn.Module):
         return out
 
 
-class MambaBlock(nn.Module):
-    """One-direction selective SSM block (Mamba), reference sequential scan."""
+def seq_scan(a, b):
+    """h_t = a_t * h_{t-1} + b_t over dim 1 (h_0 = 0), sequential reference."""
+    h = torch.zeros_like(b[:, 0])
+    out = []
+    for t in range(a.shape[1]):
+        h = a[:, t] * h + b[:, t]
+        out.append(h)
+    return torch.stack(out, 1)
 
-    def __init__(self, hidden, n_state=16, expand=2, d_conv=4):
+
+def pscan(a, b):
+    """Same recurrence as seq_scan with a Hillis-Steele associative scan: ceil(log2 T) vectorized steps.
+    Composition of (a1, b1) then (a2, b2) is (a2 a1, a2 b1 + b2); out-of-range positions use the identity (1, 0).
+    Stable because every a is a decay in (0, 1]."""
+    T, step = a.shape[1], 1
+    while step < T:
+        a_prev = torch.cat([torch.ones_like(a[:, :step]), a[:, :-step]], 1)
+        b_prev = torch.cat([torch.zeros_like(b[:, :step]), b[:, :-step]], 1)
+        b = a * b_prev + b
+        a = a * a_prev
+        step *= 2
+    return b
+
+
+class MambaBlock(nn.Module):
+    """One-direction selective SSM block (Mamba); parallel associative scan (sequential reference via parallel=False)."""
+
+    def __init__(self, hidden, n_state=16, expand=2, d_conv=4, parallel=True):
         super().__init__()
+        self.parallel = parallel
         E = expand * hidden
         self.E, self.N = E, n_state
         self.dt_rank = math.ceil(hidden / 16)
@@ -143,12 +168,8 @@ class MambaBlock(nn.Module):
         A = -torch.exp(self.A_log)  # (E, N)
         dA = torch.exp(dt[..., None] * A)  # (B, T, E, N)
         dBu = dt[..., None] * Bm[:, :, None, :] * u[..., None]  # (B, T, E, N)
-        h = torch.zeros(B, self.E, self.N, device=x.device, dtype=x.dtype)
-        ys = []
-        for t in range(T):
-            h = dA[:, t] * h + dBu[:, t]
-            ys.append(torch.einsum("ben,bn->be", h, Cm[:, t]))
-        y = torch.stack(ys, 1) + u * self.D
+        hs = pscan(dA, dBu) if self.parallel else seq_scan(dA, dBu)  # (B, T, E, N)
+        y = torch.einsum("bten,btn->bte", hs, Cm) + u * self.D
         return self.out_proj(y * F.silu(z))
 
 

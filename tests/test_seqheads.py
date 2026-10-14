@@ -24,3 +24,16 @@ def test_batched_equals_unbatched(name, smooth):
         for i, x in enumerate(xs):
             alone = head(x[None], torch.zeros(1, len(x), dtype=torch.bool))[0]
             assert torch.allclose(yb[i, : len(x)], alone, atol=1e-4), (name, smooth, i)
+
+
+def test_parallel_scan_matches_sequential():
+    from sparc.compression.seqheads import pscan, seq_scan
+
+    torch.manual_seed(1)
+    a = torch.rand(2, 37, 5, 3).clamp_min(0.05).requires_grad_(True)
+    b = torch.randn(2, 37, 5, 3).requires_grad_(True)
+    hp, hs = pscan(a, b), seq_scan(a, b)
+    assert torch.allclose(hp, hs, atol=1e-5)
+    gp = torch.autograd.grad(hp.square().sum(), (a, b))
+    gs = torch.autograd.grad(hs.square().sum(), (a, b))
+    assert all(torch.allclose(x, y, atol=1e-4) for x, y in zip(gp, gs))
