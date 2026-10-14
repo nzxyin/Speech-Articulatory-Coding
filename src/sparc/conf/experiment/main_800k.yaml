@@ -1,0 +1,13 @@
+# @package _global_
+# Training-length test of the primary run (experiment main): the same recipe and seed (0), with an 800k-step budget. The
+# warm-up + cosine schedule spans the whole budget (WarmupCosine reads train.max_g_steps), so the end point is a fully
+# annealed run of twice the length, comparable with the annealed 100k (ablation_100k) and 400k (main, main_seed1) runs.
+experiment_name: main_800k
+train:
+  max_g_steps: 800000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64

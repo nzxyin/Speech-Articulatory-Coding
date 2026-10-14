@@ -60,6 +60,9 @@ All notable changes to this fork. Earlier history is in `git log`.
   gain, leakage and angle from stored moments. System set `eval_systems=seeds` (seed-0 and seed-1 runs, seed-to-seed
   pairs).
 
+- Experiment `main_800k` (the primary run with an 800k-step budget, seed 0) and evaluation system set
+  `eval_systems=long` (800k against the two 400k seeds of HiFi-GAN and Vocos), to test whether 400k steps suffice.
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);

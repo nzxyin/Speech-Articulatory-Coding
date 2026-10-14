@@ -1,0 +1,85 @@
+# @package eval
+# Training-length set (`eval_systems=long`): HiFi-GAN and Vocos trained for 800k steps (experiment main_800k, seed 0)
+# next to their 400k runs (main, seed 0; main_seed1, seed 1) and the gt reference. The 400k systems keep their names, so
+# their results are reused from the main and seeds evaluations (read only; their stages are not run again). The seed-1
+# systems give the run-to-run variation against which the 800k gain is read. Writes tables/<split>/long/.
+table_name: long
+aggregate:
+  reference_systems: []
+  # (a, b) = a minus b.
+  pairs:
+    - [hifigan_800k, hifigan]
+    - [hifigan_800k, hifigan_s1]
+    - [hifigan_s1, hifigan]
+    - [vocos_800k, vocos]
+    - [vocos_800k, vocos_s1]
+    - [vocos_s1, vocos]
+    - [hifigan_800k, vocos_800k]
+    - [hifigan, vocos]
+systems:
+  gt:
+    kind: gt
+    sr: 24000
+    conditions: [T1]
+    head: refit
+    label: ground truth
+  hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN (400k)
+  vocos:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos (400k)
+  hifigan_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN (400k, seed 1)
+  vocos_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos (400k, seed 1)
+  hifigan_800k:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_800k
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN (800k)
+  vocos_800k:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_800k
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos (800k)
