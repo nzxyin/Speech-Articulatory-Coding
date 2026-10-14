@@ -55,8 +55,14 @@ class Smooth(nn.Module):
         self.register_buffer("kernel", k.view(1, 1, -1))
         self.pad = (len(k) - 1) // 2
 
-    def forward(self, y):  # (B, T, C)
+    def forward(self, y, pad_mask=None):  # (B, T, C); pad_mask (B, T) True on padding
         B, T, C = y.shape
+        if pad_mask is not None and bool(pad_mask.any()):
+            # replicate each sequence's own last valid frame into its padding, so a batched sequence is smoothed
+            # exactly like the same sequence alone (whose edge is replicate-padded below)
+            lens = (~pad_mask).sum(1).clamp_min(1)
+            last = y[torch.arange(B, device=y.device), lens - 1]  # (B, C)
+            y = torch.where(pad_mask[..., None], last[:, None, :], y)
         x = y.transpose(1, 2).reshape(B * C, 1, T)
         x = F.pad(x, (self.pad, self.pad), mode="replicate")
         return F.conv1d(x, self.kernel.to(x.dtype)).reshape(B, C, T).transpose(1, 2)
@@ -218,7 +224,9 @@ class Head(nn.Module):
             allowed &= d.abs() <= self.window
         return ~allowed  # True = masked
 
-    def _conv(self, x):  # (N, T, H) -> (N, T, H)
+    def _conv(self, x, pad_mask=None):  # (N, T, H) -> (N, T, H)
+        if pad_mask is not None:  # padded frames act like the zero padding of a lone sequence
+            x = x.masked_fill(pad_mask[..., None], 0.0)
         x = x.transpose(1, 2)
         pad = (self.kernel - 1, 0) if self.causal else ((self.kernel - 1) // 2, self.kernel // 2)
         return F.gelu(self.conv(F.pad(x, pad))).transpose(1, 2)
@@ -246,15 +254,16 @@ class Head(nn.Module):
             if self.kind == "conv":
                 x = F.gelu(self.inp(h))  # (B, G, T, H)
                 B, G, T, Hd = x.shape
-                x = self._conv(x.reshape(B * G, T, Hd)).reshape(B, G, T, Hd)
+                pm = None if pad_mask is None else pad_mask[:, None, :].expand(B, G, T).reshape(B * G, T)
+                x = self._conv(x.reshape(B * G, T, Hd), pm).reshape(B, G, T, Hd)
                 h = x
             y = self.out(h)  # (B, G, T, 2)
             y = y.permute(0, 2, 1, 3).reshape(y.shape[0], y.shape[2], -1)  # articulator pairs in channel order
         else:
             if self.kind == "conv":
-                h = self._conv(F.gelu(self.inp(h)))
+                h = self._conv(F.gelu(self.inp(h)), pad_mask)
             elif self.kind == "attn":
                 x = self.inp(h)
                 h = self.block(x, src_mask=self._attn_mask(x.shape[1], x.device), src_key_padding_mask=pad_mask)
             y = self.out(h)
-        return self.smooth(y) if self.smooth is not None else y
+        return self.smooth(y, pad_mask) if self.smooth is not None else y
