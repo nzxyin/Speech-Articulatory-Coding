@@ -11,7 +11,8 @@ Heads (heads.Head and seqheads):
     mlp           LayerNorm -> Linear D->256 -> GELU -> Linear: same front end and capacity as the sequence heads but
                   no temporal context -- the control that separates temporal modelling from capacity
     conv_causal9  the causal 9-frame conv head used so far (bridge to the earlier runs)
-    conv9, conv17 centered (non-causal) conv heads, learned FIR filters
+    conv3 ... conv65  centered (non-causal) conv heads (learned FIR filters) of 3-65 frames (60 ms - 1.3 s)
+    convgru9/17   centered conv then BiGRU; gruconv9 BiGRU then conv; gru2 two-layer BiGRU (depth control)
     gru           bidirectional GRU
     ssm           bidirectional diagonal linear SSM (S4D)
     mamba         bidirectional selective SSM (reference scan)
@@ -44,10 +45,11 @@ from . import datasets
 from .heads import Head
 from .metrics import ema_metrics
 from .probe import aligned, load_targets
-from .seqheads import GRUHead, MambaHead, SSMHead
+from .seqheads import CascadeHead, GRUHead, MambaHead, SSMHead
 
 OUT = datasets.XLSR_EMA / "analysis_heads"
-HEADS = ("linear", "mlp", "conv_causal9", "conv9", "conv17", "gru", "ssm", "mamba")
+HEADS = ("linear", "mlp", "conv_causal9", "conv3", "conv5", "conv9", "conv17", "conv33", "conv65", "gru", "gru2",
+         "convgru9", "convgru17", "gruconv9", "ssm", "mamba")
 LRS = (1e-4, 3e-4, 1e-3, 3e-3)
 SEEDS = (0, 1, 2)
 FT_SR = 50
@@ -61,7 +63,13 @@ def make_head(name, dim, smooth):
         return Head(dim, "conv", hidden=256, kernel=1, causal=False, smooth=smooth)
     if name == "conv_causal9":
         return Head(dim, "conv", hidden=256, kernel=9, causal=True, smooth=smooth)
-    if name in ("conv9", "conv17"):
+    if name.startswith("convgru"):
+        return CascadeHead(dim, "conv_gru", kernel=int(name[7:]), smooth=smooth)
+    if name.startswith("gruconv"):
+        return CascadeHead(dim, "gru_conv", kernel=int(name[7:]), smooth=smooth)
+    if name == "gru2":
+        return CascadeHead(dim, "gru_gru", smooth=smooth)
+    if name.startswith("conv") and name[4:].isdigit():
         return Head(dim, "conv", hidden=256, kernel=int(name[4:]), causal=False, smooth=smooth)
     if name == "gru":
         return GRUHead(dim, smooth=smooth)

@@ -190,3 +190,46 @@ class MambaHead(nn.Module):
         y = x + self.fwd(x) + SSMHead._flip(self.bwd(SSMHead._flip(x, pad_mask)), pad_mask)
         y = self.out(self.norm(y))
         return self.smooth(y, pad_mask) if self.smooth is not None else y
+
+
+class CascadeHead(nn.Module):
+    """Conv and BiGRU stacked on the shared front end, in either order, or a deeper BiGRU:
+        order 'conv_gru' -- centered conv (kernel frames, GELU) then BiGRU: local lag / filtering, then dynamics;
+        order 'gru_conv' -- BiGRU then centered conv (tests the order);
+        order 'gru_gru'  -- two stacked BiGRU layers (depth control for the cascades)."""
+
+    def __init__(self, dim, order="conv_gru", kernel=9, hidden=256, n_out=12, smooth=True):
+        super().__init__()
+        self.order, self.kernel = order, kernel
+        self.front = _Front(dim, hidden)
+        if "conv" in order:
+            self.conv = nn.Conv1d(hidden, hidden, kernel)
+        self.rnn = nn.GRU(hidden, hidden // 2, num_layers=2 if order == "gru_gru" else 1, batch_first=True,
+                          bidirectional=True)
+        self.out = nn.Linear(hidden, n_out)
+        self.smooth = Smooth() if smooth else None
+
+    def _conv(self, x, pad_mask):
+        if pad_mask is not None:  # padded frames act like the zero padding of a lone sequence
+            x = x.masked_fill(pad_mask[..., None], 0.0)
+        x = F.pad(x.transpose(1, 2), ((self.kernel - 1) // 2, self.kernel // 2))
+        return F.gelu(self.conv(x)).transpose(1, 2)
+
+    def _gru(self, x, pad_mask):
+        if pad_mask is None:
+            return self.rnn(x)[0]
+        lens = (~pad_mask).sum(1).cpu()
+        packed = nn.utils.rnn.pack_padded_sequence(x, lens, batch_first=True, enforce_sorted=False)
+        y, _ = self.rnn(packed)
+        return nn.utils.rnn.pad_packed_sequence(y, batch_first=True, total_length=x.shape[1])[0]
+
+    def forward(self, h, pad_mask=None):
+        x = self.front(h)
+        if self.order == "conv_gru":
+            x = self._gru(self._conv(x, pad_mask), pad_mask)
+        elif self.order == "gru_conv":
+            x = self._conv(self._gru(x, pad_mask), pad_mask)
+        else:
+            x = self._gru(x, pad_mask)
+        y = self.out(x)
+        return self.smooth(y, pad_mask) if self.smooth is not None else y
