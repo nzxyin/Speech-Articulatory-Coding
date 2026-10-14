@@ -1,19 +1,29 @@
 """Frozen-encoder head screen under leave-one-speaker-out: does a head with a different inductive bias beat spending
 the same FLOPs on more encoder layers?
 
-Heads are trained on the cached, low-passed encoder features of one layer (features_ema_multi/<model>/layer_kk.npy)
-for every LOSO fold (training speakers' train split; early stopping and learning-rate choice on their validation
-split, never on the held-out speaker). Heads (heads.Head and seqheads):
-    linear            frame-wise readout (input standardized with training statistics);
-    conv_causal9      the causal 9-frame conv head used so far (bridge to the earlier runs);
-    conv9, conv17     centered (non-causal) conv heads, learned FIR filters;
-    gru               bidirectional GRU;
-    ssm               bidirectional diagonal linear SSM (S4D);
-    mamba             bidirectional selective SSM (reference scan).
-Each with and without the ±1 s output smoother. Learning rate in {3e-4, 1e-3} (AdamW, cosine with one warm-up epoch,
-<= 40 epochs, patience 8), chosen per fold on the training speakers' validation rmse_z. Alignment shift: the most
-common fold-internal shift of the depth sweep for that layer. Head FLOPs per second of audio are measured with
-FlopCounterMode on a 4 s input (matmul / conv only, like the encoder profiles).
+Heads are trained on the cached, 10 Hz low-passed encoder features of one layer (features_ema_multi/<model>/
+layer_kk.npy) for every LOSO fold. Everything is chosen on the fold's training speakers only (never the held-out
+speaker): alignment shift = the fold's own probe-selected shift from depth_sweep; learning rate on their validation
+sentences; early stopping on the same.
+
+Heads (heads.Head and seqheads):
+    linear        frame-wise readout of standardized features (probe-equivalent model class)
+    mlp           LayerNorm -> Linear D->256 -> GELU -> Linear: same front end and capacity as the sequence heads but
+                  no temporal context -- the control that separates temporal modelling from capacity
+    conv_causal9  the causal 9-frame conv head used so far (bridge to the earlier runs)
+    conv9, conv17 centered (non-causal) conv heads, learned FIR filters
+    gru           bidirectional GRU
+    ssm           bidirectional diagonal linear SSM (S4D)
+    mamba         bidirectional selective SSM (reference scan)
+
+Protocol per (head, fold): primary arm without the output smoother (the features are already low-passed, so the
+smoother would give every head the same ±1 s context): learning rate from {1e-4, 3e-4, 1e-3, 3e-3} with seed 0 on
+validation, then seeds 1 and 2 at that rate; results are seed means. Secondary arm 'smoother on' (deployed
+post-filter): seed 0 at the chosen rate. AdamW, weight decay 0.01 except biases, norms and SSM dynamics (none),
+cosine schedule with a one-epoch warm-up, <= 40 epochs, patience 8, gradient clipping 1.0.
+
+Head FLOPs per second of audio from FlopCounterMode on a 4 s input (matmul / conv only, like the encoder profiles;
+the uncounted scan / FFT / elementwise work is < 0.02 GFLOPs/s, the smoother ~0.012).
 
 Usage:
     python -m sparc.compression.head_screen run --model wavlm-large --layer 7 --head gru
@@ -24,11 +34,10 @@ import argparse
 import json
 import math
 import random
-from collections import Counter
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+from scipy import stats as sstats
 from torch.utils.flop_counter import FlopCounterMode
 
 from . import datasets
@@ -38,14 +47,18 @@ from .probe import aligned, load_targets
 from .seqheads import GRUHead, MambaHead, SSMHead
 
 OUT = datasets.XLSR_EMA / "analysis_heads"
-HEADS = ("linear", "conv_causal9", "conv9", "conv17", "gru", "ssm", "mamba")
-LRS = (3e-4, 1e-3)
+HEADS = ("linear", "mlp", "conv_causal9", "conv9", "conv17", "gru", "ssm", "mamba")
+LRS = (1e-4, 3e-4, 1e-3, 3e-3)
+SEEDS = (0, 1, 2)
 FT_SR = 50
+NO_DECAY = ("bias", "norm", "log_dt", "log_A_real", "A_imag", "A_log", ".D", "C")
 
 
 def make_head(name, dim, smooth):
     if name == "linear":
         return Head(dim, "linear", smooth=smooth)
+    if name == "mlp":
+        return Head(dim, "conv", hidden=256, kernel=1, causal=False, smooth=smooth)
     if name == "conv_causal9":
         return Head(dim, "conv", hidden=256, kernel=9, causal=True, smooth=smooth)
     if name in ("conv9", "conv17"):
@@ -99,6 +112,13 @@ def zm(P, Y):
     return {"rmse_z": float(np.sqrt(((Pc - Yc) ** 2).mean(0)).mean()), "pcc": ema_metrics(P, Y, n_boot=0)["pcc"]}
 
 
+def param_groups(head):
+    decay, no = [], []
+    for n, p in head.named_parameters():
+        (no if any(k in n for k in NO_DECAY) else decay).append(p)
+    return [{"params": decay, "weight_decay": 0.01}, {"params": no, "weight_decay": 0.0}]
+
+
 def train_one(name, smooth, lr, data, ym, ys, device, seed=0, epochs=40, patience=8, bs=8):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -109,7 +129,7 @@ def train_one(name, smooth, lr, data, ym, ys, device, seed=0, epochs=40, patienc
         F_ = np.concatenate(Xtr)
         head.set_input_stats(torch.from_numpy(F_.mean(0)), torch.from_numpy(F_.std(0)))
     Ytr_s = [(y - ym) / ys for y in Ytr]
-    opt = torch.optim.AdamW(head.parameters(), lr=lr, weight_decay=0.01)
+    opt = torch.optim.AdamW(param_groups(head), lr=lr)
     steps = math.ceil(len(Xtr) / bs)
     total = epochs * steps
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / steps) * 0.5 * (1 + math.cos(math.pi * min(s, total) / total)))
@@ -129,36 +149,47 @@ def train_one(name, smooth, lr, data, ym, ys, device, seed=0, epochs=40, patienc
             opt.step()
             sched.step()
         v = zm(predict(head, data["valid"][0], ym, ys, device), data["valid"][1])["rmse_z"]
-        if v < best - 1e-5:
+        if not math.isfinite(v):
+            break
+        if best_state is None or v < best - 1e-5:
             best, best_state, bad = v, {k: t.detach().clone() for k, t in head.state_dict().items()}, 0
         else:
             bad += 1
             if bad >= patience:
                 break
+    if best_state is None:
+        return None, float("inf")
     head.load_state_dict(best_state)
     return head, best
 
 
-def shift_for(model, layer):
-    from .depth_sweep import load_all
-    res = load_all(model)
-    sh = [res[f"{layer}/{h}"]["shift"] for h in datasets.ALL_SPEAKERS if f"{layer}/{h}" in res]
-    return Counter(sh).most_common(1)[0][0] if sh else 1
+def fold_shift(model, layer, h, depth):
+    key = f"{layer}/{h}"
+    if key not in depth:
+        raise KeyError(f"no depth-sweep shift for {model} {key}; run depth_sweep first")
+    return depth[key]["shift"]
+
+
+def evaluate(head, data, ym, ys, device):
+    return {split: zm(predict(head, data[split][0], ym, ys, device), data[split][1]) for split in ("test", "test_unseen")}
 
 
 def run(model, layer, head_name, device=None):
+    from .depth_sweep import load_all
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     d = datasets.features_root("ema_multi") / model
     index = json.loads((d / "index.json").read_text())
     feats = np.load(d / f"layer_{layer:02d}.npy", mmap_mode="r")
-    shift = shift_for(model, layer)
+    depth = load_all(model)
     out_f = OUT / model / f"k{layer}_{head_name}.json"
     out_f.parent.mkdir(parents=True, exist_ok=True)
-    res = json.loads(out_f.read_text()) if out_f.exists() else {"shift": shift}
+    res = json.loads(out_f.read_text()) if out_f.exists() else {}
     utts = None
     for h in datasets.ALL_SPEAKERS:
-        if all(f"{h}/smooth{int(s)}" in res for s in (True, False)):
+        if h in res and "smooth_on" in res[h]:
             continue
+        shift = fold_shift(model, layer, h, depth)
         ds = datasets.EMAMulti(held_out=(h,), norm_by="norm_group")
         sp = {k: [s for s in v if s in index] for k, v in ds.splits().items()}
         if utts is None:
@@ -169,87 +200,123 @@ def run(model, layer, head_name, device=None):
             data[split] = ([np.asarray(x, dtype=np.float32) for x in X], [y.astype(np.float64) for y in Y])
         Yall = np.concatenate(data["train"][1])
         ym, ys = Yall.mean(0), Yall.std(0)
-        for smooth in (True, False):
-            key = f"{h}/smooth{int(smooth)}"
-            if key in res:
-                continue
-            best = None
+        rec = res.get(h, {"shift": shift})
+        assert rec["shift"] == shift, (rec["shift"], shift)
+        if "lr" not in rec:  # learning rate on validation (seed 0, smoother off)
+            trials, best_head = {}, None
             for lr in LRS:
-                head, v = train_one(head_name, smooth, lr, data, ym, ys, device)
-                if best is None or v < best[0]:
-                    best = (v, lr, head)
-            v, lr, head = best
-            rec = {"lr": lr, "valid_rmse_z": v}
-            for split in ("test", "test_unseen"):
-                rec[split] = zm(predict(head, data[split][0], ym, ys, device), data[split][1])
-            res[key] = rec
+                head, v = train_one(head_name, False, lr, data, ym, ys, device, seed=0)
+                trials[lr] = v
+                if head is not None and v <= min(trials.values()):
+                    best_head = (lr, head)
+            lr = min(trials, key=trials.get)
+            if best_head is None:
+                raise RuntimeError(f"{model} k{layer} {head_name} {h}: every learning rate diverged")
+            rec.update({"lr": lr, "lr_valid": {str(k): v for k, v in trials.items()},
+                        "seeds": {"0": {"valid_rmse_z": trials[lr], **evaluate(best_head[1], data, ym, ys, device)}}})
+            res[h] = rec
             out_f.write_text(json.dumps(res, indent=1))
-            print(f"{model} k{layer} {head_name} {key}: lr {lr} held-out {rec['test_unseen']['rmse_z']:.4f} / "
-                  f"{rec['test_unseen']['pcc']:.4f} seen {rec['test']['rmse_z']:.4f} / {rec['test']['pcc']:.4f}", flush=True)
+        for s in SEEDS[1:]:
+            if str(s) in rec["seeds"]:
+                continue
+            head, v = train_one(head_name, False, rec["lr"], data, ym, ys, device, seed=s)
+            rec["seeds"][str(s)] = {"valid_rmse_z": v, **evaluate(head, data, ym, ys, device)} if head is not None else {"failed": True}
+            res[h] = rec
+            out_f.write_text(json.dumps(res, indent=1))
+        if "smooth_on" not in rec:
+            head, v = train_one(head_name, True, rec["lr"], data, ym, ys, device, seed=0)
+            rec["smooth_on"] = {"valid_rmse_z": v, **evaluate(head, data, ym, ys, device)} if head is not None else {"failed": True}
+            res[h] = rec
+            out_f.write_text(json.dumps(res, indent=1))
+        ok = [x for x in rec["seeds"].values() if "failed" not in x]
+        print(f"{model} k{layer} {head_name} {h}: shift {shift} lr {rec['lr']} held-out "
+              f"{np.mean([x['test_unseen']['rmse_z'] for x in ok]):.4f} / {np.mean([x['test_unseen']['pcc'] for x in ok]):.4f} "
+              f"({len(ok)} seeds)", flush=True)
+
+
+# ---------------------------------------------------------------- summary
+
+def seed_mean(rec, split, m, arm="off"):
+    if arm == "on":
+        x = rec.get("smooth_on", {})
+        return x[split][m] if split in x else np.nan
+    ok = [x for x in rec["seeds"].values() if "failed" not in x]
+    return float(np.mean([x[split][m] for x in ok])) if ok else np.nan
+
+
+def paired(a, b, sign):
+    d = sign * (np.asarray(a) - np.asarray(b))
+    d = d[np.isfinite(d)]
+    if len(d) < 2:
+        return "-"
+    hw = sstats.t.ppf(0.975, len(d) - 1) * d.std(ddof=1) / np.sqrt(len(d))
+    return f"{d.mean():+.4f} [{d.mean() - hw:+.4f}, {d.mean() + hw:+.4f}] {(d > 0).sum()}/{len(d)}"
 
 
 def summary():
     from .depth_sweep import gflops, load_all
-    L = ["# Frozen-encoder head screen (LOSO, 7 folds; held-out and seen rmse_z / PCC)\n",
-         "Total GFLOPs/s = encoder prefix + head (FlopCounterMode, matmul/conv only). 'probe' = the depth sweep's ridge "
-         "readout at the same layer. Paired vs the linear head over folds: mean, folds better (+ = better).\n"]
+
+    SPK = datasets.ALL_SPEAKERS
+    L = ["# Frozen-encoder head screen (LOSO, 7 folds)\n",
+         "Held-out speaker rmse_z / PCC (seed mean of 3 for the primary, smoother-off arm). Total GFLOPs/s = encoder prefix + "
+         "head (FlopCounterMode, matmul/conv; uncounted scan/FFT/elementwise < 0.02). Paired differences over folds: mean "
+         "[95% t CI, unadjusted for the many comparisons] folds better; + = better. 'probe' = ridge readout of the depth "
+         "sweep at the same layer (shift and alpha per fold). All selection on the training speakers.\n"]
     rows = []
-    for mdir in sorted(OUT.glob("*")):
-        if not mdir.is_dir():
-            continue
+    for mdir in sorted(p for p in OUT.glob("*") if p.is_dir()):
         model = mdir.name
         enc = gflops(model)
         depth = load_all(model)
-        layers = sorted({int(f.stem.split("_")[0][1:]) for f in mdir.glob("k*_*.json")})
         dim = None
-        for layer in layers:
-            L.append(f"\n## {model} k={layer} (encoder {enc[layer]:.1f} GFLOPs/s)\n")
-            L.append("| head | smoother | total GFLOPs/s | held-out rmse_z | held-out PCC | vs linear rmse_z | vs linear PCC | seen rmse_z / PCC | lr chosen |")
-            L.append("|---|---|---|---|---|---|---|---|---|")
-            pr = [depth.get(f"{layer}/{h}") for h in datasets.ALL_SPEAKERS]
-            if all(pr):
-                L.append(f"| probe (ridge) | - | {enc[layer]:.2f} | {np.mean([p['unseen']['rmse_z'] for p in pr]):.4f} | "
-                         f"{np.mean([p['unseen']['pcc'] for p in pr]):.4f} | - | - | "
-                         f"{np.mean([p['seen']['rmse_z'] for p in pr]):.4f} / {np.mean([p['seen']['pcc'] for p in pr]):.4f} | - |")
-            base = {}
-            fj = mdir / f"k{layer}_linear.json"
-            if fj.exists():
-                base = json.loads(fj.read_text())
-            for name in HEADS:
-                f = mdir / f"k{layer}_{name}.json"
-                if not f.exists():
+        for k in sorted({int(f.stem.split("_")[0][1:]) for f in mdir.glob("k*_*.json")}):
+            res = {n: json.loads((mdir / f"k{k}_{n}.json").read_text()) for n in HEADS if (mdir / f"k{k}_{n}.json").exists()}
+            probe = {h: depth.get(f"{k}/{h}") for h in SPK}
+            if dim is None:
+                dim = int(np.load(datasets.features_root("ema_multi") / model / f"layer_{k:02d}.npy", mmap_mode="r").shape[1])
+            L.append(f"\n## {model} k={k} (encoder {enc[k]:.2f} GFLOPs/s)\n")
+            L.append("| head | GFLOPs/s | held-out rmse_z | held-out PCC | vs probe rmse_z | vs probe PCC | vs mlp rmse_z | vs mlp PCC | seen rmse_z / PCC | smoother on: held-out |")
+            L.append("|---|---|---|---|---|---|---|---|---|---|")
+            if all(probe.values()):
+                pu = {m: [probe[h]["unseen"][m] for h in SPK] for m in ("rmse_z", "pcc")}
+                L.append(f"| probe | {enc[k]:.2f} | {np.mean(pu['rmse_z']):.4f} | {np.mean(pu['pcc']):.4f} | - | - | - | - | "
+                         f"{np.mean([probe[h]['seen']['rmse_z'] for h in SPK]):.4f} / {np.mean([probe[h]['seen']['pcc'] for h in SPK]):.4f} | - |")
+            for n, r in res.items():
+                folds = [h for h in SPK if h in r and "seeds" in r[h]]
+                if len(folds) < len(SPK):
+                    L.append(f"| {n} | incomplete ({len(folds)}/7 folds) |")
                     continue
-                r = json.loads(f.read_text())
-                if dim is None:
-                    dim = int(np.load(datasets.features_root("ema_multi") / model / f"layer_{layer:02d}.npy", mmap_mode="r").shape[1])
-                hf = head_gflops(name, dim)
-                for sm in (1, 0):
-                    folds = [h for h in datasets.ALL_SPEAKERS if f"{h}/smooth{sm}" in r]
-                    if not folds:
-                        continue
-                    g = lambda sp, m: np.array([r[f"{h}/smooth{sm}"][sp][m] for h in folds])  # noqa: E731
-                    cells = []
+                u = {m: [seed_mean(r[h], "test_unseen", m) for h in SPK] for m in ("rmse_z", "pcc")}
+                s = {m: np.mean([seed_mean(r[h], "test", m) for h in SPK]) for m in ("rmse_z", "pcc")}
+                on = {m: np.nanmean([seed_mean(r[h], "test_unseen", m, "on") for h in SPK]) for m in ("rmse_z", "pcc")}
+                cells = []
+                for ref in ("probe", "mlp"):
                     for m, sign in (("rmse_z", -1), ("pcc", 1)):
-                        bf = [h for h in folds if f"{h}/smooth{sm}" in base]
-                        if name == "linear" or not bf:
+                        if ref == "probe" and all(probe.values()):
+                            cells.append(paired(u[m], [probe[h]["unseen"][m] for h in SPK], sign))
+                        elif ref == "mlp" and "mlp" in res and n != "mlp" and all(h in res["mlp"] for h in SPK):
+                            cells.append(paired(u[m], [seed_mean(res["mlp"][h], "test_unseen", m) for h in SPK], sign))
+                        else:
                             cells.append("-")
-                            continue
-                        dd = np.array([sign * (r[f"{h}/smooth{sm}"]["test_unseen"][m] - base[f"{h}/smooth{sm}"]["test_unseen"][m]) for h in bf])
-                        cells.append(f"{dd.mean():+.4f} ({(dd > 0).sum()}/{len(dd)})")
-                    lrs = Counter(r[f"{h}/smooth{sm}"]["lr"] for h in folds)
-                    tot = enc[layer] + hf
-                    rows.append((model, layer, name, sm, tot, g("test_unseen", "rmse_z").mean(), g("test_unseen", "pcc").mean()))
-                    L.append(f"| {name} | {'on' if sm else 'off'} | {tot:.2f} | {g('test_unseen', 'rmse_z').mean():.4f} | "
-                             f"{g('test_unseen', 'pcc').mean():.4f} | {cells[0]} | {cells[1]} | {g('test', 'rmse_z').mean():.4f} / "
-                             f"{g('test', 'pcc').mean():.4f} | {dict(lrs)} ({len(folds)} folds) |")
-    L.append("\n## Frontier over all encoders, depths and heads (held-out rmse_z vs total GFLOPs/s)\n")
-    L.append("| encoder | k | head | smoother | GFLOPs/s | rmse_z | PCC |")
-    L.append("|---|---|---|---|---|---|---|")
+                tot = enc[k] + head_gflops(n, dim)
+                rows.append((model, k, n, tot, np.mean(u["rmse_z"]), np.mean(u["pcc"]),
+                             np.mean([r[h]["seeds"]["0"]["valid_rmse_z"] for h in SPK])))
+                L.append(f"| {n} | {tot:.2f} | {np.mean(u['rmse_z']):.4f} | {np.mean(u['pcc']):.4f} | " + " | ".join(cells) +
+                         f" | {s['rmse_z']:.4f} / {s['pcc']:.4f} | {on['rmse_z']:.4f} / {on['pcc']:.4f} |")
+        # probe at every depth, as the 'spend FLOPs on more layers' alternative
+        for kk in sorted({int(x.split('/')[0]) for x in depth}):
+            pr = [depth.get(f"{kk}/{h}") for h in SPK]
+            if all(pr):
+                rows.append((model, kk, "probe", enc[kk], np.mean([p["unseen"]["rmse_z"] for p in pr]),
+                             np.mean([p["unseen"]["pcc"] for p in pr]), np.nan))
+    L.append("\n## Descriptive frontier: held-out rmse_z vs total GFLOPs/s (heads at the screened layers + ridge probe at "
+             "every depth). The minimum over many configurations is optimistic; use the paired tables for claims.\n")
+    L.append("| encoder | k | readout | GFLOPs/s | rmse_z | PCC |")
+    L.append("|---|---|---|---|---|---|")
     best = np.inf
-    for m, k, n, sm, f, r, p in sorted(rows, key=lambda x: (x[4], x[5])):
+    for m, k, n, f, r, p, _ in sorted(rows, key=lambda x: (x[3], x[4])):
         if r < best:
             best = r
-            L.append(f"| {m} | {k} | {n} | {'on' if sm else 'off'} | {f:.2f} | {r:.4f} | {p:.4f} |")
+            L.append(f"| {m} | {k} | {n} | {f:.2f} | {r:.4f} | {p:.4f} |")
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "summary.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
