@@ -469,6 +469,28 @@ and LibriTTS only (many EMA_5EMO reference texts are prompt codes such as digit 
   judged (or deployed) with the shipped vocoder; the vocoder must be retrained on the new inverter's outputs.
 - The heads' held-out articulation is normal (rmse_z 0.64-0.88, PCC 0.61-0.78 per speaker, as the layer-9 probes).
 
+### Head screen: temporal inductive biases on frozen encoders (2026-10-14)
+Question (user): an extra transformer/attention head on WavLM is redundant with keeping another encoder layer, so a
+head must bring a different inductive bias; and FLOPs matter. `head_screen.py` + `seqheads.py`
+(`analysis_heads/summary.md`): heads trained on cached, low-passed features of WavLM k7/9/12 and XLS-R 300M k9/18,
+7 LOSO folds; fold-internal shift, learning rate from {1e-4, 3e-4, 1e-3, 3e-3} on training-speaker validation, then 3
+seeds; primary arm without the output smoother. Heads: linear; MLP (same LayerNorm + 1024->256 GELU front end and
+capacity as the sequence heads, no temporal context: the capacity control); causal conv 9 (the head used so far);
+centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4D); BiMamba (pending). Head cost is
+0.001-0.14 GFLOPs/s against ~1.3 per extra encoder layer. Heads no longer leak padding into valid frames (fixed in
+`heads.py`; tested batched == unbatched).
+- Temporal context raises held-out PCC beyond capacity (vs the MLP control, all 5 depths): BiGRU +0.024 to +0.041
+  (7/7 folds everywhere), S4D +0.010 to +0.026, centered conv +0.008 to +0.019 (mostly 7/7), causal conv +0.005 to
+  +0.011. Centered beats causal at every depth; recurrence is the strongest bias.
+- No head improves held-out rmse_z: the ridge probe stays best at every depth (trained heads -0.003 to -0.031; even
+  the trained linear head trails ridge by ~0.005, the optimizer's calibration gap); temporal heads are within +-0.016
+  of the MLP. Every head with hidden capacity fits training speakers far better (seen rmse_z ~0.57 vs probe 0.67)
+  without gaining on new speakers -- the same amplitude overfitting as LoRA.
+- Head vs more encoder layers at matched FLOPs: for PCC a head wins -- WavLM k7 + BiGRU (14.9 GFLOPs/s, frozen)
+  0.698, above any probe depth up to 23 GFLOPs/s (<= 0.681) and equal to LoRA + causal conv at k7 (0.696); WavLM
+  k12 + BiGRU 0.706 = LoRA at k12. For rmse_z depth wins (probe k12 0.764 vs k7 + BiGRU 0.805).
+- The +-1 s output smoother is redundant on low-passed features (on vs off within ~0.005).
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
