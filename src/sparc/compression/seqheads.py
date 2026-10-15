@@ -19,6 +19,13 @@ import torch.nn.functional as F
 from .heads import Smooth
 
 
+class _SeqHeadMixin:
+    """Attributes train.py reads on any head: no layer pooling, no running input statistics."""
+    pool = None
+    track_input_stats = False
+    per_articulator = False
+
+
 class _Front(nn.Module):
     def __init__(self, dim, hidden):
         super().__init__()
@@ -29,7 +36,7 @@ class _Front(nn.Module):
         return F.gelu(self.inp(self.norm(h)))
 
 
-class GRUHead(nn.Module):
+class GRUHead(_SeqHeadMixin, nn.Module):
     def __init__(self, dim, hidden=256, n_out=12, smooth=True):
         super().__init__()
         self.front = _Front(dim, hidden)
@@ -81,7 +88,7 @@ class S4DLayer(nn.Module):
         return y.transpose(1, 2) + x * self.D
 
 
-class SSMHead(nn.Module):
+class SSMHead(_SeqHeadMixin, nn.Module):
     def __init__(self, dim, hidden=256, n_out=12, smooth=True, n_state=16):
         super().__init__()
         self.front = _Front(dim, hidden)
@@ -173,7 +180,7 @@ class MambaBlock(nn.Module):
         return self.out_proj(y * F.silu(z))
 
 
-class MambaHead(nn.Module):
+class MambaHead(_SeqHeadMixin, nn.Module):
     def __init__(self, dim, hidden=256, n_out=12, smooth=True, n_state=16):
         super().__init__()
         self.front = _Front(dim, hidden)
@@ -192,7 +199,7 @@ class MambaHead(nn.Module):
         return self.smooth(y, pad_mask) if self.smooth is not None else y
 
 
-class CascadeHead(nn.Module):
+class CascadeHead(_SeqHeadMixin, nn.Module):
     """Conv and BiGRU stacked on the shared front end, in either order, or a deeper BiGRU:
         order 'conv_gru' -- centered conv (kernel frames, GELU) then BiGRU: local lag / filtering, then dynamics;
         order 'gru_conv' -- BiGRU then centered conv (tests the order);

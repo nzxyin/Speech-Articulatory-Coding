@@ -67,6 +67,20 @@ def probe_info(model, k, dataset="mngu0"):
     return res, W, b
 
 
+SEQ_HEADS = ("gru", "mamba", "gruconv")
+
+
+def make_seq_head(args, dim):
+    from .seqheads import CascadeHead, GRUHead, MambaHead
+
+    smooth = not args.no_smooth
+    if args.head == "gru":
+        return GRUHead(dim, hidden=args.hidden, smooth=smooth)
+    if args.head == "mamba":
+        return MambaHead(dim, hidden=args.hidden, smooth=smooth)
+    return CascadeHead(dim, "gru_conv", kernel=args.kernel, hidden=args.hidden, smooth=smooth)
+
+
 def build(args, device):
     model = load_subset(args.model, args.layers)
     bank = None
@@ -78,6 +92,8 @@ def build(args, device):
     if args.grad_ckpt and bank is not None:
         model.gradient_checkpointing_enable()
     pool = getattr(args, "pool", "static" if args.layer_pool else "none")  # older configs only had layer_pool
+    if args.head in SEQ_HEADS:  # sequence heads (seqheads.py); no layer pooling
+        return model.to(device), make_seq_head(args, model.config.hidden_size).to(device), bank
     head = Head(model.config.hidden_size, args.head, args.hidden, args.kernel, args.window, args.causal,
                 smooth=not args.no_smooth, n_pool_layers=len(args.layers) if pool != "none" else 0,
                 pool=pool if pool != "none" else "static", per_articulator=getattr(args, "per_articulator", False),
@@ -341,7 +357,7 @@ def main(argv=None):
     ap.add_argument("--lora-alpha", type=float, default=16)
     ap.add_argument("--targets", default="q_proj,v_proj")
     ap.add_argument("--gate", default="scalar", choices=("scalar", "rank"))
-    ap.add_argument("--head", default="linear", choices=("linear", "conv", "attn"))
+    ap.add_argument("--head", default="linear", choices=("linear", "conv", "attn") + SEQ_HEADS)
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--kernel", type=int, default=9)
     ap.add_argument("--window", type=int, default=0)
@@ -393,6 +409,8 @@ def main(argv=None):
             + (f"_pool{args.pool}" if args.layer_pool else "") + ("_raw" if args.layer_pool and args.pool_norm == "none" else "")
             + ("_art" if args.per_articulator else "") + (f"_h{args.hidden}" if args.head != "linear" and args.hidden != 256 else "")
             + ("_randinit" if args.no_probe_init and args.head == "linear" and not args.layer_pool else "")
+            + (f"_k{args.kernel}" if args.head == "gruconv" else "")
+            + ("_nosm" if args.no_smooth and args.head in SEQ_HEADS else "")
             + f"_s{args.seed}")
     out = Path(args.out or datasets.adapt_root(args.dataset) / args.model / name)
     out.mkdir(parents=True, exist_ok=True)
