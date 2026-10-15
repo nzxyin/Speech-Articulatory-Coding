@@ -10,7 +10,7 @@ speaker's test sentences (rmse_z / PCC in its z units):
 Ridge strengths and w are chosen on the fold's validation sentences (training speakers only).
 
 Usage:
-    python -m sparc.compression.lora_readout run --model wavlm-large --k 7 --fold usc_M1
+    python -m sparc.compression.lora_readout run --model wavlm-large --k 7 --fold usc_M1 [--run TEMPLATE --tag NAME]
     python -m sparc.compression.lora_readout summary
 """
 
@@ -62,7 +62,7 @@ def encode(model, utts, device, bf16):
     return out
 
 
-def run(model_name, k, fold, device=None):
+def run(model_name, k, fold, device=None, run_tmpl=RUN, tag=None):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     name = f"ema_loso_{fold}"
     ds = datasets.get(name)
@@ -74,11 +74,11 @@ def run(model_name, k, fold, device=None):
     utts = {s: ds.load_utterance(s) for v in sp.values() for s in v}
     Ytr_all = np.concatenate([utts[s].ema_mm for s in sp["train"]])
     ym, ys = Ytr_all.mean(0), Ytr_all.std(0)
-    out_f = OUT / model_name / f"{fold}.json"
+    out_f = OUT / model_name / (f"{fold}.json" if tag is None else f"{tag}/{fold}.json")
     out_f.parent.mkdir(parents=True, exist_ok=True)
     res = json.loads(out_f.read_text()) if out_f.exists() else {}
     for s in (0, 1, 2):
-        run_name = RUN.format(k=k, s=s)
+        run_name = run_tmpl.format(k=k, s=s)
         d = datasets.adapt_root(name) / model_name / run_name
         if run_name in res or not (d / "results.json").exists():
             continue
@@ -199,10 +199,12 @@ def main():
     ap.add_argument("cmd", choices=("run", "summary"))
     ap.add_argument("--model")
     ap.add_argument("--k", type=int)
+    ap.add_argument("--run", default=RUN, help="LoRA run-name template with {k} and {s}")
+    ap.add_argument("--tag", default=None, help="write to <model>/<tag>/<fold>.json (non-default run templates)")
     ap.add_argument("--fold")
     args = ap.parse_args()
     if args.cmd == "run":
-        run(args.model, args.k, args.fold)
+        run(args.model, args.k, args.fold, run_tmpl=args.run, tag=args.tag)
     else:
         summary()
 
