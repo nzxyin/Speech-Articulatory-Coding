@@ -202,6 +202,14 @@ def load_arm(kind, model, k, extra):
                 f = POSTHOC / model / h / (extra.format(k=k, s=s) + ".npz")
                 if f.exists():
                     runs.append(_load(f))
+        elif kind == "matched":  # matched-pipeline LoRA at each fold's validation-chosen learning rate
+            c = OUT / "matched" / f"{h}.json"
+            if c.exists():
+                lr = json.loads(c.read_text())["lr"]
+                for s in SEEDS:
+                    f = POSTHOC / model / h / (MATCHED.format(k=k, lr=lr, s=s) + ".npz")
+                    if f.exists():
+                        runs.append(_load(f))
         if runs:
             out[h] = runs
     return out
@@ -385,6 +393,116 @@ def seed_sd(arm, m):
 CC = "prefix{k}_independent_r8_q_proj+v_proj_conv_causal_s{s}"
 MB = "prefix{k}_independent_r8_q_proj+v_proj_mamba_nosm_s{s}"
 GC = "prefix{k}_independent_r8_q_proj+v_proj_gruconv_k9_nosm_s{s}"
+MATCHED = "prefix{k}_independent_r8_q_proj+v_proj_gruconv_k9_nosm_m{lr:g}_s{s}"
+
+
+def head_screen_folds(model, k, name):
+    """{fold: {rmse_z, pcc}} seed means of a head_screen result file (no cached predictions needed)."""
+    from .head_screen import OUT as HS
+
+    f = HS / model / f"k{k}_{name}.json"
+    if not f.exists():
+        return {}
+    out = {}
+    for h, rec in json.loads(f.read_text()).items():
+        ok = [x for x in rec.get("seeds", {}).values() if "failed" not in x]
+        if ok:
+            out[h] = {m: float(np.mean([x["test_unseen"][m] for x in ok])) for m in ("rmse_z", "pcc")}
+            out[h]["shift"] = rec.get("shift")
+    return out
+
+
+def fold_contrast(fa, fb, m, sign):
+    """Paired over folds from per-fold values: mean, t 95% CI, folds won, exact sign-flip p."""
+    folds = [h for h in SPK if h in fa and h in fb]
+    d = np.array([sign * (fa[h][m] - fb[h][m]) for h in folds])
+    if len(d) < 2:
+        return None
+    hw = sstats.t.ppf(0.975, len(d) - 1) * d.std(ddof=1) / np.sqrt(len(d))
+    return {"n_folds": len(d), "mean": float(d.mean()), "t_ci": [float(d.mean() - hw), float(d.mean() + hw)],
+            "won": int((d > 0).sum()), "sign_flip_p": sign_flip_p(d)}
+
+
+def tier2():
+    """Pre-registered T1 / T2 (+ N1 from nested.py) and the descriptive causal-pipeline table."""
+    W = "wavlm-large"
+    arms = {"matched LoRA BiGRU->conv": load_arm("matched", W, 12, None),
+            "frozen BiGRU->conv": load_arm("frozen", W, 12, "gruconv9"),
+            "LoRA BiGRU->conv (original pipeline)": load_arm("lora", W, 12, GC),
+            "probe": load_arm("probe", W, 12, None)}
+    arms = {a: v for a, v in arms.items() if v}
+    res = {"rows": {}, "primary": {}, "secondary": {}, "causal": {}}
+    for a, arm in arms.items():
+        fv = {m: fold_values(arm, m) for m in ("rmse_z", "pcc", "rmse_centered", "bias_share", "std_ratio")}
+        res["rows"][a] = {m: float(np.mean(list(v.values()))) for m, v in fv.items()} | {"folds": len(arm)}
+        print(a, res["rows"][a], flush=True)
+    M, F, L = "matched LoRA BiGRU->conv", "frozen BiGRU->conv", "LoRA BiGRU->conv (original pipeline)"
+    prim = [("T1", M, F, "pcc", 1), ("T2", M, L, "rmse_z", -1)]
+    for pid, a, b, m, s in prim:
+        if a in arms and b in arms:
+            res["primary"][pid] = {"a": a, "b": b, "metric": m, **contrast(arms[a], arms[b], m, s)}
+    nf = OUT / "nested" / "summary.json"
+    if nf.exists():
+        n1 = json.loads(nf.read_text()).get("N1")
+        if n1:
+            res["primary"]["N1"] = n1
+    ids = [i for i in ("T1", "T2", "N1") if i in res["primary"]]
+    for pid, rej in zip(ids, holm([res["primary"][i]["sign_flip_p"] for i in ids])):
+        res["primary"][pid]["holm_reject"] = bool(rej)
+    for a, b in ((M, F), (M, L), (F, L)):
+        if a in arms and b in arms:
+            res["secondary"][f"{a} vs {b}"] = {m: contrast(arms[a], arms[b], m, s, boot=False)
+                                               for m, s in (("rmse_z", -1), ("pcc", 1), ("rmse_centered", -1))}
+    # causal pipeline (descriptive): head_screen results on causal / raw / zero-phase features, smoother off
+    cz = {"conv_causal9 zero-phase": head_screen_folds(W, 12, "conv_causal9"),
+          "gru_uni zero-phase": head_screen_folds(W, 12, "gru_uni"),
+          "conv_causal9 causal": head_screen_folds(W, 12, "conv_causal9_causal"),
+          "gru_uni causal": head_screen_folds(W, 12, "gru_uni_causal"),
+          "conv_causal9 raw": head_screen_folds(W, 12, "conv_causal9_raw"),
+          "gru_uni raw": head_screen_folds(W, 12, "gru_uni_raw"),
+          "BiGRU zero-phase": head_screen_folds(W, 12, "gru"),
+          "BiGRU->conv zero-phase": head_screen_folds(W, 12, "gruconv9")}
+    cz = {a: v for a, v in cz.items() if v}
+    for a, v in cz.items():
+        res["causal"][a] = {"folds": len(v), **{m: float(np.mean([x[m] for x in v.values()])) for m in ("rmse_z", "pcc")},
+                            "shifts": sorted({x["shift"] for x in v.values() if x["shift"] is not None})}
+    for head in ("conv_causal9", "gru_uni"):
+        for feat in ("causal", "raw"):
+            a, b = f"{head} {feat}", f"{head} zero-phase"
+            if a in cz and b in cz:
+                res["causal"][f"{a} vs {b}"] = {m: fold_contrast(cz[a], cz[b], m, s) for m, s in (("rmse_z", -1), ("pcc", 1))}
+    if "gru_uni causal" in cz and "BiGRU zero-phase" in cz:
+        res["causal"]["gru_uni causal vs BiGRU zero-phase"] = {m: fold_contrast(cz["gru_uni causal"], cz["BiGRU zero-phase"], m, s)
+                                                               for m, s in (("rmse_z", -1), ("pcc", 1))}
+    (OUT / "tier2.json").write_text(json.dumps(res, indent=1, default=float))
+    L_ = ["# Rigor tier 2: matched-pipeline LoRA and causal pipeline (WavLM k12, held-out speaker)\n",
+          "## Pre-registered (Holm over T1, T2, N1; exact sign-flip p; + = first arm better)\n",
+          "| id | first | second | metric | diff | bootstrap 95% | t 95% | won | p | Holm |", "|---|---|---|---|---|---|---|---|---|---|"]
+    for pid in ids:
+        r = res["primary"][pid]
+        bc = _ci(r, "boot_ci") if "boot_ci" in r else "-"
+        L_.append(f"| {pid} | {r.get('a', '-')} | {r.get('b', '-')} | {r.get('metric', '-')} | {r['mean']:+.4f} | {bc} | "
+                  f"{_ci(r)} | {r['won']}/{r['n_folds']} | {r['sign_flip_p']:.3f} | {'reject' if r['holm_reject'] else 'n.s.'} |")
+    L_ += ["\n## Arms\n", "| arm | folds | rmse_z | PCC | centered rmse_z | bias share | std ratio |", "|---|---|---|---|---|---|---|"]
+    for a, r in res["rows"].items():
+        L_.append(f"| {a} | {r['folds']} | {r['rmse_z']:.4f} | {r['pcc']:.4f} | {r['rmse_centered']:.4f} | "
+                  f"{r['bias_share']:.3f} | {r['std_ratio']:.3f} |")
+    L_ += ["\n## Secondary (descriptive)\n", "| contrast | metric | diff | t 95% | won | p |", "|---|---|---|---|---|---|"]
+    for n, d in res["secondary"].items():
+        for m, r in d.items():
+            L_.append(f"| {n} | {m} | {r['mean']:+.4f} | {_ci(r)} | {r['won']}/{r['n_folds']} | {r['sign_flip_p']:.3f} |")
+    L_ += ["\n## Causal pipeline (descriptive; frozen heads, smoother off, 3 seeds)\n", "| arm | folds | rmse_z | PCC | shifts |",
+           "|---|---|---|---|---|"]
+    for a, r in res["causal"].items():
+        if "folds" in r:
+            L_.append(f"| {a} | {r['folds']} | {r['rmse_z']:.4f} | {r['pcc']:.4f} | {r['shifts']} |")
+    for a, d in res["causal"].items():
+        if "folds" not in d:
+            for m, r in d.items():
+                if r:
+                    L_.append(f"- {a}, {m}: {r['mean']:+.4f} {_ci(r)} {r['won']}/{r['n_folds']}, p {r['sign_flip_p']:.3f}")
+    (OUT / "tier2.md").write_text("\n".join(L_) + "\n")
+    print("\n".join(L_))
 
 
 def analyze():
@@ -532,7 +650,7 @@ def write_summary(res):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("probe-preds", "head-preds", "analyze"))
+    ap.add_argument("cmd", choices=("probe-preds", "head-preds", "analyze", "tier2"))
     ap.add_argument("--model")
     ap.add_argument("--k", type=int)
     ap.add_argument("--layer", type=int)
@@ -546,6 +664,8 @@ def main():
         folds = SPK if a.fold in (None, "all") else [a.fold]
         for h in folds:
             head_preds(a.model, a.layer, a.head, h)
+    elif a.cmd == "tier2":
+        tier2()
     else:
         analyze()
 
