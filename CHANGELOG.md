@@ -68,6 +68,14 @@ All notable changes to this fork. Earlier history is in `git log`.
   scores zero-shot transfer in each new speaker's z units with unpaired mappings (z_transfer, covariance re-coloring)
   and paired references; `loso_recolor` re-runs z-trained LOSO checkpoints with the held-out speaker's covariance and
   compares them with zca12-trained runs.
+- `rigor`: re-analysis pre-registered in `docs/rigor_prereg.md`. Caches held-out predictions for ridge probes
+  (`probe-preds`) and frozen heads retrained at the head screen's learning rate (`head-preds`), then (`analyze`) scores
+  every arm with rmse_z, PCC, concatenated PCC, centered and speaker-centered rmse_z, the bias share and std ratio,
+  enrollment with N = 0/10/20 utterances and the post-hoc output smoother; shrinkage controls (gain fitted on the other
+  folds, per-channel, oracle); and the pre-registered contrasts (exact sign-flip test, Holm, hierarchical bootstrap).
+  `latency`: batch-1 GPU/CPU latency and memory of the frontier encoders and heads. `loso_posthoc run --run TEMPLATE`
+  caches predictions of any LoRA run family. `scripts/rigor_job.sh`: runner for `slurm-alloc` submissions.
+  Tests: `tests/test_rigor.py`.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input

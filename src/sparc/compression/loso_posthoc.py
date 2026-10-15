@@ -41,8 +41,10 @@ def zmetrics(P, Y):
     return {"rmse_z": float(np.sqrt(((Pc - Yc) ** 2).mean(0)).mean()), "pcc": ema_metrics(P, Y, n_boot=0)["pcc"]}
 
 
-def run(model_name, k, device=None):
+def run(model_name, k, device=None, run_tmpl=None):
+    """run_tmpl: optional LoRA run-name template with {k} and {s} (seeds 0-2) instead of the option-A runs."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    runs_by_arm = RUNS if run_tmpl is None else {"lora": [run_tmpl.replace("{s}", str(s)) for s in (0, 1, 2)]}
     for h in datasets.ALL_SPEAKERS:
         name = f"ema_loso_{h}"
         ds = datasets.get(name)
@@ -50,7 +52,7 @@ def run(model_name, k, device=None):
         Ytr = np.concatenate([ds.load_targets(s).ema_mm for s in splits["train"]])
         ym, ys = Ytr.mean(0), Ytr.std(0)
         test = [ds.load_utterance(s) for s in splits["test_unseen"]]
-        for arm, runs in RUNS.items():
+        for arm, runs in runs_by_arm.items():
             for run_name in [r.format(k=k) for r in runs]:
                 out = OUT / "preds" / model_name / h / f"{run_name}.npz"
                 d = datasets.adapt_root(name) / model_name / run_name
@@ -234,9 +236,10 @@ def main():
     ap.add_argument("cmd", choices=("run", "emotion", "enroll", "phones"))
     ap.add_argument("--model")
     ap.add_argument("--k", type=int)
+    ap.add_argument("--run", default=None, help="LoRA run-name template with {k} and {s} (run only)")
     args = ap.parse_args()
     if args.cmd == "run":
-        run(args.model, args.k)
+        run(args.model, args.k, run_tmpl=args.run)
     elif args.cmd == "emotion":
         emotion()
     elif args.cmd == "phones":
