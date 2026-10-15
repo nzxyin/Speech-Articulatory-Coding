@@ -476,7 +476,7 @@ head must bring a different inductive bias; and FLOPs matter. `head_screen.py` +
 7 LOSO folds; fold-internal shift, learning rate from {1e-4, 3e-4, 1e-3, 3e-3} on training-speaker validation, then 3
 seeds; primary arm without the output smoother. Heads: linear; MLP (same LayerNorm + 1024->256 GELU front end and
 capacity as the sequence heads, no temporal context: the capacity control); causal conv 9 (the head used so far);
-centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4D); BiMamba (pending). Head cost is
+centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4D); BiMamba. Head cost is
 0.001-0.14 GFLOPs/s against ~1.3 per extra encoder layer. Heads no longer leak padding into valid frames (fixed in
 `heads.py`; tested batched == unbatched).
 - Temporal context raises held-out PCC beyond capacity (vs the MLP control, all 5 depths): BiGRU +0.024 to +0.041
@@ -490,6 +490,22 @@ centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4
   0.698, above any probe depth up to 23 GFLOPs/s (<= 0.681) and equal to LoRA + causal conv at k7 (0.696); WavLM
   k12 + BiGRU 0.706 = LoRA at k12. For rmse_z depth wins (probe k12 0.764 vs k7 + BiGRU 0.805).
 - The +-1 s output smoother is redundant on low-passed features (on vs off within ~0.005).
+- Conv width (centered; PCC gain over the MLP; WavLM k7 / WavLM k12 / 300M k18): 3 frames +0.005 / +0.007 / -0.001,
+  5: +0.010 / +0.012 / 0.000, 9: +0.015 / +0.016 / +0.008, 17: +0.019 / +0.017 / +0.011, 33: +0.014 / +0.020 / +0.014,
+  65: +0.015 / +0.021 / +0.015. Context helps up to ~17-33 frames (0.3-0.7 s) then saturates; on shallow WavLM k7 widths
+  33-65 hurt rmse_z (~-0.018 vs probe, CIs exclude 0). No width reaches a recurrent head (+0.026 to +0.041).
+- Cascades (held-out rmse_z / PCC; WavLM k7 / k12 / 300M k18): BiGRU 0.805/0.698, 0.774/0.706, 0.794/0.707; two-layer
+  BiGRU no better (0.808/0.698, 0.773/0.703, 0.795/0.701); conv -> BiGRU slightly worse than BiGRU alone on both metrics
+  (conv9 0.812/0.694, 0.774/0.700, 0.799/0.703); BiGRU -> conv9 0.805/0.694, 0.765/0.709, 0.791/0.707 (best head at
+  WavLM k12, mixed elsewhere).
+- BiMamba (parallel scan; 0.114 GFLOPs/s): PCC close to BiGRU and rmse_z better than BiGRU at every depth (by
+  0.003-0.011), near the probe: WavLM k9 0.773/0.707 (probe 0.771/0.675), k12 0.766/0.705 (probe 0.764/0.676), 300M k9
+  0.789/0.705, k18 0.787/0.702, WavLM k7 0.799/0.694. The best balanced head.
+- So a frozen WavLM k9-12 with a BiMamba (or BiGRU -> conv) head gets near-probe rmse_z and LoRA-blend PCC in one
+  encoder pass without LoRA: WavLM k12 + BiGRU->conv 0.765 / 0.709 and + BiMamba 0.766 / 0.705 at 21.4 GFLOPs/s, k9 +
+  BiMamba 0.773 / 0.707 at 17.6, vs LoRA + causal conv k12 0.803 / 0.706 and the LoRA + probe blend k7 0.787 / 0.709 at
+  ~30 (two passes). These best entries are picked from many configurations scored on the held-out speakers (descriptive);
+  the paired CIs vs the MLP and the probe are the evidence.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
