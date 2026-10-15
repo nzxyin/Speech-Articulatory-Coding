@@ -522,8 +522,17 @@ centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4
   blend (0.721). Frozen BiMamba vs LoRA + causal conv at k12 (+0.037 rmse_z, 6/7) mixes the head with LoRA's
   amplitude overfit and pipeline differences (frozen heads see 10 Hz low-passed cached features without the output
   smoother; LoRA sees unfiltered encoder outputs with dropout on, the smoother on and a fixed shift of 1); the clean
-  frozen-vs-frozen head contrast is smaller (BiMamba vs causal conv, 0.012 rmse_z). LoRA + BiMamba / BiGRU->conv at
-  k12 is running (7 folds x 3 seeds) and decides whether LoRA adds anything under a strong head.
+  frozen-vs-frozen head contrast is smaller (BiMamba vs causal conv, 0.012 rmse_z).
+- LoRA under a strong head (WavLM k12, 7 folds x 3 seeds; `head_lora.py`, `analysis_heads/lora_heads_wavlm-large_k12.md`;
+  held-out rmse_z / PCC): probe 0.764 / 0.676; causal conv frozen 0.778 / 0.682, LoRA 0.803 / 0.706, blend
+  0.769 / 0.718; BiMamba frozen 0.766 / 0.705, LoRA 0.795 / 0.713, blend 0.770 / 0.722; BiGRU->conv frozen 0.765 / 0.709,
+  LoRA 0.791 / 0.714, blend 0.762 / 0.724. With a causal conv head LoRA raises PCC by +0.024 [0.013, 0.036] (7/7); with
+  BiMamba or BiGRU->conv only +0.005 to +0.008 (CIs span 0), while rmse_z still worsens by 0.026-0.029 (BiMamba CI
+  excludes 0). So most of LoRA's held-out PCC gain is temporal context that a sequence head on the frozen encoder also
+  provides. The probe blend still gives the best PCC (BiGRU->conv blend +0.048 [0.032, 0.063] over the probe, 7/7, rmse_z
+  tie), but costs a second encoder pass (~43 vs 21.4 GFLOPs/s) for ~+0.015 PCC over the frozen head (unpaired), and its
+  rmse_z gain over LoRA is likely mostly shrinkage (review, 2026-10-15). Caveat: the LoRA and frozen pipelines still
+  differ (input low-pass, smoother, shift, LR grid, dropout); the matched-pipeline contrast is rigor-plan item 6.
 
 ### Why multi-speaker numbers are worse than single-speaker SPARC; short and long inputs (2026-10-15)
 Same metric for all (rmse_z in each speaker's own z units / PCC), WavLM LoRA + causal conv: MNGU0 (train and test on one
