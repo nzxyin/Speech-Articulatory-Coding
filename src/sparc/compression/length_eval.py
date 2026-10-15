@@ -61,7 +61,12 @@ class Encoder:
     def __call__(self, wav):
         x = torch.from_numpy(normalize_wav(wav)).float().unsqueeze(0).to(self.device)
         h = self.model(x, output_hidden_states=True).hidden_states[self.layer][0].float().cpu().numpy()
-        return lowpass(h).astype(np.float32)
+        if len(h) > 18:
+            return lowpass(h).astype(np.float32)
+        # pieces shorter than the zero-phase filter's default padding (18 frames): same filter, shorter padding
+        from scipy.signal import butter, filtfilt
+        b, a = butter(5, 10 / (0.5 * 50), btype="low")
+        return filtfilt(b, a, h, axis=0, padlen=max(len(h) - 1, 0)).astype(np.float32)
 
 
 def segments(wavs, condition):
