@@ -507,6 +507,35 @@ centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4
   ~30 (two passes). These best entries are picked from many configurations scored on the held-out speakers (descriptive);
   the paired CIs vs the MLP and the probe are the evidence.
 
+### Why multi-speaker numbers are worse than single-speaker SPARC; short and long inputs (2026-10-15)
+Same metric for all (rmse_z in each speaker's own z units / PCC), WavLM LoRA + causal conv: MNGU0 (train and test on one
+speaker) 0.36 / 0.93 (ridge probe 0.43 / 0.90); multi-speaker seen speakers 0.55 / 0.80 (USC-TIMIT ~0.86 PCC); held-out
+speakers 0.77-0.82 / 0.70-0.71. Two gaps: data (MNGU0 is one clean session with ~1000 training utterances vs 180-370 per
+multi-speaker speaker with session offsets, emotional speech and harder alignment) and speaker shift (0.55 -> 0.80),
+which no model or head closed. Single-speaker AAI benchmarks overstate accuracy on a new person.
+
+Input length (`length_eval.py`, `analysis_length/summary_k12.md`; LOSO, WavLM k12, seed 0, every system rerun from
+audio and scored on the same EMA frames; audio trimmed to a multiple of 320 samples, which only changes the last
+frames' filter edge -- untrimmed live features equal the cache to 3.5e-4). rmse_z / PCC:
+| system | native | long (>= 20 s concatenations) | 1 s chunks | 0.5 s chunks |
+|---|---|---|---|---|
+| ridge probe | 0.763 / 0.676 | 0.773 / 0.666 | 0.809 / 0.640 | 0.836 / 0.613 |
+| causal conv 9 | 0.774 / 0.682 | 0.797 / 0.652 | 0.812 / 0.659 | 0.822 / 0.636 |
+| centered conv 9 | 0.772 / 0.687 | 0.800 / 0.653 | 0.804 / 0.665 | 0.813 / 0.640 |
+| BiGRU | 0.775 / 0.705 | 0.789 / 0.691 | 0.814 / 0.668 | 0.824 / 0.648 |
+| BiGRU -> conv 9 | 0.759 / 0.714 | 0.783 / 0.700 | 0.806 / 0.668 | 0.811 / 0.645 |
+| BiMamba | 0.763 / 0.703 | 0.784 / 0.684 | 0.810 / 0.658 | 0.823 / 0.631 |
+| LoRA + causal conv | 0.809 / 0.707 | 0.813 / 0.699 | 0.832 / 0.663 | 0.838 / 0.641 |
+- Long inputs: every system loses a little (probe 0.009 rmse_z; recurrent/SSM heads 0.014-0.024 and 0.014-0.018 PCC;
+  conv heads ~0.03 PCC) but none collapses; heads trained on 1-5 s clips hold up on 20-30 s. LoRA is the most
+  length-stable but stays worst on rmse_z.
+- Short inputs cost more: 1 s chunks lose ~0.03-0.05 rmse_z and ~0.04 PCC, 0.5 s chunks more. The frame-wise probe
+  degrades most (0.836 at 0.5 s), so most of the loss is the encoder's own context; temporal heads keep a PCC lead of
+  ~+0.02-0.03 over the probe even at 0.5 s. Relevant for chunked / streaming use.
+- Natural duration (native): error rises with length for all systems (PCC ~0.74-0.76 under 2 s to ~0.61-0.63 above
+  6 s), but the long utterances are mostly EMA_5EMO passage phrases, so length is confounded with corpus; temporal
+  heads keep their PCC lead over the probe in every duration bin.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
