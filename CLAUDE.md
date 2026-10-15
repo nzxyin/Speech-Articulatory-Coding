@@ -350,8 +350,9 @@ speaker (reproduce stored rmse_z to <= 5e-4) and re-colored with that speaker's 
 | XLS-R 1B k10 | +0.037 (6/7) / +0.015 | +0.021 (6/7) / -0.003 | +0.018 / +0.012 | +0.008 / -0.003 |
 | w2v2 k18 | +0.022 (6/7) / +0.017 | -0.011 / -0.005 | +0.022 / +0.019 | -0.000 / +0.000 |
 - With real models, the benefit of the zca12 targets is re-coloring with the new speaker's covariance at test time;
-  training on whitened targets adds nothing consistent (XLS-R 1B rmse_z the one partial exception) and slightly
-  lowers PCC. Most fold CIs span 0 (7 folds); the direction is consistent across encoders.
+  training on whitened targets adds nothing consistent (XLS-R 1B rmse_z the one partial exception; PCC changes -0.011
+  to +0.005). Most fold CIs span 0 (7 of 8 recolor-effect CIs; only 300M frozen excludes 0); the direction of the
+  recolor effect is consistent across encoders.
 - Plain ridge probes beat the adapted models on held-out rmse_z (same folds, z targets): probe 0.777-0.793 vs frozen
   causal conv 0.790-0.821 vs LoRA causal conv 0.811-0.849 (LoRA - probe -0.026 to -0.055, CIs span 0, LoRA better on
   1-3/7 folds), while LoRA has higher PCC (+0.013 to +0.029, 6-7/7). Under speaker shift adaptation improves
@@ -371,8 +372,9 @@ utterances of the speaker. Mean over speakers, rmse_z / PCC:
 | LoRA+cc 1B k16, mm / whitened | 0.885 / 0.682, 0.865 / 0.680 | 0.903 / 0.680, 0.887 / 0.679 | 0.762 / 0.682 | 0.700 / 0.749 |
 | LoRA+cc w2v2 k18, mm / whitened | 0.890 / 0.673, 0.883 / 0.671 | 0.911 / 0.673, 0.905 / 0.670 | 0.767 / 0.665 | 0.698 / 0.739 |
 - From a single training speaker, re-coloring with the new speaker's covariance does not help: mean rmse_z is worse
-  by 0.012-0.024 (shipped SPARC 0.044, worse for 6/7 speakers), PCC unchanged; per speaker it is mixed (3-4/7 worse
-  for trained models), so the mean is driven by large losses on some speakers. The symmetric-whitening map is only a
+  by 0.017-0.024 for the trained models (shipped SPARC 0.044, worse for 6/7 speakers), PCC unchanged for them (shipped
+  SPARC 0.656 -> 0.632); per speaker 4/7 worse for every trained model (the three EMA_5EMO speakers and usc_F5), so
+  the mean is driven by large losses on some speakers. The symmetric-whitening map is only a
   good speaker map when the source is an average over many speakers (LOSO above), not one speaker.
 - Training on whitened MNGU0 targets costs 0.012-0.033 mm in-domain (all 12 seeds; e.g. WavLM 0.753 -> 0.772 mm) but
   slightly improves zero-shot rmse_z for WavLM (+0.018, 7/7), 1B (+0.019, 7/7) and w2v2 (+0.007, 6/7); 300M flat;
@@ -390,8 +392,12 @@ validation; 0.75 every time):
 | w2v2 k18 | 0.785 / 0.675 | 0.811 / 0.688 | 0.790 / 0.698 | 0.780 / 0.705 | 0.799 / 0.699 |
 - The blend matches the probe's rmse_z (-0.018 to +0.005) and gives the best PCC (+0.030 to +0.042 over the probe, 7/7
   folds every encoder). At equal inference cost it beats a 2-seed LoRA ensemble on rmse_z by 0.019-0.024 (CIs exclude
-  0 for all four, 5-7/7) and on PCC by 0.003-0.006, and it matches a 3-seed ensemble's PCC at lower rmse_z. So the
-  frozen encoder carries speaker-robust amplitude information that LoRA loses; it is not just variance reduction.
+  0 for all four, 5-7/7) and on PCC by 0.002-0.006 (ensemble numbers from a scratch analysis, not in a repo file).
+- Review correction (2026-10-15): a seed ensemble does not separate shrinkage from information. A single gain on the
+  LoRA output, chosen on training-speaker validation, recovers ~63% (usc_F5) and ~100% (5emo_jn) of the blend's
+  rmse_z gain (WavLM k7, seed 0, 2 folds checked). So the blend's rmse_z gain is mostly shrinkage (damping is
+  MSE-optimal under speaker uncertainty), not amplitude information LoRA lost; only its PCC gain over LoRA
+  (+0.009 to +0.013 there) is beyond shrinkage. The blend weight grid (0..1 by 0.25) always picked 0.75.
   Cost: two encoder passes (frozen + LoRA). The single-pass alternative (ridge refit on LoRA features) does not get
   the probe's rmse_z.
 
@@ -413,13 +419,14 @@ Emotion (held-out EMA_5EMO speakers jn, jr, kf; `analysis_posthoc/emotion.md`; L
 fear 0.72-0.76 / 0.65-0.67, sadness 0.78-0.82 / 0.58-0.60, happiness 0.90-0.93 / 0.56-0.60, anger 0.91-0.95 /
 0.66-0.67, neutral 1.03-1.05 / 0.66-0.67. Pooled neutral is worst only because of speaker jr's neutral block (frame
 offset ~7.6 mm, rmse_z ~1.10); for jn and kf neutral is not the worst, and kf's highest-offset block (anger) is its
-worst, so block frame offsets (not emotion per se) drive rmse_z differences. LoRA >= frozen on PCC in 19/20 encoder x
+worst -- consistent with block frame offsets driving the rmse_z differences, though emotion and session are
+confounded, so this cannot be separated. LoRA >= frozen on PCC in 19/20 encoder x
 emotion cells (one tie; frozen is 1 seed); re-coloring raises anger PCC by 0.019-0.025.
 
 MNGU0 phone classes (`analysis_posthoc/phones.md`; mm, single speaker; no phone alignments exist for the multi-speaker
 corpora): coronal frames are easiest for every encoder (0.66-0.71 mm with LoRA); dorsal, silence and labial are
 hardest (0.80-0.90; order varies by encoder). LoRA's largest gain over the frozen encoder is on silence frames (e.g.
-WavLM 1.02 -> 0.86 mm). Whitened-target training is worse in 43 of 44 class x encoder cells (w2v2 glottal, 121 frames,
+WavLM 1.02 -> 0.86 mm). Whitened-target training is worse in 23 of 24 class x encoder cells (w2v2 glottal, 121 frames,
 the exception).
 
 ### LOSO depth sweep: multi-speaker FLOPs frontier and leak-free depth selection (2026-10-12)
@@ -439,7 +446,9 @@ the exception).
   speaker-specific depths (WavLM k6-9, held-out 0.787; 1B k10, 0.793; 300M k18, 0.777; w2v2 k21, 0.800) -- the same
   depths used in LOSO option A, which were chosen the same way on ema_multi. Choosing depth by held-out performance
   on the other six folds (cross-fold) is better for every encoder (WavLM k10-13 0.766; 300M k12-17 0.767; 1B k35-37
-  0.757; w2v2 k16-17 0.784): to select for generalization, validate on held-out speakers.
+  0.757; w2v2 k16-17 0.784): to select for generalization, validate on held-out speakers. Caveats: cross-fold
+  selection uses models trained with the evaluated speaker's data (not fully clean), and it costs 1.4x (WavLM) and
+  3x (1B) the FLOPs of the nested choice (300M and w2v2 get cheaper); ~0.02 of selection optimism sits in k12.
 - LoRA + causal conv at new frontier depths (`analysis_loso_frontier/summary.md`; 3 seeds x 7 folds; held-out
   rmse_z / PCC): WavLM k12 (21.3 GFLOPs/s) 0.803 / 0.706 vs k7 0.818 / 0.696 (PCC +0.010 [0.001, 0.019], 6/7);
   XLS-R 1B k19 (44.4) 0.814 / 0.704 vs k10 0.849 / 0.689 (rmse_z +0.035, PCC +0.015 [0.003, 0.028], 6/7);
@@ -463,10 +472,12 @@ and LibriTTS only (many EMA_5EMO reference texts are prompt codes such as digit 
 | all-speaker head, sign/scale map | 82.6 % | 42.2 % | 0.30 / 0.56 | 2.08 / 2.50 |
 | all-speaker head, 12x12 adapter | 38.8 % | 15.2 % | 0.35 / 0.65 | 2.43 / 2.85 |
 | measured EMA (approximate mapping) | 145.7 % | - | 0.25 | 1.85 |
-- SPARC's shipped vocoder is coupled to its own inverter's output space, not to articulation: measured EMA from
-  these speakers gives the worst speech, and even the best linear adapter from a multi-speaker head explains only
-  56-78% of the shipped head's output variance per channel. A better multi-speaker inverter therefore cannot be
-  judged (or deployed) with the shipped vocoder; the vocoder must be retrained on the new inverter's outputs.
+- These linear mappings do not make the shipped vocoder work with multi-speaker heads: measured EMA from these
+  speakers gives the worst speech, and the best linear adapter explains only 53-78% of the shipped head's output
+  variance per channel. This is consistent with the vocoder being coupled to its own inverter's output space, but it
+  does not separate that from mapping, shrinkage or smoothing error; retraining the vocoder on the new inverter's
+  outputs (or an oracle-mapping test) is needed to show it. Either way, a multi-speaker inverter cannot be judged or
+  deployed with the shipped vocoder as is.
 - The heads' held-out articulation is normal (rmse_z 0.64-0.88, PCC 0.61-0.78 per speaker, as the layer-9 probes).
 
 ### Head screen: temporal inductive biases on frozen encoders (2026-10-14)
@@ -477,46 +488,57 @@ head must bring a different inductive bias; and FLOPs matter. `head_screen.py` +
 seeds; primary arm without the output smoother. Heads: linear; MLP (same LayerNorm + 1024->256 GELU front end and
 capacity as the sequence heads, no temporal context: the capacity control); causal conv 9 (the head used so far);
 centered conv 9 / 17 (learned FIR); BiGRU; bidirectional diagonal linear SSM (S4D); BiMamba. Head cost is
-0.001-0.14 GFLOPs/s against ~1.3 per extra encoder layer. Heads no longer leak padding into valid frames (fixed in
+0.001-0.17 GFLOPs/s (widest conv, 65 frames, 0.45) against ~1.3 per extra encoder layer. Heads no longer leak padding into valid frames (fixed in
 `heads.py`; tested batched == unbatched).
 - Temporal context raises held-out PCC beyond capacity (vs the MLP control, all 5 depths): BiGRU +0.024 to +0.041
   (7/7 folds everywhere), S4D +0.010 to +0.026, centered conv +0.008 to +0.019 (mostly 7/7), causal conv +0.005 to
   +0.011. Centered beats causal at every depth; recurrence is the strongest bias.
-- No head improves held-out rmse_z: the ridge probe stays best at every depth (trained heads -0.003 to -0.031; even
-  the trained linear head trails ridge by ~0.005, the optimizer's calibration gap); temporal heads are within +-0.016
-  of the MLP. Every head with hidden capacity fits training speakers far better (seen rmse_z ~0.57 vs probe 0.67)
+- No head improves held-out rmse_z: the ridge probe stays best at every depth (trained heads -0.0015 to -0.031, the
+  best ones with CIs spanning 0; even the trained linear head trails ridge by ~0.005, the optimizer's calibration
+  gap); temporal heads are within +-0.021 of the MLP. Every head with hidden capacity fits training speakers far better (seen rmse_z ~0.57 vs probe 0.67)
   without gaining on new speakers -- the same amplitude overfitting as LoRA.
 - Head vs more encoder layers at matched FLOPs: for PCC a head wins -- WavLM k7 + BiGRU (14.9 GFLOPs/s, frozen)
   0.698, above any probe depth up to 23 GFLOPs/s (<= 0.681) and equal to LoRA + causal conv at k7 (0.696); WavLM
   k12 + BiGRU 0.706 = LoRA at k12. For rmse_z depth wins (probe k12 0.764 vs k7 + BiGRU 0.805).
-- The +-1 s output smoother is redundant on low-passed features (on vs off within ~0.005).
+- The +-1 s output smoother has small, head-dependent effects on low-passed features: typically 0.003-0.008 rmse_z,
+  up to 0.015 (single seed; sign varies by head), PCC within ~0.006.
 - Conv width (centered; PCC gain over the MLP; WavLM k7 / WavLM k12 / 300M k18): 3 frames +0.005 / +0.007 / -0.001,
   5: +0.010 / +0.012 / 0.000, 9: +0.015 / +0.016 / +0.008, 17: +0.019 / +0.017 / +0.011, 33: +0.014 / +0.020 / +0.014,
   65: +0.015 / +0.021 / +0.015. Context helps up to ~17-33 frames (0.3-0.7 s) then saturates; on shallow WavLM k7 widths
-  33-65 hurt rmse_z (~-0.018 vs probe, CIs exclude 0). No width reaches a recurrent head (+0.026 to +0.041).
+  33-65 hurt rmse_z (~-0.018 vs probe, CIs exclude 0). No width reaches BiGRU at these depths (+0.026 to +0.035).
 - Cascades (held-out rmse_z / PCC; WavLM k7 / k12 / 300M k18): BiGRU 0.805/0.698, 0.774/0.706, 0.794/0.707; two-layer
   BiGRU no better (0.808/0.698, 0.773/0.703, 0.795/0.701); conv -> BiGRU slightly worse than BiGRU alone on both metrics
   (conv9 0.812/0.694, 0.774/0.700, 0.799/0.703); BiGRU -> conv9 0.805/0.694, 0.765/0.709, 0.791/0.707 (best head at
   WavLM k12, mixed elsewhere).
 - BiMamba (parallel scan; 0.114 GFLOPs/s): PCC close to BiGRU and rmse_z better than BiGRU at every depth (by
-  0.003-0.011), near the probe: WavLM k9 0.773/0.707 (probe 0.771/0.675), k12 0.766/0.705 (probe 0.764/0.676), 300M k9
-  0.789/0.705, k18 0.787/0.702, WavLM k7 0.799/0.694. The best balanced head.
-- So a frozen WavLM k9-12 with a BiMamba (or BiGRU -> conv) head gets near-probe rmse_z and LoRA-blend PCC in one
-  encoder pass without LoRA: WavLM k12 + BiGRU->conv 0.765 / 0.709 and + BiMamba 0.766 / 0.705 at 21.4 GFLOPs/s, k9 +
-  BiMamba 0.773 / 0.707 at 17.6, vs LoRA + causal conv k12 0.803 / 0.706 and the LoRA + probe blend k7 0.787 / 0.709 at
-  ~30 (two passes). These best entries are picked from many configurations scored on the held-out speakers (descriptive);
-  the paired CIs vs the MLP and the probe are the evidence.
+  0.005-0.011; no paired CI, and per-fold seed sd of these heads is 0.007-0.019, so within seed noise), near the probe
+  for WavLM: k9 0.773/0.707 (probe 0.771/0.675), k12 0.766/0.705 (probe 0.764/0.676); 0.010-0.017 behind it for 300M
+  (k9 0.789/0.705, k18 0.787/0.702); WavLM k7 0.799/0.694. A good balanced head; the ordering among BiMamba, BiGRU->conv
+  and BiGRU is not resolved.
+- A frozen WavLM k12 + BiGRU->conv (0.765 / 0.709, 21.4 GFLOPs/s, one pass) ties the WavLM-k7 LoRA + probe blend's
+  PCC (0.787 / 0.709, ~30 GFLOPs/s, two passes) and beats its rmse_z by 0.022, but that rmse_z edge is mostly depth
+  (the k12 probe alone is 0.764), k12 itself was chosen by cross-fold held-out selection, the comparison is unpaired,
+  the head is the best of many configurations scored on the held-out speakers, and it is 0.012 PCC below the 300M-k18
+  blend (0.721). Frozen BiMamba vs LoRA + causal conv at k12 (+0.037 rmse_z, 6/7) mixes the head with LoRA's
+  amplitude overfit and pipeline differences (frozen heads see 10 Hz low-passed cached features without the output
+  smoother; LoRA sees unfiltered encoder outputs with dropout on, the smoother on and a fixed shift of 1); the clean
+  frozen-vs-frozen head contrast is smaller (BiMamba vs causal conv, 0.012 rmse_z). LoRA + BiMamba / BiGRU->conv at
+  k12 is running (7 folds x 3 seeds) and decides whether LoRA adds anything under a strong head.
 
 ### Why multi-speaker numbers are worse than single-speaker SPARC; short and long inputs (2026-10-15)
 Same metric for all (rmse_z in each speaker's own z units / PCC), WavLM LoRA + causal conv: MNGU0 (train and test on one
 speaker) 0.36 / 0.93 (ridge probe 0.43 / 0.90); multi-speaker seen speakers 0.55 / 0.80 (USC-TIMIT ~0.86 PCC); held-out
-speakers 0.77-0.82 / 0.70-0.71. Two gaps: data (MNGU0 is one clean session with ~1000 training utterances vs 180-370 per
-multi-speaker speaker with session offsets, emotional speech and harder alignment) and speaker shift (0.55 -> 0.80),
-which no model or head closed. Single-speaker AAI benchmarks overstate accuracy on a new person.
+speakers 0.80-0.82 / 0.70-0.71 for LoRA + causal conv (0.76-0.79 for probes and frozen sequence heads). A plausible
+reading, not tested by any data-size or session control: a data gap (MNGU0 is one clean session with ~1000 training
+utterances vs 180-370 per multi-speaker speaker with session offsets, emotional speech and harder alignment) and a
+speaker-shift gap (0.55 -> 0.80) that no model or head closed. z units are not strictly comparable across corpora
+(MNGU0 statistics come from silence-trimmed data; EMA_5EMO std is inflated by block offsets). Single-speaker AAI
+benchmarks overstate accuracy on a new person.
 
 Input length (`length_eval.py`, `analysis_length/summary_k12.md`; LOSO, WavLM k12, seed 0, every system rerun from
-audio and scored on the same EMA frames; audio trimmed to a multiple of 320 samples, which only changes the last
-frames' filter edge -- untrimmed live features equal the cache to 3.5e-4). rmse_z / PCC:
+audio and scored on the same EMA frames; audio trimmed to a multiple of 320 samples, which mainly changes the last
+frames' filter edge -- untrimmed live features equal the cache to 3.5e-4 on a checked EMA_5EMO utterance, trimmed ones
+differ by 0.14-0.18 relative at the final frames; one utterance per fold checked; heads and LoRA single seed). rmse_z / PCC:
 | system | native | long (>= 20 s concatenations) | 1 s chunks | 0.5 s chunks |
 |---|---|---|---|---|
 | ridge probe | 0.763 / 0.676 | 0.773 / 0.666 | 0.809 / 0.640 | 0.836 / 0.613 |
@@ -529,19 +551,22 @@ frames' filter edge -- untrimmed live features equal the cache to 3.5e-4). rmse_
 - Long inputs: every system loses a little (probe 0.009 rmse_z; recurrent/SSM heads 0.014-0.024 and 0.014-0.018 PCC;
   conv heads ~0.03 PCC) but none collapses; heads trained on 1-5 s clips hold up on 20-30 s. LoRA is the most
   length-stable but stays worst on rmse_z.
-- Short inputs cost more: 1 s chunks lose ~0.03-0.05 rmse_z and ~0.04 PCC, 0.5 s chunks more. The frame-wise probe
-  degrades most (0.836 at 0.5 s), so most of the loss is the encoder's own context; temporal heads keep a PCC lead of
-  ~+0.02-0.03 over the probe even at 0.5 s. Relevant for chunked / streaming use.
-- Natural duration (native): error rises with length for all systems (PCC ~0.74-0.76 under 2 s to ~0.61-0.63 above
-  6 s), but the long utterances are mostly EMA_5EMO passage phrases, so length is confounded with corpus; temporal
-  heads keep their PCC lead over the probe in every duration bin.
+- Short inputs cost more: 1 s chunks lose 0.023-0.048 rmse_z and 0.022-0.046 PCC, 0.5 s chunks more. The frame-wise
+  probe degrades most on rmse_z (+0.073 at 0.5 s), the recurrent/SSM heads most on PCC. The cause is not separated:
+  encoder context, the 10 Hz low-pass re-applied to short pieces (edge effects) and per-chunk waveform normalization
+  are confounded (no control). Temporal heads keep +0.018 to +0.035 PCC over the probe at 0.5 s. Relevant for chunked /
+  streaming use.
+- Natural duration (native): PCC falls with length for all systems (~0.74-0.76 under 2 s, n=18, to ~0.60-0.63 above
+  6 s); rmse_z is not monotone (probe 0.795 at 3-4 s, 0.758 at 4-6 s, 0.843 above 6 s). The long utterances are mostly
+  EMA_5EMO passage phrases, so length is confounded with corpus. Recurrent/SSM heads keep a PCC lead over the probe in
+  every bin (only +0.005 to +0.023 above 6 s); conv heads tie or fall below the probe above 4 s.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
   FLOPs; blended 0.75/0.25 with the frozen-encoder probe it also gets the probe's rmse_z.
 - Encoder / FLOPs: WavLM Large truncated to 7-9 layers is the cheapest encoder that is never clearly beaten. LOSO held
-  out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI touches
+  out: WavLM k7 (14.9 GFLOPs/s) ties XLS-R 300M k18 (29.1) on rmse_z (0.818 vs 0.816), 300M +0.012 PCC (CI spans
   0). MNGU0: 300M k18 is better by 0.014 mm (0.739 vs 0.753) at 1.7x FLOPs. Each model ran at one depth in LOSO, so
   there is no multi-speaker efficiency frontier, only these points.
 - Compressing large SSL models: no truncation, non-contiguous selection or head/FFN pruning of XLS-R 300M/1B/2B beats
@@ -549,8 +574,9 @@ frames' filter edge -- untrimmed live features equal the cache to 3.5e-4). rmse_
   56% of its FLOPs). 1B's only edge is zero-shot from MNGU0 (+0.009 PCC over 300M, 3 seeds) and it is not in rmse_z.
   1B was run at one validation-chosen depth in LOSO (k10), so "k10 was a bad pick" is not excluded.
 - Adaptation and heads: within one speaker, the causal conv head (MNGU0 WavLM 0.889 -> 0.793 mm frozen) and LoRA
-  (-> 0.753) are the large gains. Under speaker shift, a plain ridge probe has the best rmse_z and LoRA the best PCC;
-  the conv head adds nothing for new speakers. Layer pooling was discarded (0/3 models; MNGU0 1B the exception).
+  (-> 0.753) are the large gains. Under speaker shift, the ridge probe has the best rmse_z at a given depth; the best
+  PCC comes from the LoRA + probe blend (0.705-0.721) and frozen recurrent/SSM heads (0.705-0.709 at WavLM k12); the
+  causal conv head adds little for new speakers. Layer pooling was discarded (0/3 models; MNGU0 1B the exception).
 - Pretraining: multilingual XLS-R 300M beats English w2v2 at identical architecture/FLOPs on held-out PCC (+0.019
   [0.005, 0.034], 6/7) and on MNGU0 (0.739 vs 0.769 mm); rmse_z ties. All test speakers are English, so this says
   nothing about generalization to other languages.
@@ -562,6 +588,18 @@ frames' filter edge -- untrimmed live features equal the cache to 3.5e-4). rmse_
   shift were selected on ema_multi validation, which contains sentences of speakers later held out in LOSO.
 
 ### Caveats and open directions
+- Standing caveats from the adversarial reviews (2026-10-15), apply to every held-out table above:
+  - Held-out rmse_z uses each held-out speaker's own full training-split EMA statistics (oracle calibration): ~6.4
+    without any of its EMA, ~0.82 with 10-20 enrollment utterances. Relative rankings are fine; absolute numbers are
+    not zero-shot.
+  - rmse_z is dominated by per-utterance offset / gain (EMA_5EMO block offsets): with each utterance's mean error
+    removed, LoRA beats the probe on usc_F5 (2 folds checked). Report centered rmse_z and prediction/target std
+    ratios alongside rmse_z.
+  - The selection chain ends on the test folds (depth chosen cross-fold, best heads highlighted on held-out scores); a
+    fresh holdout speaker or corpus is needed for a clean final number.
+  - Paired t CIs treat the 7 folds as independent, but folds share 5 of 6 training speakers and 3 share a corpus.
+  - The multi-speaker latency correction used SPARC's WavLM-based inverter (a WavLM-family dependence avoided for
+    MNGU0); residual lag is within +-6 ms.
 - MNGU0 has one speaker and 61 test utterances. Speaker generalization and phonetic coverage need another
   EMA corpus (e.g. the group's `EMA_5EMO_NSF` set, or mocha-timit / HPRC). Per-phone-class errors are in
   each run's `results.json` but haven't been analyzed yet.
