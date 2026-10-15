@@ -570,6 +570,42 @@ differ by 0.14-0.18 relative at the final frames; one utterance per fold checked
   EMA_5EMO passage phrases, so length is confounded with corpus. Recurrent/SSM heads keep a PCC lead over the probe in
   every bin (only +0.005 to +0.023 above 6 s); conv heads tie or fall below the probe above 4 s.
 
+### Rigor re-analysis, tier 1 (2026-10-15; pre-registered in `docs/rigor_prereg.md`)
+`rigor.py` (`analysis_rigor/summary.md`, `results.json`, `latency.md`): every arm re-scored from cached held-out
+predictions (retrained frozen heads reproduce the head screen to 1e-4; recomputed blends match lora_readout to 1.4e-4).
+All configurations were already looked at on these folds, so nothing here is an untouched number.
+Pre-registered contrasts (WavLM k12 unless noted; exact sign-flip test, Holm over 3; hierarchical bootstrap 95%):
+| id | contrast | metric | diff | bootstrap 95% | folds | p | Holm |
+|---|---|---|---|---|---|---|---|
+| P1 | blend BiGRU->conv vs LoRA BiGRU->conv x one gain fitted on the other folds | rmse_z | +0.009 | [-0.021, +0.041] | 4/7 | 0.59 | n.s. |
+| P2 | frozen BiGRU->conv vs ridge probe | PCC | +0.033 | [+0.022, +0.045] | 7/7 | 0.016 | significant |
+| P3 | frozen BiGRU->conv, WavLM k12 vs XLS-R 300M k18 | PCC | +0.003 | [-0.009, +0.014] | 4/7 | 0.55 | n.s. |
+- The second encoder pass is not worth it for rmse_z: scaling LoRA's output by one gain (~0.62-0.67, fitted on the other
+  six folds; oracle mean ~0.68-0.76) matches the blend for every encoder and head (blend - shrunk LoRA -0.003 to
+  +0.009 rmse_z; per-channel gain -0.011 to +0.004, all p > 0.5). The blend's only real gain over LoRA is PCC (+0.009 to +0.017,
+  7/7 everywhere), which a gain cannot produce. Shrinking LoRA alone improves rmse_z by 0.019-0.041 (CIs span 0).
+- rmse_z rankings are driven by per-utterance offsets: arm rankings under rmse_z and centered rmse_z (each utterance's
+  mean error removed) barely agree (Kendall tau 0.30; speaker-centered 0.59; PCC vs concatenated PCC 0.70). On centered
+  rmse_z every WavLM k12 LoRA arm (0.571-0.582) beats the k12 probe (0.593); across all encoders LoRA spans
+  0.571-0.604 vs probes 0.591-0.601 (XLS-R 1B k10 LoRA the one arm above its probe). 44-49% of LoRA's squared error
+  is per-utterance bias vs 39-42% for probes. Std ratios (prediction / target) 0.72-0.83 for raw arms.
+- LoRA vs frozen at k12 is an offset effect: with BiMamba / BiGRU->conv heads they tie on centered rmse_z (+-0.005) and
+  PCC (CIs span 0); with causal conv LoRA is better on centered rmse_z by 0.017 (frozen wins 1/7) and PCC by 0.024.
+- Temporal heads vs the MLP control at k12: BiGRU->conv +0.039 PCC, BiMamba +0.035, causal conv +0.011 (7/7, 7/7, 6/7);
+  BiMamba vs BiGRU->conv -0.004 PCC, -0.001 rmse_z (no difference).
+- Encoder (P3): under a frozen BiGRU->conv head 300M k18 brings no PCC gain and is worse on rmse_z (0.791 vs 0.765) at
+  1.37x the FLOPs; WavLM k12 stays the recommended encoder.
+- Post-hoc +-1 s output smoother on every arm: |d rmse_z| <= 0.0034, |d PCC| <= 0.0038. Negligible.
+- Enrollment for every arm: N = 0 (training speakers' average statistics) gives rmse_z 6.41-6.49; N = 10 utterances
+  is within 0.017 of the full-statistics number, N = 20 within 0.011 (10 random draws).
+- Noise and power: seed sd 0.008-0.023 rmse_z / 0.004-0.009 PCC per fold; fold sd 0.06-0.13 / 0.06-0.075; with 7 folds
+  the effect detectable at 80% power is ~0.06 rmse_z and ~0.017-0.018 PCC, so most head-vs-head and encoder rmse_z
+  differences cannot be resolved by this design.
+- Latency (batch 1, `latency.md`; job landed on an RTX A6000): GPU times are launch-bound at batch 1 (9-18 ms for every
+  encoder, so not informative). CPU (8 threads, 4 s audio): WavLM k7 145 ms, k9 174, k12 207, XLS-R 300M k18 277, 1B
+  k19 350; heads on CPU: linear/MLP/conv <= 1.1 ms, BiGRU 11 ms, BiGRU->conv 12 ms, BiMamba 19 ms (the parallel scan is
+  slower than the GRU on CPU). Heads cost <= 10% of the encoder; the two-pass blend doubles the encoder cost.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
