@@ -34,7 +34,7 @@ from . import mngu0
 from .encoders import MODELS, frame_lengths, load_subset, normalize_wav
 from . import datasets
 from .extract import OUT_ROOT
-from .heads import POOL_MODES, Head
+from .heads import POOL_MODES, Head, Smooth
 from .lora import VARIANTS, apply_lora, lora_param_count, merge_lora
 from .metrics import ema_metrics
 
@@ -93,11 +93,14 @@ def build(args, device):
         model.gradient_checkpointing_enable()
     pool = getattr(args, "pool", "static" if args.layer_pool else "none")  # older configs only had layer_pool
     if args.head in SEQ_HEADS:  # sequence heads (seqheads.py); no layer pooling
-        return model.to(device), make_seq_head(args, model.config.hidden_size).to(device), bank
-    head = Head(model.config.hidden_size, args.head, args.hidden, args.kernel, args.window, args.causal,
-                smooth=not args.no_smooth, n_pool_layers=len(args.layers) if pool != "none" else 0,
-                pool=pool if pool != "none" else "static", per_articulator=getattr(args, "per_articulator", False),
-                pool_norm=getattr(args, "pool_norm", "layer") == "layer")
+        head = make_seq_head(args, model.config.hidden_size)
+    else:
+        head = Head(model.config.hidden_size, args.head, args.hidden, args.kernel, args.window, args.causal,
+                    smooth=not args.no_smooth, n_pool_layers=len(args.layers) if pool != "none" else 0,
+                    pool=pool if pool != "none" else "static", per_articulator=getattr(args, "per_articulator", False),
+                    pool_norm=getattr(args, "pool_norm", "layer") == "layer")
+    # zero-phase 10 Hz low-pass of the encoder output before the head (as the cached features of the frozen heads)
+    head.input_lowpass = Smooth() if getattr(args, "input_lowpass", False) else None
     return model.to(device), head.to(device), bank
 
 
@@ -123,6 +126,8 @@ def forward(model, head, wavs, device, layer_pool, train):
     T = (h[0] if layer_pool else h).shape[1]
     pad = torch.arange(T, device=device)[None, :] >= torch.tensor(n_frames, device=device)[:, None]
     with torch.set_grad_enabled(train):
+        if getattr(head, "input_lowpass", None) is not None:
+            h = [head.input_lowpass(x.float(), pad) for x in h] if layer_pool else head.input_lowpass(h.float(), pad)
         y = head(h, pad_mask=pad)
     return y, n_frames
 
@@ -310,7 +315,7 @@ def fit(model, head, bank, data, args, ym, ys, device, epochs, state_path):
     for epoch in range(start_epoch, epochs):
         if bad >= args.patience:
             break
-        model.train() if bank is not None else model.eval()
+        model.train() if bank is not None and not getattr(args, "no_enc_dropout", False) else model.eval()
         head.train()
         order = list(range(len(data["train"])))
         random.shuffle(order)
@@ -369,6 +374,10 @@ def main(argv=None):
     ap.add_argument("--per-articulator", action="store_true",
                     help="separate layer pooling (and head projections) per articulator")
     ap.add_argument("--no-smooth", action="store_true")
+    ap.add_argument("--input-lowpass", action="store_true",
+                    help="zero-phase 10 Hz low-pass of the encoder output before the head (in-graph)")
+    ap.add_argument("--no-enc-dropout", action="store_true", help="keep the encoder in eval mode while training LoRA")
+    ap.add_argument("--tag", default="", help="suffix for the run name (before the seed)")
     ap.add_argument("--no-probe-init", action="store_true")
     ap.add_argument("--shift", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=40)
@@ -383,6 +392,9 @@ def main(argv=None):
     ap.add_argument("--no-bf16", dest="bf16", action="store_false")
     ap.add_argument("--out", default=None)
     ap.add_argument("--limit", type=int, default=None, help="debug: cap utterances per split")
+    ap.add_argument("--train-limit", type=int, default=None,
+                    help="random subset of N training utterances (data-size curves); seed --train-subset-seed")
+    ap.add_argument("--train-subset-seed", type=int, default=0)
     args = ap.parse_args(argv)
     args.layers = parse_layers(args.layers)
     args.layer_pool = args.pool != "none"
@@ -411,6 +423,8 @@ def main(argv=None):
             + ("_randinit" if args.no_probe_init and args.head == "linear" and not args.layer_pool else "")
             + (f"_k{args.kernel}" if args.head == "gruconv" else "")
             + ("_nosm" if args.no_smooth and args.head in SEQ_HEADS else "")
+            + (f"_n{args.train_limit}d{args.train_subset_seed}" if args.train_limit else "")
+            + (f"_{args.tag}" if args.tag else "")
             + f"_s{args.seed}")
     out = Path(args.out or datasets.adapt_root(args.dataset) / args.model / name)
     out.mkdir(parents=True, exist_ok=True)
@@ -423,6 +437,8 @@ def main(argv=None):
     splits = ds.splits()
     if args.limit:
         splits = {s: v[: args.limit] for s, v in splits.items()}
+    if args.train_limit and args.train_limit < len(splits["train"]):
+        splits["train"] = sorted(random.Random(args.train_subset_seed).sample(splits["train"], args.train_limit))
     data = load_data(splits, ds)
     allY = np.concatenate([u.ema_mm for u in data["train"]])
     ym, ys = allY.mean(0), allY.std(0)

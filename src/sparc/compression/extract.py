@@ -34,9 +34,13 @@ def lowpass(x):
 
 
 @torch.no_grad()
-def extract(name, out_root=None, limit=None, device="cuda", dataset="mngu0"):
+def extract(name, out_root=None, limit=None, device="cuda", dataset="mngu0", layers=None, raw=False):
+    """layers: optional subset of layer indices to write; raw: skip the low-pass (default root gets a '_raw' suffix)."""
     ds = datasets.get(dataset)
-    out = Path(out_root or datasets.features_root(dataset)) / name
+    root = Path(out_root) if out_root else datasets.features_root(dataset)
+    if raw and not out_root:
+        root = root.with_name(root.name + "_raw")
+    out = root / name
     out.mkdir(parents=True, exist_ok=True)
     meta_path = out / "meta.json"
     if meta_path.exists() and json.loads(meta_path.read_text()).get("complete") and limit is None:
@@ -56,34 +60,33 @@ def extract(name, out_root=None, limit=None, device="cuda", dataset="mngu0"):
         index[s] = [start, lengths[s]]
         start += lengths[s]
     total = start
-    mmaps = [
-        np.lib.format.open_memmap(out / f"layer_{k:02d}.npy", mode="w+", dtype=np.float16, shape=(total, D))
-        for k in range(L + 1)
-    ]
-    print(f"{name}: {len(stems)} utterances, {total} frames, {L} layers x {D} dims")
+    keep = list(range(L + 1)) if layers is None else list(layers)
+    mmaps = {k: np.lib.format.open_memmap(out / f"layer_{k:02d}.npy", mode="w+", dtype=np.float16, shape=(total, D))
+             for k in keep}
+    print(f"{name}: {len(stems)} utterances, {total} frames, layers {keep} x {D} dims, raw={raw}")
 
     for i, s in enumerate(stems):
         utt = ds.load_utterance(s)
         wav = torch.from_numpy(normalize_wav(utt.wav)).unsqueeze(0).to(device)
         hs = model(wav, output_hidden_states=True).hidden_states
         a, n = index[s]
-        for k in range(L + 1):
+        for k in keep:
             h = hs[k][0].float().cpu().numpy()
             assert len(h) == n, (s, len(h), n)
-            h16 = lowpass(h).astype(np.float16)
+            h16 = (h if raw else lowpass(h)).astype(np.float16)
             if not np.isfinite(h16).all():
                 raise OverflowError(f"{s} layer {k}: hidden state exceeds float16 range")
             mmaps[k][a : a + n] = h16
         if (i + 1) % 100 == 0:
             print(f"...{i + 1}/{len(stems)}", flush=True)
 
-    for m in mmaps:
+    for m in mmaps.values():
         m.flush()
     (out / "index.json").write_text(json.dumps(index))
     meta_path.write_text(
         json.dumps(
-            {"model": MODELS[name], "num_layers": L, "dim": D, "freqcut": FREQCUT, "n_frames": total,
-             "n_utts": len(stems), "complete": limit is None}
+            {"model": MODELS[name], "num_layers": L, "dim": D, "freqcut": None if raw else FREQCUT, "n_frames": total,
+             "n_utts": len(stems), "layers": keep, "complete": limit is None}
         )
     )
     return out
@@ -96,8 +99,11 @@ def main():
     ap.add_argument("--dataset", default="mngu0", choices=datasets.DATASET_NAMES)
     ap.add_argument("--limit", type=int, default=None, help="debug: N train + N val/test utterances")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--layers", default=None, help="comma-separated layer indices to write (default: all)")
+    ap.add_argument("--raw", action="store_true", help="no low-pass; default root <features root>_raw")
     args = ap.parse_args()
-    extract(args.model, args.out_root, args.limit, args.device, args.dataset)
+    layers = [int(x) for x in args.layers.split(",")] if args.layers else None
+    extract(args.model, args.out_root, args.limit, args.device, args.dataset, layers, args.raw)
 
 
 if __name__ == "__main__":

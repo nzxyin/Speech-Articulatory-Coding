@@ -37,10 +37,11 @@ class _Front(nn.Module):
 
 
 class GRUHead(_SeqHeadMixin, nn.Module):
-    def __init__(self, dim, hidden=256, n_out=12, smooth=True):
+    def __init__(self, dim, hidden=256, n_out=12, smooth=True, bidirectional=True):
         super().__init__()
         self.front = _Front(dim, hidden)
-        self.rnn = nn.GRU(hidden, hidden // 2, batch_first=True, bidirectional=True)
+        # unidirectional: one hidden-size GRU, so the output width (and the head's size) matches the bidirectional one
+        self.rnn = nn.GRU(hidden, hidden // 2 if bidirectional else hidden, batch_first=True, bidirectional=bidirectional)
         self.out = nn.Linear(hidden, n_out)
         self.smooth = Smooth() if smooth else None
 

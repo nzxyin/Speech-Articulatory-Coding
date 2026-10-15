@@ -48,7 +48,7 @@ from .probe import aligned, load_targets
 from .seqheads import CascadeHead, GRUHead, MambaHead, SSMHead
 
 OUT = datasets.XLSR_EMA / "analysis_heads"
-HEADS = ("linear", "mlp", "conv_causal9", "conv3", "conv5", "conv9", "conv17", "conv33", "conv65", "gru", "gru2",
+HEADS = ("linear", "mlp", "conv_causal9", "gru_uni", "conv3", "conv5", "conv9", "conv17", "conv33", "conv65", "gru", "gru2",
          "convgru9", "convgru17", "gruconv9", "ssm", "mamba")
 LRS = (1e-4, 3e-4, 1e-3, 3e-3)
 SEEDS = (0, 1, 2)
@@ -73,6 +73,8 @@ def make_head(name, dim, smooth):
         return Head(dim, "conv", hidden=256, kernel=int(name[4:]), causal=False, smooth=smooth)
     if name == "gru":
         return GRUHead(dim, smooth=smooth)
+    if name == "gru_uni":
+        return GRUHead(dim, smooth=smooth, bidirectional=False)
     if name == "ssm":
         return SSMHead(dim, smooth=smooth)
     if name == "mamba":
@@ -182,26 +184,63 @@ def evaluate(head, data, ym, ys, device):
     return {split: zm(predict(head, data[split][0], ym, ys, device), data[split][1]) for split in ("test", "test_unseen")}
 
 
-def run(model, layer, head_name, device=None):
+def load_features(model, layer, features):
+    """(feats, index). 'zp': the cached zero-phase 10 Hz low-passed features; 'raw': unfiltered features
+    (extract --raw); 'causal': raw features through a one-sided (causal) 5th-order 10 Hz Butterworth per utterance."""
+    if features == "zp":
+        d = datasets.features_root("ema_multi") / model
+        return np.load(d / f"layer_{layer:02d}.npy", mmap_mode="r"), json.loads((d / "index.json").read_text())
+    d = datasets.features_root("ema_multi").with_name(datasets.features_root("ema_multi").name + "_raw") / model
+    index = json.loads((d / "index.json").read_text())
+    feats = np.load(d / f"layer_{layer:02d}.npy", mmap_mode="r")
+    if features == "raw":
+        return feats, index
+    from scipy.signal import butter, lfilter
+
+    b, a = butter(5, 10 / (FT_SR / 2), btype="low")
+    out = np.empty(feats.shape, dtype=np.float32)
+    for s, (i, n) in index.items():
+        out[i:i + n] = lfilter(b, a, np.asarray(feats[i:i + n], dtype=np.float32), axis=0)
+    return out, index
+
+
+def choose_shift(feats, index, utts, sp, device, shifts=range(-2, 9)):
+    """Shift by ridge on the training speakers' validation sentences (for filtered features with a delay)."""
+    from .lora_readout import fit_ridge, zm as rzm
+
+    best = None
+    for s in shifts:
+        Xtr, Ytr, _ = aligned(feats, index, utts, sp["train"], s)
+        Xva, Yva, _ = aligned(feats, index, utts, sp["valid"], s)
+        r, W, b_ = fit_ridge([np.asarray(x, dtype=np.float32) for x in Xtr], Ytr,
+                             [np.asarray(x, dtype=np.float32) for x in Xva], Yva, device)
+        e = rzm(r.predict(W, b_, [np.asarray(x, dtype=np.float32) for x in Xva]), Yva)["rmse_z"]
+        if best is None or e < best[0]:
+            best = (e, s)
+    return best[1]
+
+
+def run(model, layer, head_name, device=None, features="zp"):
     from .depth_sweep import load_all
 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    d = datasets.features_root("ema_multi") / model
-    index = json.loads((d / "index.json").read_text())
-    feats = np.load(d / f"layer_{layer:02d}.npy", mmap_mode="r")
+    feats, index = load_features(model, layer, features)
     depth = load_all(model)
-    out_f = OUT / model / f"k{layer}_{head_name}.json"
+    out_f = OUT / model / (f"k{layer}_{head_name}.json" if features == "zp" else f"k{layer}_{head_name}_{features}.json")
     out_f.parent.mkdir(parents=True, exist_ok=True)
     res = json.loads(out_f.read_text()) if out_f.exists() else {}
     utts = None
     for h in datasets.ALL_SPEAKERS:
         if h in res and "smooth_on" in res[h]:
             continue
-        shift = fold_shift(model, layer, h, depth)
         ds = datasets.EMAMulti(held_out=(h,), norm_by="norm_group")
         sp = {k: [s for s in v if s in index] for k, v in ds.splits().items()}
         if utts is None:
             utts = load_targets(sorted(set(index) & set(ds.rows)), ds)  # targets do not depend on the fold
+        if features == "zp":
+            shift = fold_shift(model, layer, h, depth)
+        else:
+            shift = res[h]["shift"] if h in res else choose_shift(feats, index, utts, sp, device)
         data = {}
         for split in ("train", "valid", "test", "test_unseen"):
             X, Y, _ = aligned(feats, index, utts, sp[split], shift)
@@ -336,9 +375,11 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--layer", type=int)
     ap.add_argument("--head", choices=HEADS)
+    ap.add_argument("--features", default="zp", choices=("zp", "causal", "raw"),
+                    help="zp: cached zero-phase low-passed features; causal / raw: see load_features")
     args = ap.parse_args()
     if args.cmd == "run":
-        run(args.model, args.layer, args.head)
+        run(args.model, args.layer, args.head, features=args.features)
     elif args.cmd == "flops":
         for n in HEADS:
             print(n, f"{head_gflops(n, 1024):.3f} GFLOPs/s")

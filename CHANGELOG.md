@@ -76,6 +76,13 @@ All notable changes to this fork. Earlier history is in `git log`.
   `latency`: batch-1 GPU/CPU latency and memory of the frontier encoders and heads. `loso_posthoc run --run TEMPLATE`
   caches predictions of any LoRA run family. `scripts/rigor_job.sh`: runner for `slurm-alloc` submissions.
   Tests: `tests/test_rigor.py`.
+- Rigor tier 2 (pre-registered addendum in `docs/rigor_prereg.md`): `train.py --input-lowpass` (the cached features'
+  zero-phase 10 Hz filter applied in-graph to the encoder output), `--no-enc-dropout`, `--tag`, and
+  `--train-limit N --train-subset-seed S` (random training subsets for data curves); `matched` runs LoRA + BiGRU->conv
+  in the frozen-head pipeline (learning rate chosen on validation). `extract --layers ... --raw` caches unfiltered
+  features; `head_screen run --features causal|raw` trains heads on causally filtered (one-sided Butterworth) or
+  unfiltered features with the shift re-chosen on validation; new head `gru_uni` (unidirectional GRU, `GRUHead
+  (bidirectional=False)`).
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
