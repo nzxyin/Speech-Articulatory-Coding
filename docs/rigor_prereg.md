@@ -57,3 +57,39 @@ labelled oracle. Zero in z units is the speaker's mean, so the gain shrinks towa
   pass with a calibrated gain instead of the second encoder pass.
 - P2 significant: temporal heads are confirmed to improve held-out PCC over the probe at k12.
 - P3 not significant: no evidence that 300M k18 beats WavLM k12 under a strong head; recommend WavLM k12 on FLOPs.
+
+---
+
+# Addendum (2026-10-15, before any Tier 2 / Item 4 run): nested selection and controlled training
+
+Same metric definitions, tests and status labels as above. Primary family (Holm over 3, exact sign-flip test over the
+7 folds, hierarchical bootstrap for intervals):
+
+| id | contrast | metric | question |
+|---|---|---|---|
+| T1 | LoRA + BiGRU->conv in the frozen-head pipeline ("matched") vs frozen BiGRU->conv, WavLM k12 | PCC | Does LoRA add trajectory shape once the pipelines are identical? |
+| T2 | matched LoRA vs the original LoRA pipeline (same head, WavLM k12) | rmse_z | How much of LoRA's held-out rmse_z deficit is the pipeline? |
+| N1 | frozen BiGRU->conv at the nested-selected depth vs at k12 (the cross-fold choice) | PCC | Is the k12 recommendation optimistic? (+ = nested better) |
+
+Matched pipeline: encoder output low-passed with the same zero-phase 10 Hz filter as the cached features (in-graph),
+no output smoother, per-fold shift from the depth sweep, encoder dropout off (encoder kept in eval mode), fp32, head
+learning rate = the head screen's per-fold choice for BiGRU->conv at k12, LoRA learning rate chosen from
+{1e-4, 2e-4, 5e-4} on the training speakers' validation (seed 0), then seeds 1 and 2. Only the endpoints are run (no
+one-factor-at-a-time decomposition); which factor matters is not identified.
+
+Nested selection (Item 4): for each outer held-out speaker, an inner leave-one-speaker-out over its 6 training speakers
+(train on 5, score the 6th's test sentences). Probe: every WavLM and XLS-R 300M depth, shift = the outer fold's
+depth-sweep shift at that depth, alpha on the inner training speakers' validation; depth chosen by mean inner rmse_z.
+Heads (pre-declared: BiGRU->conv and BiMamba, WavLM depths {7, 9, 12, 15, 18}): one seed per inner fold at a fixed
+learning rate per head (the head screen's most frequent choice); depth chosen by mean inner PCC; the outer score at the
+chosen depth is the 3-seed head-screen result there. Reported: nested outer score vs the k12 / cross-fold score
+(selection optimism), and the depths chosen.
+
+Descriptive only (no tests): causal pipeline (causal 10 Hz low-pass or none, causal conv 9 and unidirectional GRU, no
+smoother) vs the zero-phase pipeline; if causal heads lose more than 0.01 PCC, the word "causal" in earlier results is
+replaced by "offline (zero-phase filtering)". Length controls (chunks cut from full-utterance features; chunk encoded
+alone but low-passed over the full utterance; whole-utterance waveform normalization), 3 seeds. Alignment sensitivity:
+held-out targets shifted by -2..+2 frames against cached predictions, and training speakers' alignment perturbed by a
+random +-1 frame (probe), reporting rank agreement (Kendall tau) of the arms. Data curve: MNGU0 ridge probe and LoRA +
+causal conv (WavLM k9) trained on 100 / 200 / 400 / all utterances, and within-speaker probes for each multi-speaker
+speaker (its own train -> its own test), all in z units.
