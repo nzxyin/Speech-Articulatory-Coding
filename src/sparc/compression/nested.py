@@ -327,7 +327,7 @@ def summary():
             summ["N1"] = {"a": "frozen BiGRU->conv at nested depth", "b": "frozen BiGRU->conv at k12", "metric": "pcc",
                           "n_folds": t["n"], "mean": t["mean"], "t_ci": [t["lo"], t["hi"]], "won": t["won"],
                           "sign_flip_p": t["p"]}
-        res2 = select_table(f"{head}, rmse_z-selected", outer, inner_of, HEAD_DEPTHS, "rmse_z", "min", L, False)
+        res2 = select_table(f"{head}, rmse_z-selected", outer, inner_of, HEAD_DEPTHS, 12, "rmse_z", "min", L, False)
         if res2:
             (OUT / f"heads_{head}_rmsesel.json").write_text(json.dumps(res2, indent=1))
     (OUT / "summary.json").write_text(json.dumps(summ, indent=1))

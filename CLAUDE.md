@@ -606,7 +606,16 @@ Pre-registered contrasts (WavLM k12 unless noted; exact sign-flip test, Holm ove
   k19 350; heads on CPU: linear/MLP/conv <= 1.1 ms, BiGRU 11 ms, BiGRU->conv 12 ms, BiMamba 19 ms (the parallel scan is
   slower than the GRU on CPU). Heads cost <= 10% of the encoder; the two-pass blend doubles the encoder cost.
 
-### Rigor tier 2 (2026-10-16; pre-registered addendum in `docs/rigor_prereg.md`; in progress)
+### Rigor tier 2 (2026-10-16; pre-registered addendum in `docs/rigor_prereg.md`; complete)
+Final pre-registered family (Holm over T1, T2, N1; exact sign-flip test): none significant. T1 +0.010 PCC (p 0.078),
+T2 +0.005 rmse_z (p 0.69), N1 -0.004 PCC (p 0.50, nested better on 0/7 folds).
+- Item 4 nested selection (`nested.py`, `analysis_rigor/nested/summary.md`): depth chosen by inner leave-one-speaker-out
+  on the training speakers only. Frozen BiGRU->conv (depths 7/9/12/15/18, PCC rule) picks k12 on 5/7 folds (k9, k15
+  on the others) and scores 0.771 / 0.705 vs k12 0.765 / 0.709 (N1 above); BiMamba picks 9-15, 0.773 / 0.704 vs k12
+  0.766 / 0.705. WavLM probe (depths 1-24) nested 0.769 / 0.674 vs k12 0.764 / 0.676 (n.s.); XLS-R 300M probe nested
+  picks k12-13 (0.763 / 0.681) vs its k18 0.777 / 0.683. So the k12 recommendation is not an artifact of choosing depth
+  on the held-out speakers: leak-free selection lands on (or next to) k12 and does no better.
+
 `rigor.py tier2` (`analysis_rigor/tier2.md`). Matched pipeline (`matched.py`): LoRA + BiGRU->conv at WavLM k12 trained
 like the frozen heads (encoder output low-passed in-graph, no smoother, fold shift, encoder dropout off, fp32, head
 lr from the head screen, LoRA lr on validation; 3 seeds x 7 folds). Every fold chose the largest LoRA lr in the grid
