@@ -606,6 +606,37 @@ Pre-registered contrasts (WavLM k12 unless noted; exact sign-flip test, Holm ove
   k19 350; heads on CPU: linear/MLP/conv <= 1.1 ms, BiGRU 11 ms, BiGRU->conv 12 ms, BiMamba 19 ms (the parallel scan is
   slower than the GRU on CPU). Heads cost <= 10% of the encoder; the two-pass blend doubles the encoder cost.
 
+### Rigor tier 2 (2026-10-16; pre-registered addendum in `docs/rigor_prereg.md`; in progress)
+`rigor.py tier2` (`analysis_rigor/tier2.md`). Matched pipeline (`matched.py`): LoRA + BiGRU->conv at WavLM k12 trained
+like the frozen heads (encoder output low-passed in-graph, no smoother, fold shift, encoder dropout off, fp32, head
+lr from the head screen, LoRA lr on validation; 3 seeds x 7 folds). Every fold chose the largest LoRA lr in the grid
+(5e-4), so the matched LoRA may be under-tuned. Held-out rmse_z / PCC / centered rmse_z: matched LoRA 0.786 / 0.720 /
+0.568; frozen BiGRU->conv 0.765 / 0.709 / 0.574; original-pipeline LoRA 0.791 / 0.714 / 0.576; probe 0.764 / 0.676 / 0.593.
+| id | contrast | metric | diff | bootstrap 95% | folds | p |
+|---|---|---|---|---|---|---|
+| T1 | matched LoRA vs frozen BiGRU->conv | PCC | +0.010 | [+0.001, +0.021] | 6/7 | 0.078 (n.s.) |
+| T2 | matched vs original-pipeline LoRA | rmse_z | +0.005 | [-0.021, +0.032] | 3/7 | 0.69 (n.s.) |
+(N1 pending; Holm will be over T1, T2, N1.)
+- With identical pipelines LoRA adds at most ~+0.01 PCC over a frozen BiGRU->conv head (not significant; bootstrap
+  interval barely excludes 0) and still loses 0.021 rmse_z (3/7). Its rmse_z deficit is not a pipeline artifact (T2 ~0):
+  the pipeline changes only PCC (+0.005, 6/7) and centered rmse_z (+0.008, 7/7). LoRA's extra error is per-utterance
+  offset (bias share 0.475 vs 0.431 frozen). Conclusion stands: a frozen encoder + sequence head is the efficient choice.
+- Causal pipeline (frozen heads, 3 seeds x 7 folds, no smoother): a causal 10 Hz low-pass (one-sided Butterworth;
+  validation picks shift +3 frames = 60 ms lookahead) or no low-pass at all costs nothing vs zero-phase features
+  (|d PCC| <= 0.003, |d rmse_z| <= 0.002 for causal conv 9 and a unidirectional GRU), and the unidirectional GRU on
+  causal features is within 0.009 PCC of the BiGRU on zero-phase features (n.s.). By the pre-registered rule (> 0.01 PCC
+  loss) the causal heads keep their label; the encoder itself is still bidirectional (full-utterance attention).
+- Item 9 (alignment, `rigor_extra.py`): a +-1 frame test-time misalignment costs ~+0.02 rmse_z / -0.022 PCC for every
+  arm with arm rankings nearly unchanged (Kendall tau 0.91-0.96); +-1 frame random training-speaker offsets cost probes
+  ~+0.005 rmse_z / -0.007 PCC (7/7) with the encoder ranking unchanged in 5/5 draws.
+- Item 10 (data curve, probe part; LoRA part running): MNGU0 WavLM k9 probe rmse_z 0.426 (all 1064) -> 0.473 (100
+  utterances); within-speaker probes on the multi-speaker speakers 0.588 at 100 utterances (0.561 with their own
+  184-368); held-out (new) speaker 0.771. So most of the MNGU0 vs new-speaker gap is speaker shift (~+0.21), then
+  corpus/speaker difficulty at matched data (~+0.115); data size alone ~+0.05.
+- Item 8 (length controls) one fold so far (usc_M1): cutting full-utterance features into 1 s / 0.5 s pieces for the head
+  costs nothing; whole-utterance waveform normalization recovers ~0.005; low-passing over the full utterance does not
+  help -- the short-input loss is the encoder's missing context. Pending the other 6 folds and 3 seeds.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
