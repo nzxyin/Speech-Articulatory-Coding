@@ -629,13 +629,20 @@ lr from the head screen, LoRA lr on validation; 3 seeds x 7 folds). Every fold c
 - Item 9 (alignment, `rigor_extra.py`): a +-1 frame test-time misalignment costs ~+0.02 rmse_z / -0.022 PCC for every
   arm with arm rankings nearly unchanged (Kendall tau 0.91-0.96); +-1 frame random training-speaker offsets cost probes
   ~+0.005 rmse_z / -0.007 PCC (7/7) with the encoder ranking unchanged in 5/5 draws.
-- Item 10 (data curve, probe part; LoRA part running): MNGU0 WavLM k9 probe rmse_z 0.426 (all 1064) -> 0.473 (100
-  utterances); within-speaker probes on the multi-speaker speakers 0.588 at 100 utterances (0.561 with their own
-  184-368); held-out (new) speaker 0.771. So most of the MNGU0 vs new-speaker gap is speaker shift (~+0.21), then
-  corpus/speaker difficulty at matched data (~+0.115); data size alone ~+0.05.
-- Item 8 (length controls) one fold so far (usc_M1): cutting full-utterance features into 1 s / 0.5 s pieces for the head
-  costs nothing; whole-utterance waveform normalization recovers ~0.005; low-passing over the full utterance does not
-  help -- the short-input loss is the encoder's missing context. Pending the other 6 folds and 3 seeds.
+- Item 10 (data curve; `rigor_extra.py`, `analysis_rigor/extra/summary.md`), WavLM k9, rmse_z / PCC: MNGU0 probe 0.426
+  / 0.904 (all 1064 utterances) -> 0.473 / 0.884 (100); MNGU0 LoRA + causal conv (3 seeds) 0.362 / 0.933 (all) -> 0.388
+  (400) -> 0.412 (200) -> 0.438 / 0.904 (100), so LoRA needs data more than the probe. Within-speaker probes on the
+  multi-speaker speakers (own train -> own test) 0.588 / 0.772 at 100 utterances, 0.561 / 0.788 with all 184-368; a
+  new (held-out) speaker 0.771 / 0.675. Of the MNGU0 -> new-speaker gap (+0.344 rmse_z) about 14% is data size, 33%
+  corpus/speaker difficulty at matched N=100 (sensor placement, sessions, emotion, alignment) and 61% speaker shift
+  (shares overlap). The multi-speaker vs single-speaker gap is mainly speaker shift, not too little data. Descriptive.
+- Item 8 (length controls; `length_eval.py`, `analysis_length/summary_k12.md`; 7 folds x 3 seeds): decomposition of the
+  1 s chunk loss (rmse_z / PCC, + = worse): total +0.023 to +0.047 / +0.023 to +0.044; head context (full-utterance
+  features cut into pieces) ~0 rmse_z (-0.010 to +0.001) / +0.006 to +0.010 PCC for the heads; encoder context (each
+  piece encoded alone, low-passed over the whole utterance) +0.038 to +0.067 / +0.018 to +0.033 -- the whole loss;
+  per-chunk waveform normalization <= 0.007; re-filtering each piece is not a cost (it partly offsets the encoder term,
+  -0.013 to -0.020 rmse_z for the heads). 0.5 s pieces: same pattern, encoder +0.052 to +0.095. So chunked or
+  streaming use needs encoder context (overlapping windows / left context), not a different head or filter.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:

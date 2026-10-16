@@ -83,6 +83,14 @@ All notable changes to this fork. Earlier history is in `git log`.
   features; `head_screen run --features causal|raw` trains heads on causally filtered (one-sided Butterworth) or
   unfiltered features with the shift re-chosen on validation; new head `gru_uni` (unidirectional GRU, `GRUHead
   (bidirectional=False)`).
+- `nested`: nested (inner leave-one-speaker-out) depth selection for ridge probes (WavLM, XLS-R 300M, all depths) and
+  frozen heads (gruconv9, mamba at WavLM 7/9/12/15/18), resumable per (fold, depth, inner speaker); `summary` compares
+  the nested choice with the fixed and cross-fold depths (pre-registered N1). Tests: `tests/test_nested.py`.
+- `length_eval`: 3 seeds per head and control conditions separating head context (`cut`), encoder context
+  (`enc_fulllp`) and per-chunk waveform normalization (`uttnorm`), with a decomposition summary; resumable per fold.
+- `rigor_extra`: alignment sensitivity (held-out targets shifted -2..2 frames against cached predictions; random +-1
+  frame training offsets for probes), MNGU0 data curves (probe and LoRA via `train --train-limit`) and within-speaker
+  probes on the multi-speaker corpora.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
