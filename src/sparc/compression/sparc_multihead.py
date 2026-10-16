@@ -19,7 +19,11 @@ resynth  -- every EMA speaker's test sentences with text: 'orig', 'shipped' (loa
 eval     -- WER (whisper-large-v3, Whisper English normalizer), speaker similarity to the original (ECAPA
             VoxCeleb cosine), wide-band PESQ and MCD (MFCC c1-c24, frame-aligned, no DTW) vs the original.
 
-Usage: python -m sparc.compression.sparc_multihead {fit,resynth,eval,summary}
+controls -- vocoder controls (see controls()): shipped output + time-shifted adapter error, shipped output shrunk to
+            the adapter's amplitude, and measured MNGU0 EMA (the shipped inverter's own speaker) mapped into its
+            output space.
+
+Usage: python -m sparc.compression.sparc_multihead {fit,resynth,controls,eval,summary}
 """
 
 import argparse
@@ -215,6 +219,108 @@ def resynth(n_libri=200):
     man_f.write_text(json.dumps(manifest))
 
 
+CONTROL_SYSTEMS = ("ship_err", "ship_shrink", "mngu0_ema")
+MNGU0_SHIFT = 1  # MNGU0 alignment = leading-silence end + the validation-chosen global shift of the WavLM probes
+
+
+def controls():
+    """Vocoder controls (rigor plan item 12): is the multi-speaker heads' failure with the shipped vocoder coupling to
+    the shipped inverter's output space, or just the size / kind of their error?
+
+    ship_err    -- shipped head output + the all-speaker 12x12 adapter's residual (adapter output - shipped output) of
+                   the same utterance, circularly shifted by half its length: same error magnitude and spectrum, but no
+                   longer aligned with the speech content (USC-TIMIT and LibriTTS items, as in resynth).
+    ship_shrink -- shipped head output with each channel's deviation from its utterance mean scaled by the adapter
+                   output's std / shipped output's std on that utterance (amplitude only).
+    mngu0_ema   -- oracle on the shipped inverter's own training speaker: measured MNGU0 EMA (mm) mapped into the
+                   shipped head's output space by a 12x12 linear map + bias fitted on MNGU0 training audio (shipped head
+                   output vs measured EMA, aligned), spliced over the aligned frames of each MNGU0 test utterance. Also
+                   'orig' and 'shipped' for MNGU0 (WER there is scored against Whisper's transcript of the original).
+    """
+    from sparc import load_model
+
+    from . import mngu0
+
+    coder = load_model("en", device="cuda")
+    inv = coder.inverter
+    Ws, bs = shipped_head(inv)
+    a = np.load(OUT / "head_all.npz")
+    man_f = OUT / "resynth_manifest.json"
+    manifest = json.loads(man_f.read_text())
+    done = {(m["system"], m["stem"]) for m in manifest}
+    # MNGU0 map: measured EMA (mm) -> shipped head output, on training audio
+    map_f = OUT / "mngu0_map.npz"
+    if map_f.exists():
+        mm = np.load(map_f)
+        M, r2 = mm["M"], mm["r2"]
+    else:
+        X, Y = [], []
+        for s in mngu0.stems_by_split()["train"]:
+            u = mngu0.load_utterance(s)
+            e = inverter_states(inv, str(mngu0.WAV_DIR / f"{s}.wav")).astype(np.float64) @ Ws + bs
+            t0 = u.base_offset + MNGU0_SHIFT
+            j0, t_from, t_to = max(0, -t0), max(0, t0), min(len(e), t0 + len(u.ema_mm))
+            if t_to - t_from > 2:
+                X.append(u.ema_mm[j0:j0 + t_to - t_from].astype(np.float64))
+                Y.append(e[t_from:t_to])
+        Xa = np.concatenate([np.concatenate(X), np.ones((sum(len(x) for x in X), 1))], 1)
+        Yc = np.concatenate(Y)
+        M = np.linalg.lstsq(Xa, Yc, rcond=None)[0]
+        r2 = 1 - ((Xa @ M - Yc) ** 2).sum(0) / ((Yc - Yc.mean(0)) ** 2).sum(0)
+        np.savez(map_f, M=M, r2=r2)
+    print("MNGU0 measured-EMA -> shipped-output map, R^2 per channel:", np.round(r2, 3).tolist(), flush=True)
+    # items: the USC-TIMIT and LibriTTS items already in the manifest, plus the MNGU0 test set
+    base = {}
+    for m in manifest:
+        if m["system"] == "orig" and (m["src"] == "libri" or (m["src"] == "ema" and m["speaker"].startswith("usc"))):
+            base[m["stem"]] = m
+    items = [(m["src"], m["speaker"], m["stem"], m["path"], m["text"]) for m in base.values()]
+    items += [("mngu0", "mngu0", s, str(mngu0.WAV_DIR / f"{s}.wav"), "") for s in mngu0.stems_by_split()["test"]]
+    for i, (src, spk, stem, path, text) in enumerate(items):
+        systems = ["orig", "shipped", "mngu0_ema"] if src == "mngu0" else ["ship_err", "ship_shrink"]
+        todo = [s for s in systems if (s, stem) not in done]
+        if not todo:
+            continue
+        code = coder.encode(path, seed=SEED)
+        st = inverter_states(inv, path).astype(np.float64)
+        e_s = st @ Ws + bs
+        out = {s: OUT / "wav" / s / spk / f"{stem}.wav" for s in systems}
+        ref = str(out["orig"]) if src == "mngu0" else base[stem]["path"]
+        for s in todo:
+            out[s].parent.mkdir(parents=True, exist_ok=True)
+            if s == "orig":
+                y, sr = sf.read(path)
+                sf.write(out[s], y, sr)
+                continue
+            if s == "shipped":
+                e = e_s
+            elif s == "ship_err":
+                e_a = st @ a["Wlin"] + a["blin"]
+                e = e_s + np.roll(e_a - e_s, len(e_s) // 2, axis=0)
+            elif s == "ship_shrink":
+                e_a = st @ a["Wlin"] + a["blin"]
+                r = e_a.std(0) / np.maximum(e_s.std(0), 1e-8)
+                e = e_s.mean(0) + (e_s - e_s.mean(0)) * r
+            else:  # mngu0_ema
+                u = mngu0.load_utterance(stem)
+                e = e_s.copy()
+                t0 = u.base_offset + MNGU0_SHIFT
+                j0, t_from, t_to = max(0, -t0), max(0, t0), min(len(e), t0 + len(u.ema_mm))
+                z = u.ema_mm[j0:j0 + t_to - t_from].astype(np.float64)
+                e[t_from:t_to] = np.concatenate([z, np.ones((len(z), 1))], 1) @ M
+            c = dict(code)
+            c["ema"] = e.astype(np.float32)[: len(code["ema"])]
+            sf.write(out[s], coder.decode(**c), coder.sr)
+        for s in todo:
+            manifest.append({"src": src, "speaker": spk, "stem": stem, "system": s, "path": str(out[s]), "ref": ref,
+                             "text": text})
+            done.add((s, stem))
+        if i % 25 == 0:
+            man_f.write_text(json.dumps(manifest))
+            print("controls", i, len(items), flush=True)
+    man_f.write_text(json.dumps(manifest))
+
+
 def _mcd(ref, deg, sr=16000):
     import librosa
     a = librosa.feature.mfcc(y=ref, sr=sr, n_mfcc=25, n_mels=80, hop_length=160, n_fft=1024)[1:]
@@ -300,15 +406,28 @@ def summary():
          "systems only, not on the usual dB scale). Mean over utterances.\n",
          "\nHead held-out articulation (rmse_z / PCC, ridge on layer 9, speaker never seen): " +
          ", ".join(f"{k[5:]} {v['heldout']['rmse_z']:.3f}/{v['heldout']['pcc']:.3f}" for k, v in heads.items() if "heldout" in v)]
-    for src in ("ema", "libri"):
+    import re
+
+    import jiwer
+
+    norm = lambda t: re.sub(r"[^a-z0-9' ]+", " ", t.lower()).split()  # noqa: E731
+    # MNGU0 has no transcripts here: WER of each system against Whisper's transcript of the original audio
+    orig_hyp = {k.split("|", 1)[1]: r["hyp"] for k, r in res.items() if r["src"] == "mngu0" and r["system"] == "orig"}
+    for k, r in res.items():
+        if r["src"] == "mngu0":
+            ref_w = norm(orig_hyp.get(k.split("|", 1)[1], ""))
+            r["n_words"] = len(ref_w)
+            r["wer"] = float(jiwer.wer(" ".join(ref_w), " ".join(norm(r["hyp"])))) if ref_w else None
+    for src in ("ema", "libri", "mngu0"):
         rows = [r for r in res.values() if r["src"] == src]
         wer_rows = [r for r in rows if not r["speaker"].startswith("5emo")]
         if not rows:
             continue
-        L.append(f"\n## {'EMA speakers (test sentences)' if src == 'ema' else 'LibriTTS-R test-clean (200 utterances)'}\n")
+        L.append("\n## " + {"ema": "EMA speakers (test sentences)", "libri": "LibriTTS-R test-clean (200 utterances)",
+                            "mngu0": "MNGU0 test set (shipped inverter's own speaker; WER vs Whisper on the original)"}[src] + "\n")
         L.append("| system | n | WER % | SIM | PESQ (n failed) | MCD dB |")
         L.append("|---|---|---|---|---|---|")
-        for s in ("orig", "shipped", "loso", "loso_lin", "all", "all_lin", "true_ema"):
+        for s in ("orig", "shipped", "loso", "loso_lin", "all", "all_lin", "true_ema") + CONTROL_SYSTEMS:
             rs = [r for r in rows if r["system"] == s]
             if not rs:
                 continue
@@ -332,9 +451,9 @@ def summary():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("fit", "resynth", "eval", "summary"))
+    ap.add_argument("cmd", choices=("fit", "resynth", "controls", "eval", "summary"))
     args = ap.parse_args()
-    {"fit": fit, "resynth": resynth, "eval": evaluate, "summary": summary}[args.cmd]()
+    {"fit": fit, "resynth": resynth, "controls": controls, "eval": evaluate, "summary": summary}[args.cmd]()
 
 
 if __name__ == "__main__":

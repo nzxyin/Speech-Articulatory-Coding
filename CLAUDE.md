@@ -479,6 +479,18 @@ and LibriTTS only (many EMA_5EMO reference texts are prompt codes such as digit 
   outputs (or an oracle-mapping test) is needed to show it. Either way, a multi-speaker inverter cannot be judged or
   deployed with the shipped vocoder as is.
 - The heads' held-out articulation is normal (rmse_z 0.64-0.88, PCC 0.61-0.78 per speaker, as the layer-9 probes).
+- Vocoder controls (2026-10-16, `sparc_multihead.py controls`; WER whisper-large-v3, USC-TIMIT / LibriTTS):
+  shipped outputs shrunk to the adapter's per-channel amplitude 9.9 % / 3.0 % (shipped 8.6 / 3.1): amplitude does
+  not matter. Shipped outputs plus the all-speaker adapter's own residual, circularly time-shifted (same error size
+  and spectrum, not aligned with the speech) 30.4 % / 9.9 % vs the adapter itself 38.8 % / 15.2 %: the size of the
+  error alone accounts for ~55-70 % of the degradation; the vocoder is very sensitive to output deviations of the size
+  a linear map from a multi-speaker head leaves (22-47 % unexplained variance). Oracle on the shipped inverter's own
+  speaker: measured MNGU0 EMA mapped into its output space (12x12 linear map, R^2 0.74-0.86 per channel, fitted on
+  training audio) gives 13.2 % WER vs 7.6 % for the shipped inverter (61 test utterances, WER vs Whisper on the
+  original). So the vocoder does accept real articulation of its training speaker -- it is not tied to the inverter's
+  outputs as such. The multi-speaker failure is mapping error of that size plus other speakers' different
+  articulatory space (their measured EMA, 145.7 %). Retraining the vocoder on the new inverter's output space is still
+  needed to deploy a multi-speaker inverter.
 
 ### Head screen: temporal inductive biases on frozen encoders (2026-10-14)
 Question (user): an extra transformer/attention head on WavLM is redundant with keeping another encoder layer, so a

@@ -91,6 +91,9 @@ All notable changes to this fork. Earlier history is in `git log`.
 - `rigor_extra`: alignment sensitivity (held-out targets shifted -2..2 frames against cached predictions; random +-1
   frame training offsets for probes), MNGU0 data curves (probe and LoRA via `train --train-limit`) and within-speaker
   probes on the multi-speaker corpora.
+- `sparc_multihead controls`: vocoder controls (shipped outputs + time-shifted adapter residual, shipped outputs
+  shrunk to the adapter's amplitude, measured MNGU0 EMA mapped into the shipped output space); `summary` scores MNGU0
+  WER against Whisper's transcript of the original.
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
