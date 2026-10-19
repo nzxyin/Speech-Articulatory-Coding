@@ -64,6 +64,9 @@ All notable changes to this fork. Earlier history is in `git log`.
   `eval_systems=long` (800k against the two 400k seeds of HiFi-GAN and Vocos), to test whether 400k steps suffice.
 - Results: sections 3.1 (test.other), 4.1 (run-to-run variation, second seeds) and 6.1 (compute and training length)
   of `docs/vocoders/RESULTS.md`; tables in `docs/vocoders/results/{test.other,seeds}/` and `results/convergence.md`.
+- Results: section 6.1.3 of `docs/vocoders/RESULTS.md` (the 800k runs of HiFi-GAN and Vocos against the two 400k
+  seeds), with the summary, open questions and reproducibility notes updated; tables in `docs/vocoders/results/long/`
+  and section 3 of `results/convergence.md`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).

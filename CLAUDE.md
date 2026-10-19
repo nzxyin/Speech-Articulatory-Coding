@@ -11,7 +11,8 @@ periodicity), the same speaker conditioning (FiLM from a SPARC speaker embedding
 and the same training recipe and budget. The EMA comes from the per-utterance MNGU0 refit of the linear AAI head
 (`linear_aai_mngu0_refit_peralign.pkl`), not from the head embedded in the `en+` checkpoint.
 
-Status (2026-10-14): all three phases and the follow-ups (test.other, second seeds, X-Y probes) are done; 800k runs are training. The three primary runs (400k generator steps, fp32, one GPU each) and 12
+Status (2026-10-19): all three phases and the follow-ups (test.other, second seeds, X-Y probes, 800k runs of HiFi-GAN
+and Vocos) are done; no runs are pending. The three primary runs (400k generator steps, fp32, one GPU each) and 12
 ablation runs (100k steps) are trained, and the Phase 3 evaluation on test.clean is complete (code `sparc.vocoders.eval`,
 contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.md`; tables are in
 `docs/vocoders/results/`. Large outputs (checkpoints, audio, per-utterance results, samples, failure cases) are under
@@ -29,15 +30,21 @@ contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.
   edits of a sensor does not help; time-varying edits and the direction within a sensor do (best about 0.57).
 - Compute: Vocos uses 11.5 times fewer FLOPs than HiFi-GAN and is 7-10 times faster at inference, but only 1.5 times
   faster to train; the SPARC feature extractor dominates the end-to-end cost.
-- Training length: DDSP has converged at 400k steps; Vocos is about 2 percent and HiFi-GAN 3-8 percent above their fitted
-  dev mel L1 asymptotes. 800k-step runs of HiFi-GAN and Vocos are running (issue #28).
+- Training length (one 800k run each of HiFi-GAN and Vocos, against both 400k seeds; RESULTS.md section 6.1.3): HiFi-GAN
+  followed the projection (dev mel L1 -0.0075; UTMOS 4.207, equal to the ground truth; every metric except WER, CER and
+  Sim spk robustly better) and is still about 3 percent above its fitted asymptote. Vocos gained less than projected and
+  mostly within its seed spread (UTMOS 3.97; within about 1 percent of its asymptote). DDSP had converged at 400k by
+  projection and was not run longer. The HiFi-GAN lead holds at equal steps (UTMOS +0.24 at 800k) and at about equal
+  training compute (Vocos 800k, 46 GPU-hours, against HiFi-GAN 400k, about 34: UTMOS +0.19). Vocos at 800k is ahead of
+  DDSP at 400k on UTMOS by about 0.14 (supported against both DDSP seeds; single run).
 - Ablations at 100k: Vocos option B beats A; MSD instead of MRD does not change the ranking; the native SPARC recipe
   raises UTMOS but worsens mel L1, PESQ and WER; at about 6 M parameters the HiFi-GAN lead over DDSP is not supported.
 
 ## Measurements so far
 
 - fp32 train step at the main shape (batch 16 × 64 frames, RTX 6000 Ada, `cudnn.benchmark` off): HiFi-GAN 304 ms,
-  DDSP 236 ms, Vocos 214 ms (bf16: about 120-160 ms). A 400k-step run is about 24-34 GPU-hours in fp32.
+  DDSP 236 ms, Vocos 214 ms (bf16: about 120-160 ms). A 400k-step run is about 24-34 GPU-hours in fp32; the 800k-step
+  runs took 69.7 (HiFi-GAN) and 45.9 (Vocos) GPU-hours of wall time including restarts.
 - Feature extraction: about 144 s per audio hour on an L40 (batch size 1), about 23 GPU-hours for all 572 h.
 - Overfit regime (4 utterances, 4k steps): final mel L1 HiFi-GAN 0.18, DDSP 0.29 (plateaus from about 2k steps),
   Vocos 0.08; HiFi-GAN output about 3 dB quieter than the reference at that point.
