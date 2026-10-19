@@ -665,6 +665,23 @@ lr from the head screen, LoRA lr on validation; 3 seeds x 7 folds). Every fold c
   -0.013 to -0.020 rmse_z for the heads). 0.5 s pieces: same pattern, encoder +0.052 to +0.095. So chunked or
   streaming use needs encoder context (overlapping windows / left context), not a different head or filter.
 
+### Deployable WavLM Large k12 + BiGRU->conv 9 inverters (2026-10-19)
+`final_models.py` (`/data/user_data/xoy/xlsr_ema/final_models/{summary.md,mngu0,all7}`; checkpoints
+`frozen_k12_gruconv9_s{0,1,2}.pt` hold the head state_dict, layer, shift, target mean/std and feature setting; LoRA runs
+under `adapt/wavlm-large/prefix12_..._gruconv_k9_nosm_m0.0002_s{0,1,2}`). 3 seeds, test sets, mean +/- sd:
+| model | data | test RMSE | rmse_z | PCC |
+|---|---|---|---|---|
+| frozen encoder + BiGRU->conv (head lr 1e-4, shift 1) | MNGU0 | 0.768 +/- 0.002 mm | 0.371 | 0.929 |
+| LoRA r8 + BiGRU->conv, matched pipeline (LoRA lr 2e-4 from {2e-4, 5e-4, 1e-3}) | MNGU0 | 0.745 +/- 0.001 mm | - | 0.933 |
+| frozen encoder + BiGRU->conv (head lr 3e-4, shift 1) | all 7 multi-speaker speakers (seen) | - | 0.574 +/- 0.005 | 0.804 |
+- MNGU0: the frozen k12 head is within 0.015 mm of the best earlier adapted model (WavLM k9 LoRA + causal conv 0.753);
+  LoRA at k12 gives 0.745 mm / 0.933, the best WavLM result on MNGU0 (XLS-R 300M k18 LoRA + causal conv 0.739 at 1.37x
+  the FLOPs). Within one speaker LoRA still helps (-0.023 mm), unlike under speaker shift. The frozen head chose the
+  smallest head lr in its grid (1e-4), so it may be slightly under-tuned.
+- All seven speakers (the deployable multi-speaker inverter; seen speakers' test sentences): per speaker rmse_z / PCC
+  USC F1 0.463 / 0.902, F5 0.436 / 0.902, M1 0.613 / 0.864, M3 0.574 / 0.847; EMA_5EMO jn 0.667 / 0.726, jr 0.540 /
+  0.740, kf 0.555 / 0.756. Not a held-out number; LOSO above is the new-speaker estimate.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
