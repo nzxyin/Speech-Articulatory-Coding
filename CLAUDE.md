@@ -676,8 +676,9 @@ under `adapt/wavlm-large/prefix12_..._gruconv_k9_nosm_m0.0002_s{0,1,2}`). 3 seed
 | frozen encoder + BiGRU->conv (head lr 3e-4, shift 1) | all 7 multi-speaker speakers (seen) | - | 0.574 +/- 0.005 | 0.804 |
 - MNGU0: the frozen k12 head is within 0.015 mm of the best earlier adapted model (WavLM k9 LoRA + causal conv 0.753);
   LoRA at k12 gives 0.745 mm / 0.933, the best WavLM result on MNGU0 (XLS-R 300M k18 LoRA + causal conv 0.739 at 1.37x
-  the FLOPs). Within one speaker LoRA still helps (-0.023 mm), unlike under speaker shift. The frozen head chose the
-  smallest head lr in its grid (1e-4), so it may be slightly under-tuned.
+  the FLOPs). Within one speaker LoRA still helps (-0.023 mm), unlike under speaker shift. The frozen head's lr (1e-4)
+  was at the edge of the head-screen grid; an extended grid {1e-5, 3e-5, 1e-4, 3e-4} (tag `lrx`) picks 1e-4 again with
+  identical test scores, so it is not under-tuned.
 - All seven speakers (the deployable multi-speaker inverter; seen speakers' test sentences): per speaker rmse_z / PCC
   USC F1 0.463 / 0.902, F5 0.436 / 0.902, M1 0.613 / 0.864, M3 0.574 / 0.847; EMA_5EMO jn 0.667 / 0.726, jr 0.540 /
   0.740, kf 0.555 / 0.756. Not a held-out number; LOSO above is the new-speaker estimate.
