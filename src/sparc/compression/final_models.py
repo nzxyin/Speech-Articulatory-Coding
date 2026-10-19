@@ -58,7 +58,8 @@ def _scores(P, Y, ys_train):
     return {"rmse": r["rmse_z"], "rmse_z": float((rmse_c / ys_train).mean()), "pcc": r["pcc"]}
 
 
-def frozen(dataset, device=None):
+def frozen(dataset, device=None, lrs=None, tag=""):
+    """lrs: learning-rate grid (default head_screen.LRS); tag: suffix for the result / checkpoint files."""
     import torch
 
     from .head_screen import LRS, choose_shift, predict, train_one
@@ -68,7 +69,9 @@ def frozen(dataset, device=None):
     ds, feats, index, sp, utts = _data(dataset)
     out_d = OUT / dataset
     out_d.mkdir(parents=True, exist_ok=True)
-    res_f = out_d / f"frozen_k{K}_{HEAD}.json"
+    sfx = f"_{tag}" if tag else ""
+    lrs = tuple(lrs) if lrs else LRS
+    res_f = out_d / f"frozen_k{K}_{HEAD}{sfx}.json"
     res = json.loads(res_f.read_text()) if res_f.exists() else {}
     if "shift" not in res:
         res["shift"] = int(choose_shift(feats, index, utts, sp, device, shifts=range(-2, 5)))
@@ -96,12 +99,12 @@ def frozen(dataset, device=None):
                     "features": "hidden_states[12], zero-phase 10 Hz low-pass over the whole utterance (extract.lowpass)",
                     "targets": "mm (MNGU0)" if dataset == "mngu0" else "per-normalization-group z (multi-speaker)",
                     "make_head": "sparc.compression.head_screen.make_head('gruconv9', 1024, smooth=False)"},
-                   out_d / f"frozen_k{K}_{HEAD}_s{s}.pt")
+                   out_d / f"frozen_k{K}_{HEAD}{sfx}_s{s}.pt")
         return rec
 
     if "lr" not in res:
         trials, best = {}, None
-        for lr in LRS:
+        for lr in lrs:
             head, v = train_one(HEAD, False, lr, data, ym, ys, device, seed=0)
             trials[str(lr)] = v
             if head is not None and (best is None or v < best[0]):
@@ -191,9 +194,11 @@ def main():
     ap.add_argument("cmd", choices=("frozen", "lora-lr", "lora-seeds", "summary"))
     ap.add_argument("--dataset", choices=("mngu0", "all7"))
     ap.add_argument("--lr", type=float)
+    ap.add_argument("--lrs", default="", help="frozen: comma-separated learning-rate grid (default head_screen's)")
+    ap.add_argument("--tag", default="", help="frozen: suffix for result and checkpoint files")
     a = ap.parse_args()
     if a.cmd == "frozen":
-        frozen(a.dataset)
+        frozen(a.dataset, lrs=[float(x) for x in a.lrs.split(",") if x], tag=a.tag)
     elif a.cmd == "lora-lr":
         lora_train(a.lr, 0)
     elif a.cmd == "lora-seeds":
