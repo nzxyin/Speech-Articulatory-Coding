@@ -94,6 +94,9 @@ All notable changes to this fork. Earlier history is in `git log`.
 - `sparc_multihead controls`: vocoder controls (shipped outputs + time-shifted adapter residual, shipped outputs
   shrunk to the adapter's amplitude, measured MNGU0 EMA mapped into the shipped output space); `summary` scores MNGU0
   WER against Whisper's transcript of the original.
+- `final_models`: deployable WavLM Large k12 + BiGRU->conv 9 inverters with saved checkpoints (frozen encoder on
+  MNGU0 and on all seven multi-speaker speakers, 3 seeds, shift and learning rate chosen on validation; MNGU0 LoRA in
+  the matched pipeline with a {2e-4, 5e-4, 1e-3} LoRA learning-rate grid).
 
 ### Fixed
 - `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
