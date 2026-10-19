@@ -637,7 +637,7 @@ lr from the head screen, LoRA lr on validation; 3 seeds x 7 folds). Every fold c
 |---|---|---|---|---|---|---|
 | T1 | matched LoRA vs frozen BiGRU->conv | PCC | +0.010 | [+0.001, +0.021] | 6/7 | 0.078 (n.s.) |
 | T2 | matched vs original-pipeline LoRA | rmse_z | +0.005 | [-0.021, +0.032] | 3/7 | 0.69 (n.s.) |
-(N1 pending; Holm will be over T1, T2, N1.)
+(N1 and the Holm correction over T1, T2, N1: see the summary at the top of this section.)
 - With identical pipelines LoRA adds at most ~+0.01 PCC over a frozen BiGRU->conv head (not significant; bootstrap
   interval barely excludes 0) and still loses 0.021 rmse_z (3/7). Its rmse_z deficit is not a pipeline artifact (T2 ~0):
   the pipeline changes only PCC (+0.005, 6/7) and centered rmse_z (+0.008, 7/7). LoRA's extra error is per-utterance
