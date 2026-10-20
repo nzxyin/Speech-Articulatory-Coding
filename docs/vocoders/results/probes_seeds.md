@@ -1,4 +1,4 @@
-# Controllability probes: seed 0 against seed 1 (2026-10-20)
+# Probes: seed 0 against seed 1 (2026-10-20)
 
 Question: do the controllability findings of RESULTS.md section 5.2 (measured on the seed-0 runs) hold for the second
 training seed of each vocoder?
@@ -139,6 +139,44 @@ Per-channel EMA gain: 10 of 36 channel-pair differences are robust: TDY Vocos - 
   reproduced with slope near 1. The vocoders differ by a few hundredths at most. The cause is still untested, apart from
   the X-Y probes of section 5.3.
 - **Not repeated for seed 1:** the principal-component probe of `controllability.md` section 6 (6 utterances, CPU). The
-  paired X-Y probes (stage `probes_xy`) for seed 1 are queued (job 10865560, submitted 2026-10-20; tracking issue nzxyin/Speech-Articulatory-Coding#30). Their comparison with
-  seed 0 will be in `xy_probes_seeds.md` (script `scripts/xy_probes_seeds.py`; its self-test with the seed-0 outputs under
-  both names reproduces the seed-0 report and gives zero seed differences, `xy_probes_seeds_selftest.md`).
+  paired X-Y probes are in the next section.
+
+## Paired X-Y probes (stage `probes_xy`), seed 0 against seed 1 (added 2026-10-20)
+
+Basis. Job 10865560 (submitted through slurm-alloc 2026-10-20; tracking issue nzxyin/Speech-Articulatory-Coding#30) ran
+`probes_xy` for hifigan_s1, ddsp_s1 and vocos_s1: 192 edits each (6 sensors x 4 directions x 4 profiles x 2 signs) on the
+same 50 utterances, finished 12:49 after a failed GPU start and one preemption on `preempt` (resumed from finished
+chunks; a last restart on `general` found every item done). Outputs `$SV_ROOT/eval/probes_xy/<system>_s1/`. Reports: `xy_probes_s1.md` and
+`xy_probes_long_s1.csv` (the seed-0 report script with `--systems hifigan_s1 ddsp_s1 vocos_s1 --matrix
+natural_variation_matrix_s1.npz`), and the comparison `xy_probes_seeds.md` / `.csv` (script `scripts/xy_probes_seeds.py`,
+the same speaker resamples for all six systems, so seed and vocoder differences are paired; its self-test with the
+seed-0 outputs under both names, `xy_probes_seeds_selftest.md`, reproduces the seed-0 report with zero seed differences).
+
+Reading (numbers from `xy_probes_seeds.md` unless stated):
+
+- **Gains barely move between seeds.** Each of the 48 headline gains (16 profile-direction cells, mean over sensors, three
+  vocoders) changes by 0.010 or less between the seeds.
+- **Pairing still does not help.** Paired principal minus X only and minus Y only (constant offsets) lie between -0.014 and
+  +0.004 in seed 1, against -0.015 and +0.004 in seed 0. The largest positive value is +0.004 in both seeds. The signs of
+  these near-zero contrasts are not stable between the seeds (for HiFi-GAN principal minus X only is +0.004 in seed 0 and
+  -0.007 in seed 1, both with intervals excluding 0), so the strict replication criterion of the table fails for them. The
+  conclusion that a paired edit is not followed better does replicate.
+- **Time course still matters.** Dynamic scaling and local bumps are followed better than constant offsets in both seeds
+  (seed 1: +0.053 to +0.127 for the three vocoders, against +0.059 to +0.137 in seed 0). Restricting the offset to speech frames adds
+  +0.005 to +0.015 (seed 0: +0.007 to +0.015). All six of these contrasts replicate with the same sign and intervals
+  excluding 0.
+- **Direction within a sensor still matters.** Under dynamic scaling, tongue body along its principal axis gives 0.55,
+  0.46 and 0.55 (HiFi-GAN, DDSP, Vocos; seed 0: 0.57, 0.44, 0.54), and X alone gives 0.05, -0.02 and 0.07 (seed 0: 0.07,
+  0.00, 0.06). The tongue tip follows X (0.35 to 0.39) and its orthogonal direction (0.35 to 0.36) but not its principal
+  axis (0.12 to 0.13). Shrinking movement (alpha = -0.5) is followed with gain 0.27 to 0.30 and exaggerating it with 0.09
+  to 0.11, as in seed 0.
+- **Leakage and noise are unchanged.** Leakage into the other sensors is 0.25 to 0.49 std in seed 1 (seed 0: 0.25 to 0.49)
+  against a regression prediction of 0.02 to 0.05. It exceeds the on-target gain in 91 to 95 of the 96 cells per system in
+  both seeds (`xy_probes_s1.md` section 1.2, `xy_probes_long*.csv`).
+- **Robust vocoder differences.**
+  - HiFi-GAN follows the X-Y edits more than DDSP in all five tested cells. These are constant principal, constant X,
+    dynamic principal, bumps principal and the mean of all 16 cells, with differences of 0.012 to 0.034.
+  - Vocos follows them more than DDSP in four of the five (0.006 to 0.040; not constant X only).
+  - HiFi-GAN against Vocos is robust only for the constant principal edit (+0.010 and +0.007). It is not robust for the
+    mean of all cells (+0.001 in both seeds).
+  - As for the single-channel probes, all of these differences are a few hundredths, against gains of 0.1 to 0.6.

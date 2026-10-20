@@ -67,8 +67,8 @@ All notable changes to this fork. Earlier history is in `git log`.
 - Results: section 6.1.3 of `docs/vocoders/RESULTS.md` (the 800k runs of HiFi-GAN and Vocos against the two 400k
   seeds), with the summary, open questions and reproducibility notes updated; tables in `docs/vocoders/results/long/`
   and section 3 of `results/convergence.md`.
-- Results: seed-1 controllability probes and natural-variation baseline in section 5.2 of `docs/vocoders/RESULTS.md`
-  and `docs/vocoders/results/probes_seeds.md`.
+- Results: seed-1 controllability probes and natural-variation baseline (section 5.2 of `docs/vocoders/RESULTS.md`) and
+  seed-1 X-Y probes (section 5.3); `docs/vocoders/results/{probes_seeds,xy_probes_seeds,xy_probes_s1}.md`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).

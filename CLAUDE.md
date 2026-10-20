@@ -11,7 +11,7 @@ periodicity), the same speaker conditioning (FiLM from a SPARC speaker embedding
 and the same training recipe and budget. The EMA comes from the per-utterance MNGU0 refit of the linear AAI head
 (`linear_aai_mngu0_refit_peralign.pkl`), not from the head embedded in the `en+` checkpoint.
 
-Status (2026-10-19): all three phases and the follow-ups (test.other, second seeds, X-Y probes, 800k runs of HiFi-GAN
+Status (2026-10-20): all three phases and the follow-ups (test.other, second seeds with their probes, X-Y probes, 800k runs of HiFi-GAN
 and Vocos) are done; no runs are pending. The three primary runs (400k generator steps, fp32, one GPU each) and 12
 ablation runs (100k steps) are trained, and the Phase 3 evaluation on test.clean is complete (code `sparc.vocoders.eval`,
 contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.md`; tables are in
@@ -28,7 +28,8 @@ contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.
   loudness errors. The HiFi-GAN-DDSP F0 ordering and the Vocos-DDSP UTMOS ordering are not robust.
 - F0 and loudness edits are followed closely; single EMA channel edits are not (gain about 0.1). Both replicate in the
   second seed (RESULTS.md section 5.2); HiFi-GAN and Vocos follow EMA edits slightly more than DDSP (by about 0.02, robust). Pairing the X and Y
-  edits of a sensor does not help; time-varying edits and the direction within a sensor do (best about 0.57).
+  edits of a sensor does not help; time-varying edits and the direction within a sensor do (best about 0.57); the X-Y
+  findings also replicate in the second seed (section 5.3).
 - Compute: Vocos uses 11.5 times fewer FLOPs than HiFi-GAN and is 7-10 times faster at inference, but only 1.5 times
   faster to train; the SPARC feature extractor dominates the end-to-end cost.
 - Training length (one 800k run each of HiFi-GAN and Vocos, against both 400k seeds; RESULTS.md section 6.1.3): HiFi-GAN
