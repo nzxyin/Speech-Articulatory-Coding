@@ -105,7 +105,11 @@ uv run sparc-decode dataset=vctk                  # resynthesize wavs from extra
 
 `dataset` and `model` are Hydra config groups defined in `src/sparc/conf/dataset` and
 `src/sparc/conf/model`; add a new YAML file there (with `wav_dir`, `save_dir`, `decode_dir`) to
-support another dataset. On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
+support another dataset. `sparc-encode` skips utterances whose outputs already exist and records the
+model, config, head (with its sha256) and `deterministic_pitch` in `<save_dir>/encode_meta.json` when it
+starts on an empty `save_dir`. Re-running with different settings against that `save_dir` exits with an
+error (override with `allow_meta_mismatch=true`); `save_dir`s with outputs but no manifest only get a warning.
+On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
 the same CLIs — see the usage comments at the top of each script for single-dataset and
 array-job invocations.
 
