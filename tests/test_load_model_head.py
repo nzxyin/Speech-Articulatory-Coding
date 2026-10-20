@@ -69,11 +69,14 @@ def test_hydra_model_linear_model_path_reaches_load_model(tmp_path, monkeypatch)
 
     monkeypatch.setattr(encode, "load_model", fake_load_model)
     run = encode.main.__wrapped__  # the undecorated function, called with a composed config
-    base = ["dataset=esd", f"dataset.save_dir={tmp_path}", "device=cpu"]
+    head = tmp_path / "head.pkl"
+    head.write_bytes(b"not loaded")  # sparc-encode hashes it for encode_meta.json
     with initialize_config_module(config_module="sparc.conf", version_base=None):
-        for override in (None, "/some/head.pkl"):
+        for i, override in enumerate((None, str(head))):
             calls.clear()
-            overrides = base + ([f"model.linear_model_path={override}"] if override else [])
+            # separate save_dirs: encode_meta.json would reject the second setting in the first dir
+            overrides = ["dataset=esd", f"dataset.save_dir={tmp_path / f'out{i}'}", "device=cpu"]
+            overrides += [f"model.linear_model_path={override}"] if override else []
             cfg = compose(config_name="config", overrides=overrides)
             assert cfg.model.model_name == "en+"
             with pytest.raises(_Stop):

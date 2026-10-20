@@ -16,14 +16,27 @@ from sparc.training.lightning_module import SparcVocoderTraining, batches_to_glo
 
 
 # Wrappers around this module may overwrite SLURM_JOB_NAME (e.g. to "interactive") before calling
-# main(); remember the job name as it was at import. setdefault keeps the parent's value in DDP children.
+# main(); remember the job name as it was at import, as "<job id>:<name>". DDP children inherit and keep
+# the parent's value; a job submitted from inside this one (sbatch exports the environment) has another
+# job id and ignores it.
 _ORIG_JOB_NAME_ENV = "SPARC_ORIG_SLURM_JOB_NAME"
-os.environ.setdefault(_ORIG_JOB_NAME_ENV, os.environ.get("SLURM_JOB_NAME", ""))
+
+
+def _captured_job_name() -> str | None:
+    prefix = os.environ.get("SLURM_JOB_ID", "") + ":"
+    stored = os.environ.get(_ORIG_JOB_NAME_ENV, "")
+    return stored[len(prefix):] if stored.startswith(prefix) else None
+
+
+if _captured_job_name() is None:
+    os.environ[_ORIG_JOB_NAME_ENV] = f"{os.environ.get('SLURM_JOB_ID', '')}:{os.environ.get('SLURM_JOB_NAME', '')}"
 
 
 def _under_slurm_batch() -> bool:
     """True inside an sbatch job; False in salloc/srun-interactive shells and outside SLURM."""
-    name = os.environ.get(_ORIG_JOB_NAME_ENV, os.environ.get("SLURM_JOB_NAME"))
+    name = _captured_job_name()
+    if name is None:
+        name = os.environ.get("SLURM_JOB_NAME")
     return "SLURM_JOB_ID" in os.environ and name not in ("bash", "interactive")
 
 

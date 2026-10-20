@@ -90,16 +90,24 @@ def test_shipped_config_use_penn_false():
     assert cfg["use_penn"] is False
 
 
-def test_use_penn_does_not_warn(caplog):
+def test_use_penn_logs_instead_of_warning(caplog):
+    import yaml
     from sparc import load_model
+    from sparc.sparc import download_huggingface, model_name_map
+    name = model_name_map["en+"]
     try:
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            with caplog.at_level(logging.INFO, logger="sparc.sparc"):
-                load_model("en+", device="cpu")
-    except Exception as e:
+        config_path = download_huggingface(f"{name}.yaml")
+        download_huggingface(f"{name}.ckpt")
+    except Exception as e:  # checkpoint/network unavailable
         pytest.skip(f"en+ checkpoint unavailable: {e}")
+    hub_use_penn = bool(yaml.safe_load(Path(config_path).read_text()).get("use_penn"))
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        with caplog.at_level(logging.INFO, logger="sparc.sparc"):
+            load_model("en+", device="cpu")
     assert not [x for x in w if "use_penn" in str(x.message)]
+    # the hub config sets use_penn: true, which is now reported at info level
+    assert any("use_penn" in r.getMessage() for r in caplog.records) == hub_use_penn
 
 
 def _fake_sparc_dir(root, subdirs):

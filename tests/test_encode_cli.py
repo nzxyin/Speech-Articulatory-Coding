@@ -141,6 +141,18 @@ def test_manifest_head_content_change_detected(tmp_path, monkeypatch):
         encode_cli.run(_cfg(tmp_path, linear_model_path=str(head)))
 
 
+def test_manifest_same_head_under_another_path(tmp_path, monkeypatch):
+    _wavs(tmp_path)
+    head = tmp_path / "head.pkl"
+    head.write_bytes(b"abc")
+    copy = tmp_path / "copy_of_head.pkl"
+    copy.write_bytes(b"abc")
+    _patch(monkeypatch, FakeCoder())
+    encode_cli.run(_cfg(tmp_path, linear_model_path=str(head)))
+    encode_cli.run(_cfg(tmp_path, linear_model_path=str(copy)))  # same sha256: not a mismatch
+    assert not list((tmp_path / "out").glob(".*.tmp"))
+
+
 def test_legacy_dir_warns_without_manifest(tmp_path, monkeypatch, capsys):
     _wavs(tmp_path)
     save = tmp_path / "out"

@@ -211,7 +211,7 @@ stateful, so a resumed run reshuffles instead of replaying the exact sample orde
 #### 5. Listen to samples
 
 ```
-uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples]
+uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples] [device] [spk_raw_subdir]
 ```
 
 Synthesizes standalone wav files from a trained checkpoint for qualitative listening outside

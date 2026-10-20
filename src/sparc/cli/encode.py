@@ -52,6 +52,7 @@ def _atomic_save(path, array):
 
 
 META_NAME = "encode_meta.json"
+_INFO_ONLY_KEYS = {"linear_model_path"}
 
 
 def _sha256(path):
@@ -65,6 +66,8 @@ def _sha256(path):
 def _encode_meta(cfg):
     """The settings that determine the cached outputs."""
     linear_model_path = cfg.model.get("linear_model_path")
+    if linear_model_path is not None and not Path(linear_model_path).is_file():
+        sys.exit(f"Error: model.linear_model_path={linear_model_path} does not exist")
     return {
         "model_name": str(cfg.model.model_name),
         "config_path": None if cfg.model.get("config_path") is None else str(cfg.model.config_path),
@@ -79,8 +82,10 @@ def _check_meta(save_dir, meta, allow_mismatch=False):
     meta_path = save_dir / META_NAME
     if meta_path.exists():
         old = json.loads(meta_path.read_text())
-        if old != meta:
-            diff = {k: (old.get(k), meta.get(k)) for k in sorted(set(old) | set(meta)) if old.get(k) != meta.get(k)}
+        # the head is identified by its sha256; the same file under another path is not a mismatch
+        keys = sorted((set(old) | set(meta)) - _INFO_ONLY_KEYS)
+        diff = {k: (old.get(k), meta.get(k)) for k in keys if old.get(k) != meta.get(k)}
+        if diff:
             msg = (f"{meta_path} does not match the current settings (key: (stored, current)): {diff}. "
                    "Use a different dataset.save_dir, or set allow_meta_mismatch=true to mix outputs.")
             if not allow_mismatch:
@@ -92,7 +97,7 @@ def _check_meta(save_dir, meta, allow_mismatch=False):
         print(f"Warning: {save_dir} already has outputs but no {META_NAME}; cannot check that they were "
               "produced with the current settings.", file=sys.stderr)
         return
-    tmp_path = meta_path.with_name(f".{META_NAME}.tmp")
+    tmp_path = meta_path.with_name(f".{META_NAME}.{os.getpid()}.tmp")  # concurrent array tasks
     tmp_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
     os.replace(tmp_path, meta_path)
 

@@ -140,12 +140,15 @@ def test_resume_discovery_and_run_name():
         assert train_cli._resolve_run_name(cfg) is None
         os.environ.update(SLURM_JOB_ID="123", SLURM_JOB_NAME="sparc_train")
         assert train_cli._resolve_run_name(cfg) == "slurm_123"
-        # a genuinely interactive job: the name captured at import is what counts
-        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "interactive"
+        # a genuinely interactive job: the name captured at import (for this job id) is what counts
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "123:interactive"
         assert train_cli._resolve_run_name(cfg) is None
-        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "bash"
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "123:bash"
         assert not train_cli._under_slurm_batch()
-        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "sparc_train"
+        # a value captured in another job (inherited through sbatch's exported environment) is ignored
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "999:interactive"
+        assert train_cli._resolve_run_name(cfg) == "slurm_123"
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "123:sparc_train"
         assert train_cli._resolve_run_name(SimpleNamespace(run_name="x")) == "x"
         # importing the CLI must not overwrite SLURM_JOB_NAME (that disabled Lightning's requeue plugin)
         assert os.environ["SLURM_JOB_NAME"] == "sparc_train"
@@ -170,6 +173,12 @@ def test_job_name_spoof_does_not_disable_batch_mode():
         # a DDP child re-imports with the spoofed name but inherits the captured one
         importlib.reload(train_cli)
         assert train_cli._under_slurm_batch()
+        assert os.environ["SPARC_ORIG_SLURM_JOB_NAME"] == "456:sparc_train"
+        # a job submitted from inside this one inherits the variable but has another job id
+        os.environ.update(SLURM_JOB_ID="789", SLURM_JOB_NAME="interactive")
+        importlib.reload(train_cli)
+        assert not train_cli._under_slurm_batch()
+        assert os.environ["SPARC_ORIG_SLURM_JOB_NAME"] == "789:interactive"
         # genuinely interactive jobs stay non-batch
         for name in ("interactive", "bash"):
             os.environ.pop("SPARC_ORIG_SLURM_JOB_NAME", None)
