@@ -65,6 +65,9 @@ class BaseExtractor(object):
         if isinstance(wav, np.ndarray):
             assert len(wav.shape)==1
             if self.normalize:
+                # Per-utterance z-scoring makes everything computed from this waveform (including
+                # the cached loudness) invariant to recording level/gain, by design. Gain
+                # augmentation therefore needs a loudness computed without normalization.
                 wav = (wav-wav.mean())/wav.std()
             return wav
         wav,sr = sf.read(wav)
@@ -73,6 +76,9 @@ class BaseExtractor(object):
         if sr != self.sr:
             wav = librosa.resample(wav, orig_sr=sr, target_sr=self.sr)
         if self.normalize:
+            # Per-utterance z-scoring makes everything computed from this waveform (including
+            # the cached loudness) invariant to recording level/gain, by design. Gain
+            # augmentation therefore needs a loudness computed without normalization.
             wav = (wav-wav.mean())/wav.std()
         return wav
     

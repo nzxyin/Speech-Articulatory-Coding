@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import numpy as np
 import torchcrepe
@@ -43,7 +45,7 @@ class SourceExtractor(BaseExtractor):
         self.device = device
         self.intensity_model = self.intensity_model.to(device)
         
-    def _run_crepe(self, wavs):
+    def _run_crepe(self, wavs, seed=None, return_lengths=False):
 
         def _reshape(arr,q):
             b = arr.shape[0]
@@ -55,26 +57,38 @@ class SourceExtractor(BaseExtractor):
 
         pitches = []
         periodicities = []
-        with torch.no_grad():
-            for wi in range(len(wavs)):
-                wav = wavs.input_values[wi][:wavs.input_lens[wi]].unsqueeze(0)
-                pitch, periodicity = torchcrepe.predict(wav,
-                                               self.sr,
-                                               self.pitch_hop_length,
-                                               self.fmin,
-                                               self.fmax,
-                                               self.crepe_model,
-                                               batch_size=2048,
-                                               device=self.device,
-                                               return_periodicity=True)
-                pitch = _reshape(pitch, self.q) if self.q>1 else pitch
-                periodicity = _reshape(periodicity, self.q) if self.q>1 else periodicity
-                periodicity = self._threshold_periodicity(periodicity)
-                pitches.append(pitch[0])
-                periodicities.append(periodicity[0])
+        # torchcrepe dithers decoded pitch with the global numpy RNG; a given seed makes each
+        # utterance's pitch reproducible (the RNG state is restored afterwards).
+        rng_state = np.random.get_state() if seed is not None else None
+        try:
+            with torch.no_grad():
+                for wi in range(len(wavs)):
+                    wav = wavs.input_values[wi][:wavs.input_lens[wi]].unsqueeze(0)
+                    if seed is not None:
+                        np.random.seed(seed)
+                    pitch, periodicity = torchcrepe.predict(wav,
+                                                   self.sr,
+                                                   self.pitch_hop_length,
+                                                   self.fmin,
+                                                   self.fmax,
+                                                   self.crepe_model,
+                                                   batch_size=2048,
+                                                   device=self.device,
+                                                   return_periodicity=True)
+                    pitch = _reshape(pitch, self.q) if self.q>1 else pitch
+                    periodicity = _reshape(periodicity, self.q) if self.q>1 else periodicity
+                    periodicity = self._threshold_periodicity(periodicity)
+                    pitches.append(pitch[0])
+                    periodicities.append(periodicity[0])
         
+        finally:
+            if rng_state is not None:
+                np.random.set_state(rng_state)
         pitches = torch.nn.utils.rnn.pad_sequence(pitches, batch_first=True, padding_value=0.0).cpu().numpy()
+        lengths = np.array([len(p) for p in periodicities])
         periodicities = torch.nn.utils.rnn.pad_sequence(periodicities, batch_first=True, padding_value=0.0).cpu().numpy()
+        if return_lengths:
+            return pitches, periodicities, lengths
         return pitches, periodicities
 
     def _threshold_periodicity(self, periodicity):
@@ -98,7 +112,15 @@ class SourceExtractor(BaseExtractor):
             periodicities[loudness<self.loudness_threshold] = 0.0 
         return periodicities
     
-    def _pitch_stats(self, pitch, periodicity):
+    def _pitch_stats(self, pitch, periodicity, length=None):
+        if periodicity.sum() == 0:
+            # Every periodicity weight is 0 (e.g. fully unvoiced/thresholded utterance): fall back
+            # to uniform weights over the valid frames instead of dividing by zero.
+            warnings.warn("All periodicity weights are zero; using uniform weights for the "
+                          "pitch statistics.")
+            periodicity = np.zeros_like(periodicity)
+            n = len(periodicity) if length is None else int(max(1, min(len(periodicity), length)))
+            periodicity[:n] = 1.0
         weighted_mean = (pitch*periodicity).sum()/periodicity.sum()
         weighted_var = (((pitch-weighted_mean)**2)*periodicity).sum()/periodicity.sum()
         weighted_std = weighted_var**.5
@@ -106,21 +128,25 @@ class SourceExtractor(BaseExtractor):
 
     
 
-    def _extract_pitch(self, wavs, outputs={},):
+    def _extract_pitch(self, wavs, outputs=None, seed=None):
+        if outputs is None:
+            outputs = {}
         if not isinstance(wavs, SpeechWave):
             wavs = self.process_wavfiles(wavs)
-        else: 
-            pitch, periodicity = self._run_crepe(wavs)
+        pitch, periodicity, lengths = self._run_crepe(wavs, seed=seed, return_lengths=True)
         if "loudness" in outputs.keys():
             periodicity = self._filter_low_loudness(periodicity, outputs["loudness"])
         
         outputs["wav"] = wavs
         outputs["pitch"] = pitch[...,None]
         outputs["periodicity"] = periodicity[...,None]
-        outputs['pitch_stats'] = np.stack([self._pitch_stats(pitch[i], periodicity[i]) for i in range(len(pitch))])
+        outputs['pitch_stats'] = np.stack([self._pitch_stats(pitch[i], periodicity[i], lengths[i])
+                                           for i in range(len(pitch))])
         return outputs
         
-    def _extract_intensity(self, wavs, outputs={}):
+    def _extract_intensity(self, wavs, outputs=None):
+        if outputs is None:
+            outputs = {}
         if not isinstance(wavs, SpeechWave):
             wavs = self.process_wavfiles(wavs)
         with torch.no_grad():
@@ -129,10 +155,12 @@ class SourceExtractor(BaseExtractor):
         outputs["loudness"] = intensity[...,None]
         return outputs
 
-    def __call__(self, wavfiles, outputs={}, split_batch=False):
+    def __call__(self, wavfiles, outputs=None, split_batch=False, seed=None):
+        if outputs is None:
+            outputs = {}
         wavs = self.process_wavfiles(wavfiles)
         outputs = self._extract_intensity(wavs, outputs)
-        outputs = self._extract_pitch(wavs, outputs)
+        outputs = self._extract_pitch(wavs, outputs, seed=seed)
         if split_batch:
             outputs = self._split_batch(outputs)
         return outputs

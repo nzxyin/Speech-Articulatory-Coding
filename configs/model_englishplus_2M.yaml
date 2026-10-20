@@ -11,7 +11,7 @@ pitch_q: 2
 periodicity_threshold: 0.4
 reflect_loudness: true
 loudness_threshold: 0.05 #1
-use_penn: true
+use_penn: false  # PENN is not implemented; torchcrepe is always used
 ## Articulatory Inversion configs
 speech_model: microsoft/wavlm-large
 spk_ft_size: 1024

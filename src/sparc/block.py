@@ -13,7 +13,7 @@ import torch
 class SoftClamp(torch.nn.Module):
     def __init__(self, temp=0.2):
         super().__init__()
-        self.temp=0.2
+        self.temp=temp
         self.tanh =torch.nn.Tanh()
     
     def forward(self, x):

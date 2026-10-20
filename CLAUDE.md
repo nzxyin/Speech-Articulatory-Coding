@@ -18,6 +18,12 @@ contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.
 `docs/vocoders/results/`. Large outputs (checkpoints, audio, per-utterance results, samples, failure cases) are under
 `/data/user_data/xoy/sparc-vocoders/` (`runs/`, `eval/`).
 
+Work built on this branch elsewhere (2026-10-20): speaker-embedding Phase 3 on branch `spkemb-phase3` trains a
+resynthesis-oriented, interpolatable speaker encoder (all-layer WavLM statistics, VAE latent, cross-utterance
+references) with this branch's HiFi-GAN recipe; six 100k-step screening arms are running (issue #31; design in
+`docs/speaker_embedding_plan.md` on branch `multispeaker-eval`). Its runs, caches and evaluation outputs are under
+`/data/user_data/xoy/spkemb/phase3/`, separate from `sparc-vocoders/`.
+
 ## Main findings (test.clean; robust = same sign and supported in both training seeds and larger than the seed spread)
 
 - HiFi-GAN leads on quality and speaker similarity (robust, also on test.other): UTMOS 4.17 / 4.16 (two seeds) against
@@ -57,17 +63,24 @@ contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.
 
 ## Findings that constrain the implementation
 
-- `load_model("en+", linear_model_path=...)` keeps the checkpoint's own head (#11). Load a different head through
-  `linear_model_state_dict`, or through a yaml whose `linear_model_path` is set, and assert the loaded weights.
+The legacy 16 kHz bugs below (#8-#16) are fixed on `main`, which was merged into this branch on 2026-10-20. The
+feature cache and every run here predate the merge; the vocoder code path never used the affected functions in the
+buggy way (see each item), so they stay valid. Checked on 5 cached test.clean utterances (one L40S): the merged and
+pre-merge `SparcFeatureExtractor` give bit-identical arrays, and both match the cache within 1.1e-5 (loudness exactly).
+- `load_model("en+", linear_model_path=...)` kept the checkpoint's own head (#11; now an explicit path overrides it and
+  is exposed as `model.linear_model_path`). The cache loads the refit head through `linear_model_state_dict` and
+  asserts the loaded weights; keep that.
 - With `normalize: true`, every waveform is z-scored per utterance before WavLM, CREPE and the loudness convolution
-  (`src/sparc/speech.py:75-76`), so the cached loudness does not change with gain. Gain augmentation needs an
+  (`src/sparc/speech.py`), so the cached loudness does not change with gain. Gain augmentation needs an
   un-normalized loudness, cached ungained and multiplied by the gain.
-- torchcrepe adds random dither to pitch (#13); seed numpy per utterance, one utterance per `encode` call.
-- Batched `encode()` corrupts short utterances, and utterances under 9,239 samples at 24 kHz cannot be encoded (#12).
-  Cache with batch size 1.
+- torchcrepe adds random dither to pitch (#13). The cache seeds numpy per utterance itself (seed `crc32(id)`); since the
+  merge, `encode(seed=...)` and `sparc-encode`'s `deterministic_pitch` do the same for the legacy API.
+- Batched `encode()` corrupted short utterances and very short utterances could not be encoded (#12; fixed by per-
+  utterance filtering). The cache was extracted with batch size 1 and its contract keeps one utterance per call.
 - Feature length for 24 kHz input is `T = floor(L24/480) - 1 + [L24 mod 480 >= 119]`; frame j of loudness, pitch and
   the WavLM CNN is centred at 24 kHz samples 480j, 480j + 120 and 480j + 300.
 - The `en+` speaker embedding pools WavLM `hidden_states[6]`; `training/prepare_spk_raw.py` pools layer 0 with
-  different periodicity settings (#13).
-- The existing training module is not preemption-safe, counts both optimizers in `global_step`, and fails under plain
-  DDP (#15). Its learning-rate schedule (#10) and MSD pooling (#9) also have bugs.
+  different periodicity settings unless run with `--en-plus-compatible` (#13). The cache pools layers 0 and 6 itself.
+- The legacy training module (`sparc.training`, 16 kHz) is now preemption-safe, counts batches, supports DDP, and has
+  the fixed lr schedule and MSD pooling (#9, #10, #15). The vocoder comparison uses its own `sparc.vocoders.training`
+  module and ported, fixed discriminators throughout, so none of its results depend on these fixes.

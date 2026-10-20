@@ -45,7 +45,7 @@ def synthesize(generator, speaker_ffn, ft_path, spk_raw_path, device="cuda:0"):
     return wav
 
 
-def main(ckpt_path, sparc_dir, out_dir, n=8, device="cuda:0"):
+def main(ckpt_path, sparc_dir, out_dir, n=8, device="cuda:0", spk_raw_subdir="spk_raw"):
     sparc_dir = Path(sparc_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +53,7 @@ def main(ckpt_path, sparc_dir, out_dir, n=8, device="cuda:0"):
     generator, speaker_ffn = load_trained(ckpt_path, device=device)
 
     ft_dir = sparc_dir / "emasrc"
-    spk_raw_dir = sparc_dir / "spk_raw"
+    spk_raw_dir = sparc_dir / spk_raw_subdir
     stems = sorted(p.stem for p in ft_dir.glob("*.npy") if (spk_raw_dir / f"{p.stem}.npy").exists())
     rng = np.random.default_rng(0)
     sample_stems = rng.choice(stems, size=min(n, len(stems)), replace=False)
@@ -66,4 +66,5 @@ def main(ckpt_path, sparc_dir, out_dir, n=8, device="cuda:0"):
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2], sys.argv[3], n=int(sys.argv[4]) if len(sys.argv) > 4 else 8,
-         device=sys.argv[5] if len(sys.argv) > 5 else "cuda:0")
+         device=sys.argv[5] if len(sys.argv) > 5 else "cuda:0",
+         spk_raw_subdir=sys.argv[6] if len(sys.argv) > 6 else "spk_raw")

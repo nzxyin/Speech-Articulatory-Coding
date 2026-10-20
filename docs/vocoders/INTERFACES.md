@@ -49,10 +49,12 @@ audio column. Validated Phase 1 TSVs exist at `/data/user_data/xoy/sparc-vocoder
 - Builds `sparc.load_model("en+", device=..., linear_model_state_dict=<from the refit .npz>)` with `HF_HUB_OFFLINE=1`
   and the project's private pinned hub cache (`HF_HUB_CACHE`, SPARC snapshot `2e6a07d4…`, WavLM-large `c1423ed9…`),
   asserts the `.npz` sha256 equals `cfg.inversion.linear_sha256`, and asserts the loaded head weights equal the npz
-  weights (never use `linear_model_path=` alone: it is silently ignored, fork issue #11). Also assert
+  weights (when the cache was built, `linear_model_path=` alone was silently ignored, fork issue #11; it is fixed since
+  `main` was merged on 2026-10-20, but the extractor keeps `linear_model_state_dict` and the weight check). Also assert
   `coder.source_extractor.q == 2` and `pitch_hop_length == 160`: loading the checkpoint without the en+ yaml silently
   gives `pitch_q = 4` and moves the pitch centre.
-- `extract(wav24: np.ndarray, seed: int) -> dict`, one utterance (never batched: issue #12):
+- `extract(wav24: np.ndarray, seed: int) -> dict`, one utterance (never batched: batched `encode()` corrupted short
+  utterances, issue #12; fixed on `main` and merged 2026-10-20, but the cache contract stays one utterance per call):
   1. `raw16 = librosa.resample(wav24, orig_sr=24000, target_sr=16000)` (default `soxr_hq`, as SPARC does).
   2. Run SPARC's own path on `raw16` (it z-scores internally) with `np.random.seed(seed)` set immediately before CREPE
      (torchcrepe's pitch dither uses the global numpy RNG).
@@ -145,8 +147,8 @@ To implement:
   spk_dim=64, pitch_mode="log", voiced_flag=False)`. Port of `sparc/generator.py` and `sparc/block.py` with: the
   shared `FiLM` on every residual unit (after the second conv of each dilation pair, before the residual add,
   replacing the MLP + SoftClamp FiLM); no in-place input mutation; keep PyTorch's default conv init (the fork's
-  N(0, 0.01) init never took effect because it ran after weight norm, issue #14, so the validated recipe uses the
-  default; delete the dead code instead of activating it); `torch.nn.utils.parametrizations.weight_norm`;
+  N(0, 0.01) init never took effect because it ran after weight norm, issue #14 (since fixed in the legacy
+  `sparc/generator.py`), so the validated recipe uses the default; delete the dead code instead of activating it); `torch.nn.utils.parametrizations.weight_norm`;
   LeakyReLU(0.1); tanh output.
 - `ddsp.py`: `DDSPVocoder(stats, channels=256, n_harmonics=100, n_noise_bands=129, control_rate=200,
   noise_gain_cap=0.25, post_filter_taps=1537, f0_anchor_offset=120, spk_dim=64, ...)`, the DDSP24 design (report

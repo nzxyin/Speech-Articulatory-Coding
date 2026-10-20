@@ -67,16 +67,69 @@ All notable changes to this fork. Earlier history is in `git log`.
 - Results: section 6.1.3 of `docs/vocoders/RESULTS.md` (the 800k runs of HiFi-GAN and Vocos against the two 400k
   seeds), with the summary, open questions and reproducibility notes updated; tables in `docs/vocoders/results/long/`
   and section 3 of `results/convergence.md`.
-- Results: seed-1 controllability probes and natural-variation baseline in section 5.2 of `docs/vocoders/RESULTS.md`
-  and `docs/vocoders/results/probes_seeds.md`.
+- Results: seed-1 controllability probes and natural-variation baseline (section 5.2 of `docs/vocoders/RESULTS.md`) and
+  seed-1 X-Y probes (section 5.3); `docs/vocoders/results/{probes_seeds,xy_probes_seeds,xy_probes_s1}.md`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);
   `CUBLAS_WORKSPACE_CONFIG` is set for deterministic runs; the Slurm training step passes `--cpus-per-task` to srun;
   committed Slurm scripts default to relative log paths; `cudnn.benchmark` is off by default.
+- Merged `main` (legacy 16 kHz fixes for issues #8-#16, listed under Fixed) on 2026-10-20. `sparc.cli.train` keeps
+  both the vocoder dispatcher and the legacy path's SLURM handling: the dispatcher still sets
+  `SLURM_JOB_NAME=interactive` before the legacy trainer, and the job name recorded at import keeps run naming,
+  auto-resume and requeue working. README gains a section on the 24 kHz vocoder comparison; `CLAUDE.md` and
+  `docs/vocoders/INTERFACES.md` note which constraints the merged fixes resolved.
 
 ### Fixed
+#### Legacy 16 kHz pipeline (`sparc.training`, `sparc-encode` / `sparc-decode`, `SPARC`; merged from `main`)
+- `MultiScaleDiscriminator` mean-pools are both `AvgPool1d(4, 2, padding=2)`, so the three scales see 1x/2x/4x input
+  instead of 1x/2x/8x (#9). Existing state dicts still load.
+- Vocoder lr schedule halves every 200k steps by default (was 8k, which drove the lr to ~1e-12 by 320k);
+  `lr_static_after` defaults to null; a warning is emitted if the multiplier at `max_steps` falls below 1e-3 (#10).
+- `HiFiGANGenerator`: forward no longer mutates its input; the N(0, 0.01) init now runs before weight norm and takes
+  effect for fresh models (pretrained decode is bit-identical); `SoftClamp` honors `temp`; unsupported paddings raise
+  instead of calling `exit()` (#14).
+- Vocoder training (#15): `max_steps`/`checkpoint_every_n_steps` count batches; SLURM SIGUSR1 requeue
+  (`--requeue --signal=B:USR1@120`), `save_on_exception`, RNG state in checkpoints, a per-run checkpoint dir
+  (`run_name`, default `slurm_<jobid>` under sbatch) with auto-resume; configurable `devices`/`strategy` (multi-GPU uses
+  `ddp_find_unused_parameters_true` and falls back to `LightningEnvironment` under single-task sbatch);
+  `toggle_optimizer` keeps discriminator gradients out of the generator step.
+- Encode (#11, #12, #13): an explicit `linear_model_path` overrides the checkpoint head and is exposed as
+  `model.linear_model_path`; `filtfilt` runs per utterance over its valid length (batched encode no longer corrupts
+  short utterances, short utterances no longer crash); `sparc-encode` logs failures, exits non-zero, writes atomically
+  and skips only when all outputs exist; zero periodicity weights fall back to uniform speaker pooling instead of NaN;
+  `encode(seed=...)` and `deterministic_pitch` (default on in `sparc-encode`, seed `crc32(id)`) make CREPE pitch
+  reproducible; `use_penn` is reported as unimplemented; `SourceExtractor._extract_pitch` works with file paths;
+  `prepare_spk_raw.py --en-plus-compatible`; `configs/feature_extraction.yaml` matches the hub copy.
+- `SPARC.encode(..., concat=True)` works for multi-utterance batches and returns one `{features, spk_emb}` dict per
+  utterance; `SourceExtractor` pitch statistics fall back to uniform weights over the valid frames when every
+  periodicity weight is 0 (were NaN); `scripts/prepare_spk_raw_slurm.sh` usage text lists the `[device]` argument
+  that precedes `[limit]` (#16).
+- Download scripts (gitignored, local only) moved off the removed `cpu` partition to `msp-cpu`/`msp_cpu_qos` and from
+  `huggingface-cli` to `hf download` (#8).
+- Regression tests under `tests/` for all of the above.
+- `sparc-encode` writes temp files as `.<id>.npy.tmp`, so a killed job no longer leaves files that match `*.npy`;
+  `sparc-decode` pairs features and speaker embeddings by file stem (was by sorted position) and warns about unpaired
+  files (#12).
+- `sparc-encode` records the model, config, head (sha256) and `deterministic_pitch` in `<save_dir>/encode_meta.json`
+  and exits if a later run's settings differ (`allow_meta_mismatch=true` overrides); `save_dir`s with outputs but no
+  manifest only get a warning; a missing `model.linear_model_path` is reported before the model loads (#12).
+- `SourceExtractor` restores the global numpy RNG when pitch decoding raises; mutable `outputs={}` defaults in the
+  extractors are gone; `use_penn` is logged at info level instead of warning on every `load_model("en+")`, and the
+  local en+ config sets it to false; `spk_raw_subdir` (`VocoderDataset`, `train_config.yaml`, `training/sample.py`,
+  default `spk_raw`) lets training and sampling use `prepare_spk_raw --en-plus-compatible` output (#13).
+- `HiFiGANGenerator` accepts a negative `pitch_axis` again (-1 produced twice the channels after the #14 rewrite);
+  `load_model` accepts configs without a `linear_model_path` key (#11, #14).
+- `max_steps=-1` passes through to Lightning unchanged (was turned into -2); `sparc.cli.train` records
+  `SLURM_JOB_NAME` at import (keyed by job id), so a wrapper that overwrites it before calling the trainer no longer
+  disables the per-run checkpoint dir, auto-resume and SIGUSR1 requeue; `train_slurm.sh` exits with the trainer's
+  real status after a trapped signal (#15).
+- Tests for the encode/decode CLIs (`tests/test_encode_cli.py`), extractor RNG and file paths
+  (`tests/test_extractor_fixes.py`), head selection (`tests/test_load_model_head.py`), generator pitch handling and
+  save-on-exception resume.
+
+#### 24 kHz vocoder comparison (`sparc.vocoders`)
 - Evaluation WER: Whisper's text normalizer deleted words in parentheses and brackets, which LibriTTS-R references
   use for spoken parentheticals (40 test-clean texts), so they counted as insertions for every system (absolute WER
   was about 11 % too high). The bracket characters are now removed first; stage `asr_rescore` recomputes stored counts.

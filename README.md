@@ -74,6 +74,11 @@ The articulatory code outputs have the following format.
 }
 ```
 
+`loudness` is computed on the per-utterance normalized waveform (`normalize: true`), so it is invariant to
+recording level. CREPE adds random dither to the decoded pitch, so `pitch` differs slightly between calls;
+`coder.encode(wav, seed=0)` seeds numpy before each utterance's pitch decoding (the global RNG state is
+restored afterwards) and makes it reproducible. The default `seed=None` leaves the RNG untouched.
+
 #### Articulatory Synthesis
 
 ```python
@@ -99,12 +104,17 @@ Feature extraction and resynthesis are exposed as Hydra-configured CLIs, install
 ```
 uv run sparc-encode dataset=vctk                 # uses the en+ model by default
 uv run sparc-encode dataset=vctk model=en         # override the model
+uv run sparc-encode dataset=vctk model.linear_model_path=<head.pkl>  # replace the checkpoint's linear AAI head
 uv run sparc-decode dataset=vctk                  # resynthesize wavs from extracted features
 ```
 
 `dataset` and `model` are Hydra config groups defined in `src/sparc/conf/dataset` and
 `src/sparc/conf/model`; add a new YAML file there (with `wav_dir`, `save_dir`, `decode_dir`) to
-support another dataset. On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
+support another dataset. `sparc-encode` skips utterances whose outputs already exist and records the
+model, config, head (with its sha256) and `deterministic_pitch` in `<save_dir>/encode_meta.json` when it
+starts on an empty `save_dir`. Re-running with different settings against that `save_dir` exits with an
+error (override with `allow_meta_mismatch=true`); `save_dir`s with outputs but no manifest only get a warning.
+On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
 the same CLIs — see the usage comments at the top of each script for single-dataset and
 array-job invocations.
 
@@ -127,6 +137,10 @@ Encode a dataset first (see [CLI Inference](#cli-inference) above), then precomp
 uv run sparc-encode dataset=librittsr_train_clean_100
 uv run python -m sparc.training.prepare_spk_raw <wav_dir> <sparc_dir>
 ```
+
+With `--en-plus-compatible` the script computes the en+ pooled feature (the one the pretrained en+ speaker
+FFN expects) and writes it to `<sparc_dir>/spk_raw_enplus/` instead of `spk_raw/`. To train on it, set
+`spk_raw_subdir=spk_raw_enplus` (default `spk_raw`) for `sparc-train`.
 
 #### 2. Train
 
@@ -172,17 +186,32 @@ Both scalars (losses, learning rate) and periodic audio/mel-spectrogram samples
 
 #### 4. Checkpoints and resuming
 
-Checkpoints save to `<dataset.save_dir>/vocoder_ckpt` every `checkpoint_every_n_steps` (default
-1000), keeping the `keep_last_n_checkpoints` most recent plus `last.ckpt`. Resume a run with:
+`max_steps` and `checkpoint_every_n_steps` count batches (one discriminator + one generator
+update each), matching the LR schedule; the CLI converts them to Lightning's `global_step`, which
+advances twice per batch. Checkpoints save to `<dataset.save_dir>/vocoder_ckpt` every
+`checkpoint_every_n_steps` (default 1000), keeping the `keep_last_n_checkpoints` most recent plus
+`last.ckpt`, and include python/numpy/torch/CUDA RNG state. Resume a run with:
 
 ```
 uv run sparc-train dataset=librittsr_train_clean_100 resume_from_checkpoint=<path-to>/last.ckpt
 ```
 
+Setting `run_name=<name>` keys the checkpoint dir (`vocoder_ckpt/<name>`) and makes `sparc-train`
+auto-resume from the newest `last.ckpt`/`hpc_ckpt_*.ckpt` there. Under `sbatch` the run name
+defaults to `slurm_<SLURM_JOB_ID>`, which a requeued job keeps. `scripts/train_slurm.sh` requests
+`--requeue --signal=B:USR1@120`: on preemption Lightning saves a checkpoint and requeues the job,
+which then resumes by itself; SIGTERM also saves a checkpoint. Multi-GPU: `devices=N` (uses
+`ddp_find_unused_parameters_true`). `train_slurm.sh` runs one SLURM task, so with `devices>1` Lightning
+spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned into SIGTERM,
+which saves a checkpoint); launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
+only happens if `run_name` is also set. Known limitations (left as is): RNG state is restored only for
+single-process runs (`world_size == 1`, same CUDA device count as when saved), and the DataLoader is not
+stateful, so a resumed run reshuffles instead of replaying the exact sample order of an uninterrupted run.
+
 #### 5. Listen to samples
 
 ```
-uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples]
+uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples] [device] [spk_raw_subdir]
 ```
 
 Synthesizes standalone wav files from a trained checkpoint for qualitative listening outside
@@ -196,6 +225,25 @@ losses, and data pipeline, with loss curves behaving as expected — but not run
 scale or quality. The linear EMA-inversion head is a separately frozen component, refit from
 scratch below rather than trained jointly with the vocoder — matching how the paper itself
 treats it.
+
+## 24 kHz Articulatory Vocoder Comparison
+
+`sparc.vocoders` trains and evaluates three 24 kHz vocoders on the same SPARC features (12 EMA channels from the
+refit head below, pitch, loudness, periodicity) and the same speaker conditioning: HiFi-GAN, a DDSP
+harmonic-plus-noise vocoder and Vocos with articulatory input. `sparc-train` picks this path when an override uses
+one of its config keys (`vocoder=`, `experiment=`, ...), and the legacy 16 kHz training above otherwise:
+
+Paths come from the environment (`SPARC_VOC_CACHE`, `SPARC_VOC_RUNS`, `LIBRITTSR_RAW`, `SPARC_REFIT_NPZ`):
+
+```
+uv run sparc-cache stage=manifest           # then stage=extract (shard_index / num_shards), stage=pack, stage=stats
+uv run sparc-train vocoder=hifigan experiment=main
+uv run sparc-predict vocoder=hifigan experiment=main
+uv run sparc-eval stage=spk system=all condition=all
+```
+
+Contracts: `docs/vocoders/INTERFACES.md` (cache, data, models, training, CLI) and `docs/vocoders/EVALUATION.md`;
+results: `docs/vocoders/RESULTS.md` and `docs/vocoders/results/`.
 
 ## Linear AAI Head Refit (MNGU0)
 

@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -7,15 +8,104 @@ import lightning as pl
 import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
-from lightning.pytorch.plugins.environments import LightningEnvironment
+from lightning.pytorch.plugins.environments import LightningEnvironment, SLURMEnvironment
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
 from sparc.training.dataset import VocoderDataset, collate
-from sparc.training.lightning_module import SparcVocoderTraining
+from sparc.training.lightning_module import SparcVocoderTraining, batches_to_global_steps
 
 
-def _build_loggers(cfg, save_dir: Path):
+# Wrappers around this module may overwrite SLURM_JOB_NAME (e.g. to "interactive") before calling
+# main(); remember the job name as it was at import, as "<job id>:<name>". DDP children inherit and keep
+# the parent's value; a job submitted from inside this one (sbatch exports the environment) has another
+# job id and ignores it.
+_ORIG_JOB_NAME_ENV = "SPARC_ORIG_SLURM_JOB_NAME"
+
+
+def _captured_job_name() -> str | None:
+    prefix = os.environ.get("SLURM_JOB_ID", "") + ":"
+    stored = os.environ.get(_ORIG_JOB_NAME_ENV, "")
+    return stored[len(prefix):] if stored.startswith(prefix) else None
+
+
+if _captured_job_name() is None:
+    os.environ[_ORIG_JOB_NAME_ENV] = f"{os.environ.get('SLURM_JOB_ID', '')}:{os.environ.get('SLURM_JOB_NAME', '')}"
+
+
+def _under_slurm_batch() -> bool:
+    """True inside an sbatch job; False in salloc/srun-interactive shells and outside SLURM."""
+    name = _captured_job_name()
+    if name is None:
+        name = os.environ.get("SLURM_JOB_NAME")
+    return "SLURM_JOB_ID" in os.environ and name not in ("bash", "interactive")
+
+
+def _resolve_run_name(cfg) -> str | None:
+    """Stable per-run name. A requeued SLURM job keeps its SLURM_JOB_ID, so keying on it makes a
+    requeue find its own checkpoints while a fresh submission starts a new run. Outside SLURM the
+    name is only set if configured (cfg.run_name), otherwise the legacy flat layout is kept."""
+    if cfg.run_name:
+        return str(cfg.run_name)
+    if _under_slurm_batch():
+        return f"slurm_{os.environ['SLURM_JOB_ID']}"
+    return None
+
+
+def _find_resume_ckpt(cfg, ckpt_dir: Path, run_name: str | None) -> str | None:
+    """Explicit cfg.resume_from_checkpoint wins. Otherwise, for a named run, pick the newest of
+    last.ckpt (periodic/exception saves) and Lightning's hpc_ckpt_*.ckpt (written by the SIGUSR1
+    requeue handler) in the run's checkpoint dir."""
+    if cfg.resume_from_checkpoint:
+        return str(cfg.resume_from_checkpoint)
+    if run_name is None:
+        return None
+    candidates = [ckpt_dir / "last.ckpt", *ckpt_dir.glob("hpc_ckpt_*.ckpt")]
+    candidates = [p for p in candidates if p.is_file()]
+    return str(max(candidates, key=lambda p: p.stat().st_mtime)) if candidates else None
+
+
+def _num_devices(devices) -> int:
+    """Device count implied by cfg.devices (int, list of ids, or "auto"/-1 = all visible GPUs)."""
+    if devices is None:
+        return 1
+    if isinstance(devices, int) and devices > 0:
+        return devices
+    if isinstance(devices, str) and devices.isdigit():
+        return int(devices)
+    if not isinstance(devices, (int, str)):  # list/ListConfig of device ids
+        return len(devices)
+    return max(torch.cuda.device_count(), 1)
+
+
+def _usr1_to_sigterm(signum, frame):
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _cluster_plugins(cfg) -> list:
+    """SLURMEnvironment (SIGUSR1 -> hpc checkpoint + requeue) needs one SLURM task per device,
+    since it takes the world size from SLURM_NTASKS and never spawns processes itself.
+    scripts/train_slurm.sh runs a single task, so with devices>1 fall back to
+    LightningEnvironment (Lightning spawns the DDP processes); SIGTERM still saves a
+    checkpoint through ModelCheckpoint(save_on_exception=True)."""
+    if not (_under_slurm_batch() and cfg.slurm_requeue):
+        return [LightningEnvironment()]
+    n_devices = _num_devices(cfg.devices)
+    n_tasks = int(os.environ.get("SLURM_NTASKS", "1"))
+    if n_devices > 1 and n_tasks != n_devices:
+        print(
+            f"WARNING: devices={n_devices} but SLURM_NTASKS={n_tasks}; using LightningEnvironment so "
+            "Lightning spawns the DDP processes. SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned "
+            "into SIGTERM, which saves a checkpoint); launch with srun --ntasks-per-node=<devices> to keep it."
+        )
+        # Lightning only handles SIGUSR1 for SLURMEnvironment; unhandled, the --signal=B:USR1@120
+        # warning forwarded by train_slurm.sh would kill training without a checkpoint.
+        signal.signal(signal.SIGUSR1, _usr1_to_sigterm)
+        return [LightningEnvironment()]
+    return [SLURMEnvironment(auto_requeue=True, requeue_signal=signal.SIGUSR1)]
+
+
+def _build_loggers(cfg, save_dir: Path, run_name: str | None = None):
     """Builds every logger named in cfg.logger_backends. Multiple backends
     can run simultaneously -- Lightning dispatches self.log/self.log_dict
     scalars to all of them automatically; SparcVocoderTraining._log_media
@@ -30,7 +120,8 @@ def _build_loggers(cfg, save_dir: Path):
     if "tensorboard" in backends:
         tb_dir = Path(cfg.tb_log_dir) if cfg.tb_log_dir else save_dir / "tb_logs"
         tb_dir.mkdir(parents=True, exist_ok=True)
-        loggers.append(TensorBoardLogger(save_dir=str(tb_dir.parent), name=tb_dir.name))
+        # fixed version for named runs so a requeued job appends to the same event dir
+        loggers.append(TensorBoardLogger(save_dir=str(tb_dir.parent), name=tb_dir.name, version=run_name))
 
     if "wandb" in backends:
         wandb_dir = Path(cfg.wandb_dir) if cfg.wandb_dir else save_dir / "wandb_logs"
@@ -40,6 +131,8 @@ def _build_loggers(cfg, save_dir: Path):
                 project=cfg.wandb_project,
                 entity=cfg.wandb_entity,
                 name=cfg.wandb_run_name,
+                id=run_name,  # same wandb run across requeues
+                resume="allow" if run_name else None,
                 save_dir=str(wandb_dir),
                 # Compute nodes have internet access, but wandb "online" mode
                 # needs an API key (`wandb login` / WANDB_API_KEY) that isn't
@@ -58,13 +151,17 @@ def legacy_main(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     save_dir = Path(cfg.dataset.save_dir)
+    run_name = _resolve_run_name(cfg)
     ckpt_dir = Path(cfg.checkpoint_dir) if cfg.checkpoint_dir else save_dir / "vocoder_ckpt"
+    if run_name and not cfg.checkpoint_dir:
+        ckpt_dir = ckpt_dir / run_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = VocoderDataset(
         wav_dir=cfg.dataset.wav_dir,
         sparc_dir=cfg.dataset.save_dir,
         segment_frames=cfg.segment_frames,
+        spk_raw_subdir=cfg.get("spk_raw_subdir", "spk_raw"),
     )
     print(f"Training set: {len(dataset)} utterances with cached emasrc + spk_raw features")
     loader = DataLoader(
@@ -88,11 +185,13 @@ def legacy_main(cfg: DictConfig) -> None:
         log_audio_every_n_steps=cfg.log_audio_every_n_steps,
     )
 
-    loggers = _build_loggers(cfg, save_dir)
+    loggers = _build_loggers(cfg, save_dir, run_name)
     checkpoint_cb = ModelCheckpoint(
         dirpath=str(ckpt_dir),
         save_last=True,
-        every_n_train_steps=cfg.checkpoint_every_n_steps,
+        # config counts batches; Lightning's global_step counts optimizer steps (2 per batch)
+        every_n_train_steps=batches_to_global_steps(cfg.checkpoint_every_n_steps),
+        save_on_exception=True,  # SIGTERM -> checkpoint at the next batch end
         save_top_k=cfg.keep_last_n_checkpoints,
         # no validation loss to rank by -- rank by recency instead (see
         # SparcVocoderTraining.training_step's step_metric log call).
@@ -100,23 +199,33 @@ def legacy_main(cfg: DictConfig) -> None:
         mode="max",
     )
 
+    plugins = _cluster_plugins(cfg)
+    devices = cfg.devices
+    strategy = cfg.strategy
+    if strategy == "auto" and devices != 1:
+        # two optimizers stepped manually: some params get no grad in each backward
+        strategy = "ddp_find_unused_parameters_true"
+
     trainer = pl.Trainer(
-        max_steps=cfg.max_steps,
+        max_steps=batches_to_global_steps(cfg.max_steps),
         accelerator="gpu" if cfg.device.startswith("cuda") else "cpu",
-        devices=1,
-        # This CLI runs as a single task/single GPU inside one srun/sbatch
-        # allocation, not as an elastic `srun python train.py` multi-node
-        # launch -- Lightning's SLURM auto-detection otherwise misreads the
-        # SLURM_* env vars srun sets and tries to bind a CUDA device that
-        # doesn't correspond to this process, raising
-        # "CUDA-capable device(s) is/are busy or unavailable".
-        plugins=[LightningEnvironment()],
+        devices=devices,
+        strategy=strategy,
+        plugins=plugins,
+        default_root_dir=str(ckpt_dir),  # hpc_ckpt_*.ckpt (requeue) lands next to last.ckpt
         logger=loggers,
         callbacks=[checkpoint_cb],
         log_every_n_steps=cfg.log_every_n_steps,
         enable_progress_bar=True,
     )
-    trainer.fit(model, train_dataloaders=loader, ckpt_path=cfg.resume_from_checkpoint)
+    # An explicit checkpoint_dir is not keyed by run name, so only auto-resume there when the
+    # run name was given explicitly; otherwise a fresh sbatch submission reusing that dir
+    # would silently resume another run's last.ckpt.
+    resume_run = run_name if (not cfg.checkpoint_dir or cfg.run_name) else None
+    resume_path = _find_resume_ckpt(cfg, ckpt_dir, resume_run)
+    if resume_path:
+        print(f"Resuming from {resume_path}")
+    trainer.fit(model, train_dataloaders=loader, ckpt_path=resume_path)
 
 
 VOCODER_ROOT_KEYS = frozenset(
@@ -160,6 +269,9 @@ def main() -> None:
     # interactive-mode job name (before Trainer construction reads it) is the
     # documented escape hatch and is more robust than passing an explicit
     # `plugins=` override, which does not fully suppress the auto-detection.
+    # The job name as it was at import is kept in SPARC_ORIG_SLURM_JOB_NAME, so
+    # _under_slurm_batch() still sees an sbatch job (run name, auto-resume and
+    # the SLURMEnvironment requeue plugin of _cluster_plugins keep working).
     os.environ["SLURM_JOB_NAME"] = "interactive"
     return legacy_main()
 

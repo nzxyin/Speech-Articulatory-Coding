@@ -22,10 +22,10 @@
 #     sbatch scripts/decode_slurm.sh dataset=vctk
 #
 #   Array over multiple datasets (one dataset name per array index):
-#     sbatch --partition=array --array=0-1 scripts/decode_slurm.sh \
+#     sbatch --array=0-1 scripts/decode_slurm.sh \
 #         librittsr_dev_clean librittsr_test_clean
 #
-#   Large datasets that may run past the general/cpu partitions' 2-day cap:
+#   Large datasets that may run past the general partition's 2-day cap:
 #   use the preempt partition instead (up to 31 days, but jobs there can be
 #   killed and requeued from the start of the script at any time by higher-
 #   priority partitions -- this is safe here because the per-file skip-if-
