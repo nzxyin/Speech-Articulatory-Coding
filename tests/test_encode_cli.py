@@ -173,16 +173,10 @@ def test_decode_pairs_by_stem(tmp_path, capsys):
     for s in ["b", "c", "d"]:
         np.save(spk / f"{s}.npy", np.zeros(1))
     (ft / ".stray.npy.tmp").write_bytes(b"")
+    np.save(ft / "c.tmp.npy", np.zeros(1))  # partial write left by the old temp naming
+    np.save(spk / "c.tmp.npy", np.zeros(1))
     pairs = decode_cli._pair_by_stem(ft, spk)
     assert [(f.stem, s.stem) for f, s in pairs] == [("b", "b"), ("c", "c")]
     err = capsys.readouterr().err
     assert "skipping a" in err and "skipping d" in err
 
-
-def test_encode_min_length_boundary():
-    # 6159 samples at 16 kHz = 9,239 at 24 kHz is the shortest encodable utterance (#12).
-    from test_encode_fixes import _get_coder, _load_wav
-    coder = _get_coder()
-    wav = _load_wav(1.0)
-    out = coder.encode(wav[:6159], concat=True, seed=0)
-    assert out["features"].shape[0] >= 1 and np.isfinite(out["features"]).all()

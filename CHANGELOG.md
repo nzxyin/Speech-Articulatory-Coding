@@ -22,7 +22,7 @@ All notable changes to this fork. Earlier history is in `git log`.
   short utterances, short utterances no longer crash); `sparc-encode` logs failures, exits non-zero, writes atomically
   and skips only when all outputs exist; zero periodicity weights fall back to uniform speaker pooling instead of NaN;
   `encode(seed=...)` and `deterministic_pitch` (default on in `sparc-encode`, seed `crc32(id)`) make CREPE pitch
-  reproducible; `use_penn` warns; `SourceExtractor._extract_pitch` works with file paths;
+  reproducible; `use_penn` is reported as unimplemented; `SourceExtractor._extract_pitch` works with file paths;
   `prepare_spk_raw.py --en-plus-compatible`; `configs/feature_extraction.yaml` matches the hub copy.
 - `SPARC.encode(..., concat=True)` works for multi-utterance batches and returns one `{features, spk_emb}` dict per
   utterance; `SourceExtractor` pitch statistics fall back to uniform weights over the valid frames when every

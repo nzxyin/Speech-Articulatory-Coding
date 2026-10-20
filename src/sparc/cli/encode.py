@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import socket
 import sys
 import zlib
 from pathlib import Path
@@ -97,7 +98,8 @@ def _check_meta(save_dir, meta, allow_mismatch=False):
         print(f"Warning: {save_dir} already has outputs but no {META_NAME}; cannot check that they were "
               "produced with the current settings.", file=sys.stderr)
         return
-    tmp_path = meta_path.with_name(f".{META_NAME}.{os.getpid()}.tmp")  # concurrent array tasks
+    # unique per task: array tasks on several nodes may start on the same empty save_dir
+    tmp_path = meta_path.with_name(f".{META_NAME}.{socket.gethostname()}.{os.getpid()}.tmp")
     tmp_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
     os.replace(tmp_path, meta_path)
 

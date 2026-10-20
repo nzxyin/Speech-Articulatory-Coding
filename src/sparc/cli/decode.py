@@ -11,9 +11,10 @@ from sparc import load_model
 
 
 def _pair_by_stem(ft_dir, spk_emb_dir):
-    """Pair feature and speaker-embedding files by file stem; warn about unpaired files."""
-    feats = {p.stem: p for p in ft_dir.glob("*.npy")}
-    spk_embs = {p.stem: p for p in spk_emb_dir.glob("*.npy")}
+    """Pair feature and speaker-embedding files by file stem; warn about unpaired files. Skips
+    "<id>.tmp.npy" partial writes left by sparc-encode before temp files were renamed."""
+    feats = {p.stem: p for p in ft_dir.glob("*.npy") if not p.stem.endswith(".tmp")}
+    spk_embs = {p.stem: p for p in spk_emb_dir.glob("*.npy") if not p.stem.endswith(".tmp")}
     for stem in sorted(feats.keys() ^ spk_embs.keys()):
         where = ft_dir if stem in feats else spk_emb_dir
         print(f"Warning: skipping {stem}: present only in {where}", file=sys.stderr)
