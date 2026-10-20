@@ -73,6 +73,22 @@ layers by how well they can drive that generator, which favours its own layer. P
 - Evaluation as Phase 2, plus a small listening test (speaker-similarity MOS / MUSHRA) if the objective metrics
   disagree; that needs the user's decision on listeners.
 
+### Phase 3 scoping (2026-10-20, read-only review)
+- Build on branch `vocoder-comparison` (24 kHz HiFi-GAN / DDSP / Vocos; `src/sparc/vocoders/`), not the legacy
+  `training/` loop: it already has a packed LibriTTS-R cache (339k utterances, ~2,299 speakers, 542 h) with pooled
+  `spk_l0`, `spk_l6`, `spk_enplus64` per utterance, a cross-utterance reference sampler (`CropDataset`,
+  `training_reference`, `p_cross` default 0.5, prefers another chapter and >= 3 s), T1 / T2 / T3 evaluation (own
+  utterance / other utterance / speaker mean) and a preemption-safe module (`VocoderGANModule`, `SpeakerFFN` in
+  `models/speaker.py`, called in `synthesize()`).
+- The problem is already visible there: HiFi-GAN test-clean ECAPA similarity 0.857 with the own-utterance vector
+  (T1) vs 0.724 with another utterance's (T2) and 0.756 with the speaker mean (T3); T1 is optimistic because the
+  embedding carries content. A `p_cross = 0` ablation (100k steps, 1 run) improved T1 and worsened T2.
+- Integration: a config switch for the speaker encoder (`ffn` | `layerpool` | `asp`), `p_cross = 1` with 1-3
+  references, cached all-layer pooled mean+std (~34 GB fp16 for 339k utterances) for the cheap arms, frozen WavLM
+  inside the module for attentive pooling. Judge only on T2, T3 and a speaker-swap condition, with >= 2 SV models.
+- Compute (estimates): 5 arms x 100k steps ~60 GPU-h; 2-3 finalists x 400k ~150-250 GPU-h (+ a second seed); one-time
+  caches ~20-40 GPU-h. `vocoder-comparison` and `$SV_ROOT` belong to the vocoder work: changes need agreement first.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
