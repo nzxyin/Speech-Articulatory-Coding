@@ -24,6 +24,50 @@ def test_forward_does_not_mutate_input():
     assert out1.shape[-1] == 10 * 120
 
 
+def _input_conv_capture(g):
+    seen = []
+    h = g.input_conv.register_forward_hook(lambda m, inp, out: seen.append(inp[0].detach().clone()))
+    return seen, h
+
+
+def test_pitch_channel_is_rescaled_before_input_conv():
+    g = _gen(pitch_offset=100.0, pitch_rescale=0.01)
+    c = torch.randn(2, 15, 10)
+    c[:, 12] = torch.rand(2, 10) * 300
+    seen, h = _input_conv_capture(g)
+    g(c, torch.randn(2, 8))
+    h.remove()
+    ref = c.clone()
+    ref[:, 12] = (c[:, 12] - 100.0) * 0.01
+    assert torch.equal(seen[0], ref)
+
+
+def test_negative_pitch_axis_matches_positive():
+    c = torch.randn(2, 15, 10)
+    spk = torch.randn(2, 8)
+    for neg, pos in ((-1, 14), (-2, 13)):
+        torch.manual_seed(0)
+        a = _gen(pitch_axis=neg)
+        torch.manual_seed(0)
+        b = _gen(pitch_axis=pos)
+        b.load_state_dict(a.state_dict())
+        seen, h = _input_conv_capture(a)
+        out = a(c, spk)
+        h.remove()
+        assert seen[0].shape[1] == 15
+        assert torch.equal(out, b(c, spk))
+
+
+def test_transposed_view_input_is_not_mutated():
+    g = _gen()
+    art = torch.randn(2, 10, 15)
+    art[:, :, 12] = 150.0
+    art0 = art.clone()
+    view = art.transpose(1, 2)
+    g(view, torch.randn(2, 8))
+    assert torch.equal(art, art0)
+
+
 def test_init_applies_to_weight_norm_params():
     torch.manual_seed(0)
     g = _gen(use_weight_norm=True)

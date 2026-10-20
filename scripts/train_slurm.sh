@@ -53,8 +53,15 @@ PY=$(uv run python -c 'import sys; print(sys.executable)')
 pid=$!
 trap 'kill -USR1 "$pid" 2>/dev/null || true' USR1
 trap 'kill -TERM "$pid" 2>/dev/null || true' TERM
-# `wait` returns early when a trapped signal arrives; keep waiting for the real exit.
-while kill -0 "$pid" 2>/dev/null; do
+# `wait` returns early (status >128) when a trapped signal arrives, possibly after the child has
+# exited; the interrupted wait does not consume the child's status, so wait again until it does.
+while true; do
     wait "$pid" && rc=0 || rc=$?
+    # 127 = pid already consumed (not a child any more): keep the previous status
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null && rc2=0 || rc2=$?
+        [ "$rc2" -eq 127 ] || rc=$rc2
+        break
+    fi
 done
-exit "${rc:-0}"
+exit "$rc"

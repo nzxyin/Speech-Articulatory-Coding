@@ -74,6 +74,11 @@ The articulatory code outputs have the following format.
 }
 ```
 
+`loudness` is computed on the per-utterance normalized waveform (`normalize: true`), so it is invariant to
+recording level. CREPE adds random dither to the decoded pitch, so `pitch` differs slightly between calls;
+`coder.encode(wav, seed=0)` seeds numpy before each utterance's pitch decoding (the global RNG state is
+restored afterwards) and makes it reproducible. The default `seed=None` leaves the RNG untouched.
+
 #### Articulatory Synthesis
 
 ```python
@@ -105,7 +110,11 @@ uv run sparc-decode dataset=vctk                  # resynthesize wavs from extra
 
 `dataset` and `model` are Hydra config groups defined in `src/sparc/conf/dataset` and
 `src/sparc/conf/model`; add a new YAML file there (with `wav_dir`, `save_dir`, `decode_dir`) to
-support another dataset. On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
+support another dataset. `sparc-encode` skips utterances whose outputs already exist and records the
+model, config, head (with its sha256) and `deterministic_pitch` in `<save_dir>/encode_meta.json` when it
+starts on an empty `save_dir`. Re-running with different settings against that `save_dir` exits with an
+error (override with `allow_meta_mismatch=true`); `save_dir`s with outputs but no manifest only get a warning.
+On SLURM, `scripts/encode_slurm.sh` and `scripts/decode_slurm.sh` wrap
 the same CLIs — see the usage comments at the top of each script for single-dataset and
 array-job invocations.
 
@@ -128,6 +137,10 @@ Encode a dataset first (see [CLI Inference](#cli-inference) above), then precomp
 uv run sparc-encode dataset=librittsr_train_clean_100
 uv run python -m sparc.training.prepare_spk_raw <wav_dir> <sparc_dir>
 ```
+
+With `--en-plus-compatible` the script computes the en+ pooled feature (the one the pretrained en+ speaker
+FFN expects) and writes it to `<sparc_dir>/spk_raw_enplus/` instead of `spk_raw/`. To train on it, set
+`spk_raw_subdir=spk_raw_enplus` (default `spk_raw`) for `sparc-train`.
 
 #### 2. Train
 
@@ -191,13 +204,14 @@ which then resumes by itself; SIGTERM also saves a checkpoint. Multi-GPU: `devic
 `ddp_find_unused_parameters_true`). `train_slurm.sh` runs one SLURM task, so with `devices>1` Lightning
 spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned into SIGTERM,
 which saves a checkpoint); launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
-only happens if `run_name` is also set. Known gap: the DataLoader is not stateful, so a resumed run
-restarts the epoch's shuffle (RNG-restored, but not the same samples as an uninterrupted run).
+only happens if `run_name` is also set. Known limitations (left as is): RNG state is restored only for
+single-process runs (`world_size == 1`, same CUDA device count as when saved), and the DataLoader is not
+stateful, so a resumed run reshuffles instead of replaying the exact sample order of an uninterrupted run.
 
 #### 5. Listen to samples
 
 ```
-uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples]
+uv run python -m sparc.training.sample <checkpoint>.ckpt <sparc_dir> <out_dir> [n_samples] [device] [spk_raw_subdir]
 ```
 
 Synthesizes standalone wav files from a trained checkpoint for qualitative listening outside

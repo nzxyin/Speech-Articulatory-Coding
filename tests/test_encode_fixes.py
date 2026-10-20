@@ -158,6 +158,15 @@ def test_zero_weight_pitch_stats_is_finite():
     np.testing.assert_allclose(ext._pitch_stats(pitch, weights, length=3), [150.0, 50.0])
 
 
+def test_encode_former_min_length_boundary():
+    # 6159 samples at 16 kHz (9,239 at 24 kHz) was the shortest encodable utterance before #12.
+    coder = _get_coder()
+    wav = _load_wav(1.0)
+    for n in (6158, 6159):
+        out = coder.encode(wav[:n], concat=True, seed=0)
+        assert out["features"].shape[0] >= 1 and np.isfinite(out["features"]).all()
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
