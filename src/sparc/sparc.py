@@ -62,7 +62,7 @@ def load_model(model_name=None, config=None, ckpt=None,
         if config['generator_ckpt'] is None:
             config['generator_ckpt'] = ckpt['state_dict']['generator']
         # An explicitly passed head takes precedence over the checkpoint's embedded one.
-        if (config['linear_model_path'] is None and
+        if (config.get('linear_model_path') is None and
             kwargs.get("linear_model_path") is None and
             kwargs.get("linear_model_state_dict") is None):
             config['linear_model_state_dict'] = ckpt['state_dict']['linear_model']

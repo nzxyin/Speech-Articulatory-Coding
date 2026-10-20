@@ -234,8 +234,9 @@ class HiFiGANGenerator(torch.nn.Module):
 
         """
         # out of place: do not mutate the caller's tensor
-        pitch = (c[:, self.pitch_axis] - self.pitch_offset) * self.pitch_rescale
-        c = torch.cat([c[:, :self.pitch_axis], pitch.unsqueeze(1), c[:, self.pitch_axis + 1:]], dim=1)
+        ax = self.pitch_axis % c.shape[1]  # negative axes count from the end
+        pitch = (c[:, ax] - self.pitch_offset) * self.pitch_rescale
+        c = torch.cat([c[:, :ax], pitch.unsqueeze(1), c[:, ax + 1:]], dim=1)
         c = self.input_conv(c)
         # print('after input_conv', c.shape)
         for i in range(self.num_upsamples):
