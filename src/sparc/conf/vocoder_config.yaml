@@ -34,6 +34,25 @@ speaker:
   layer: l6        # l6 (en+ layer, decision D5) or l0
   p_cross: 0.5     # probability of a cross-utterance reference in training (decision D4)
   dropout: 0.2
+  # Speaker-embedding Phase 3 (docs: speaker_embedding_plan.md on branch multispeaker-eval); defaults keep the FFN above.
+  type: ffn               # ffn | layerpool (all-layer statistics; needs layer: layers and layer_stats_root)
+  n_refs: null            # [lo, hi]: k ~ U{lo..hi} references per training crop; evaluation T3 then uses the whole pool
+  layer_stats_root: null  # cache of sparc.vocoders.features.spk_layers (<split>/{mean,std}.npy, stats.npz)
+  hidden_dim: 1024
+  use_std: true
+  vae:
+    enabled: false
+    capacity_max: 32.0    # nats; loss gamma * |KL - C|, C ramped linearly from 0 over capacity_steps generator steps
+    capacity_steps: 50000
+    gamma: 1.0
+  tc:
+    weight: 0.0           # beta-TC penalty on a side batch of single-reference posteriors
+    pool_size: 8192       # random training references held on the GPU for the side batch
+    batch: 256
+  mix:
+    p: 0.0                # fraction of each batch decoded from a mixed or prior code (adversarial loss only)
+    prior_frac: 0.5       # of those, the fraction drawn from N(0, I); the rest interpolate two batch speakers
+    cycle_weight: 0.0     # latent cycle through frozen WavLM on the crops
 
 predict:           # `sparc-predict`: the split and conditions come from data.predict_split / data.predict_conditions
   ckpt: null       # null: newest loadable checkpoint of the run

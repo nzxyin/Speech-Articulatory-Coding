@@ -21,7 +21,7 @@ from sparc.vocoders.data.gain import DEFAULT_GAIN_DB_RANGE, apply_gain, gain_fac
 from sparc.vocoders.data.sampler import SampleKey
 
 CONDITIONS = ("T1", "T2", "T3")
-SPEAKER_LAYERS = ("l0", "l6", "enplus64")
+SPEAKER_LAYERS = ("l0", "l6", "enplus64", "layers")  # "layers": all-layer statistics of a separate cache
 FIXED_CROP_STREAM = 2**32 - 1
 INDEX_COLUMNS = ("id", "speaker", "chapter", "wav_path", "n24", "T", "offset", "peak24", "spk_wsum")
 
@@ -31,15 +31,26 @@ class PackedStore:
 
     Utterances are numbered ``0 .. len-1`` in the order of the directories and of each ``index.parquet``. The arrays
     are opened on first use and dropped when pickled, so the store can be handed to ``DataLoader`` workers.
+
+    ``speaker_layer="layers"`` reads the all-layer statistics of ``layer_stats_root/<split>/{mean,std}.npy`` (written by
+    ``sparc.vocoders.features.spk_layers`` in the row order of each ``index.parquet``) instead of ``spk_*.npy``;
+    :meth:`speaker_vector` then returns ``[2, 25, 1024]`` (mean, std).
     """
 
-    def __init__(self, packed_dirs: Sequence[str | Path], speaker_layer: str = "l6"):
+    def __init__(
+        self, packed_dirs: Sequence[str | Path], speaker_layer: str = "l6", layer_stats_root: str | Path | None = None
+    ):
         if speaker_layer not in SPEAKER_LAYERS:
             raise ValueError(f"speaker_layer must be one of {SPEAKER_LAYERS}, got {speaker_layer!r}")
         self.packed_dirs = [Path(d) for d in packed_dirs]
         if not self.packed_dirs:
             raise ValueError("no packed directories given")
         self.speaker_layer = speaker_layer
+        self.layer_stats_dirs = None
+        if speaker_layer == "layers":
+            if layer_stats_root is None:
+                raise ValueError('speaker_layer="layers" needs layer_stats_root')
+            self.layer_stats_dirs = [Path(layer_stats_root) / d.name for d in self.packed_dirs]
         frames = []
         for dir_id, directory in enumerate(self.packed_dirs):
             table = pd.read_parquet(directory / "index.parquet", columns=list(INDEX_COLUMNS))
@@ -62,6 +73,11 @@ class PackedStore:
         self._id_to_index = {str(uid): i for i, uid in enumerate(self.ids)}
         if len(self._id_to_index) != len(self.ids):
             raise ValueError("duplicate utterance ids across the packed directories")
+        if self.layer_stats_dirs is not None:
+            for d, directory in enumerate(self.layer_stats_dirs):
+                ids = (directory / "ids.txt").read_text().split()
+                if not np.array_equal(np.array(ids), self.ids[self.dir_id == d]):
+                    raise ValueError(f"{directory}/ids.txt does not match the index of {self.packed_dirs[d]}")
         self._arrays: tuple | None = None
 
     def __len__(self) -> int:
@@ -78,10 +94,14 @@ class PackedStore:
     def _open(self) -> tuple:
         if self._arrays is None:
             feats, loud, spk = [], [], []
-            for directory in self.packed_dirs:
+            for d, directory in enumerate(self.packed_dirs):
                 feats.append(np.load(directory / "feats.npy", mmap_mode="r"))
                 loud.append(np.load(directory / "loud_raw.npy", mmap_mode="r"))
-                spk.append(np.load(directory / f"spk_{self.speaker_layer}.npy", mmap_mode="r"))
+                if self.layer_stats_dirs is None:
+                    spk.append(np.load(directory / f"spk_{self.speaker_layer}.npy", mmap_mode="r"))
+                else:
+                    stats_dir = self.layer_stats_dirs[d]
+                    spk.append(tuple(np.load(stats_dir / f"{k}.npy", mmap_mode="r") for k in ("mean", "std")))
             self._arrays = (feats, loud, spk)
         return self._arrays
 
@@ -95,9 +115,18 @@ class PackedStore:
         return np.array(feats[d][begin : begin + length]), np.array(loud[d][begin : begin + length])
 
     def speaker_vector(self, utt: int) -> np.ndarray:
-        """Pooled speaker vector of ``utt``, float32."""
-        spk = self._open()[2]
-        return np.array(spk[self.dir_id[utt]][self.row[utt]], dtype=np.float32)
+        """Pooled speaker vector of ``utt``, float32 (``[2, 25, 1024]`` for ``speaker_layer="layers"``)."""
+        spk = self._open()[2][self.dir_id[utt]]
+        if self.layer_stats_dirs is None:
+            return np.array(spk[self.row[utt]], dtype=np.float32)
+        return np.stack([np.asarray(a[self.row[utt]], dtype=np.float32) for a in spk])
+
+    def speaker_references(self, refs: Sequence[int], n_slots: int) -> tuple[np.ndarray, np.ndarray]:
+        """Speaker vectors of ``refs`` stacked into ``n_slots`` slots (zero padded) and the mask of filled slots."""
+        vectors = [self.speaker_vector(int(r)) for r in refs]
+        out = np.zeros((n_slots, *vectors[0].shape), np.float32)
+        out[: len(vectors)] = np.stack(vectors)
+        return out, np.arange(n_slots) < len(vectors)
 
     def read_audio(self, utt: int, start_sample: int, num_samples: int) -> np.ndarray:
         """Mono float32 audio ``[num_samples]`` of ``utt`` starting at ``start_sample``."""
@@ -243,6 +272,11 @@ class CropDataset(Dataset):
     ``stats`` is accepted for interface symmetry with the models and is not used: speaker normalization lives in
     the model. ``subset_size`` keeps only that many items, chosen once from ``subset_seed``; ``fixed_crops`` makes
     crop start, gain and speaker reference a function of the utterance alone (overfitting and sanity runs).
+
+    ``n_refs = (lo, hi)`` (speaker-embedding Phase 3) draws ``k ~ U{lo..hi}`` references per sample, each one by the
+    ``p_cross`` rule above (references may repeat); ``spk_raw`` is then ``[hi, ...]`` zero padded with ``ref_mask
+    [hi]``, ``ref_index`` is the first reference and ``is_cross`` is true when any reference is another utterance.
+    ``n_refs=None`` keeps the single-reference sample and its random stream unchanged.
     """
 
     def __init__(
@@ -258,8 +292,13 @@ class CropDataset(Dataset):
         subset_size: int | None = None,
         subset_seed: int = 0,
         fixed_crops: bool = False,
+        n_refs: Sequence[int] | None = None,
+        layer_stats_root: str | Path | None = None,
     ):
-        self.store = PackedStore(packed_dirs, speaker_layer)
+        self.store = PackedStore(packed_dirs, speaker_layer, layer_stats_root)
+        self.n_refs = None if n_refs is None else (int(n_refs[0]), int(n_refs[1]))
+        if self.n_refs is not None and not 1 <= self.n_refs[0] <= self.n_refs[1]:
+            raise ValueError(f"n_refs must be (lo, hi) with 1 <= lo <= hi, got {n_refs}")
         self.crop_frames = int(crop_frames)
         self.p_cross = float(p_cross)
         self.min_ref_samples = int(round(ref_min_dur * SAMPLE_RATE))
@@ -300,22 +339,31 @@ class CropDataset(Dataset):
             rng = np.random.default_rng([self.seed, int(epoch), int(position)])
         start = int(rng.integers(0, int(store.T[utt]) - n + 1))
         gain_db = sample_gain_db(rng, self.gain_db_range)
-        ref = self._reference(utt, rng) if rng.random() < self.p_cross else utt
+        if self.n_refs is None:
+            refs = [self._reference(utt, rng) if rng.random() < self.p_cross else utt]
+        else:
+            k = int(rng.integers(self.n_refs[0], self.n_refs[1] + 1))
+            refs = [self._reference(utt, rng) if rng.random() < self.p_cross else utt for _ in range(k)]
         g = gain_factor(store.peak24[utt], gain_db)
         feats, loud_raw = store.frames(utt, start, n)
         features = np.ascontiguousarray(feats.T)
         features[LOUDNESS_CHANNEL] = apply_gain(loud_raw, g)
         audio = apply_gain(store.read_audio(utt, HOP * start, HOP * n), g)
-        return {
+        sample = {
             "features": torch.from_numpy(features),
             "audio": torch.from_numpy(audio)[None],
-            "spk_raw": torch.from_numpy(store.speaker_vector(ref)),
             "gain_db": torch.tensor(gain_db, dtype=torch.float32),
             "utt_index": torch.tensor(utt, dtype=torch.int64),
-            "ref_index": torch.tensor(ref, dtype=torch.int64),
-            "is_cross": torch.tensor(ref != utt),
+            "ref_index": torch.tensor(refs[0], dtype=torch.int64),
+            "is_cross": torch.tensor(any(r != utt for r in refs)),
             "position": torch.tensor(int(position), dtype=torch.int64),
         }
+        if self.n_refs is None:
+            sample["spk_raw"] = torch.from_numpy(store.speaker_vector(refs[0]))
+        else:
+            vectors, mask = store.speaker_references(refs, self.n_refs[1])
+            sample["spk_raw"], sample["ref_mask"] = torch.from_numpy(vectors), torch.from_numpy(mask)
+        return sample
 
 
 class FullUtteranceDataset(Dataset):
@@ -327,6 +375,10 @@ class FullUtteranceDataset(Dataset):
     utterances without a pool (speaker with a single utterance) are left out and listed in ``skipped_ids``.
     ``flags[i]`` is ``(ref_same_chapter, ref_relaxed, n_pool)`` of item ``i`` for stratified reporting (T1 reports
     ``(True, False, 0)``).
+
+    ``multi_ref`` (encoders that take several references, speaker-embedding Phase 3): ``spk_raw`` gets a reference
+    axis with ``ref_mask``; T1 and T2 hold their one reference, and T3 holds every vector of the pool, so the
+    encoder combines them (instead of the mean of the raw vectors).
     """
 
     def __init__(
@@ -337,10 +389,13 @@ class FullUtteranceDataset(Dataset):
         condition: str = "T1",
         speaker_layer: str = "l6",
         ref_min_dur: float = 3.0,
+        multi_ref: bool = False,
+        layer_stats_root: str | Path | None = None,
     ):
         if condition not in CONDITIONS:
             raise ValueError(f"condition must be one of {CONDITIONS}, got {condition!r}")
-        self.store = PackedStore([packed_dir], speaker_layer)
+        self.store = PackedStore([packed_dir], speaker_layer, layer_stats_root)
+        self.multi_ref = bool(multi_ref)
         self.gain_db = float(gain_db)
         self.condition = condition
         chosen = range(len(self.store)) if ids is None else [self.store.index_of(str(i)) for i in ids]
@@ -377,6 +432,9 @@ class FullUtteranceDataset(Dataset):
         return len(self.items)
 
     def _speaker_vector(self, i: int) -> np.ndarray:
+        if self.multi_ref:
+            refs = self.pools[i] if self.condition == "T3" else [self.references[i]]
+            return np.stack([self.store.speaker_vector(int(u)) for u in refs])
         if self.condition != "T3":
             return self.store.speaker_vector(self.references[i])
         pool = self.pools[i]
@@ -396,10 +454,13 @@ class FullUtteranceDataset(Dataset):
         features[LOUDNESS_CHANNEL] = apply_gain(loud_raw, g)
         audio = apply_gain(store.read_audio(utt, 0, HOP * frames), g)
         ref = self.references[i]
+        spk = self._speaker_vector(i)
+        extra = {"ref_mask": torch.ones(len(spk), dtype=torch.bool)} if self.multi_ref else {}
         return {
+            **extra,
             "features": torch.from_numpy(features),
             "audio": torch.from_numpy(audio)[None],
-            "spk_raw": torch.from_numpy(self._speaker_vector(i)),
+            "spk_raw": torch.from_numpy(spk),
             "gain_db": torch.tensor(self.gain_db, dtype=torch.float32),
             "utt_index": torch.tensor(utt, dtype=torch.int64),
             "ref_index": torch.tensor(ref, dtype=torch.int64),

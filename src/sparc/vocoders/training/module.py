@@ -18,9 +18,10 @@ from torch.nn.utils import clip_grad_norm_
 from sparc.vocoders.constants import HOP, SAMPLE_RATE
 from sparc.vocoders.losses.losses import ADVERSARIAL_LOSSES, feature_matching_loss, mr_stft_distance
 from sparc.vocoders.models.frontend import load_stats
-from sparc.vocoders.models.speaker import SpeakerFFN
+from sparc.vocoders.models.speaker import gaussian_kl, total_correlation
 from sparc.vocoders.training.callbacks import EVAL_SEED, capture_rng_state, fixed_torch_rng, restore_rng_state
 from sparc.vocoders.training.schedules import WarmupCosine
+from sparc.vocoders.training.speaker_terms import CropSpeakerStats, build_speaker, frozen_code, mix_codes, select_fmaps
 
 
 def render_mel(log_mel: torch.Tensor, vmin: float, vmax: float) -> np.ndarray:
@@ -50,10 +51,15 @@ class VocoderGANModule(pl.LightningModule):
         stats = load_stats(cfg.stats_path if stats is None else stats)
 
         self.generator = instantiate(cfg.vocoder.generator, stats=stats, _convert_="all")
-        layer = cfg.speaker.layer
-        self.speaker = SpeakerFFN(
-            dropout=cfg.speaker.dropout, mean=stats[f"spk_{layer}_mean"], std=stats[f"spk_{layer}_std"]
-        )
+        self.speaker = build_speaker(cfg, stats)
+        spk = cfg.speaker
+        self.vae = bool(spk.get("vae", {}).get("enabled", False))
+        self.mix_p = float(spk.get("mix", {}).get("p", 0.0))
+        self.cycle_weight = float(spk.get("mix", {}).get("cycle_weight", 0.0))
+        self.tc_weight = float(spk.get("tc", {}).get("weight", 0.0))
+        self.crop_stats = CropSpeakerStats() if self.cycle_weight > 0 else None
+        self._tc_pool: torch.Tensor | None = None
+        self._tc_dataset_size = 0
         self.discriminators = nn.ModuleDict(
             {name: instantiate(spec.module, _convert_="all") for name, spec in cfg.loss.discriminators.items()}
         )
@@ -91,9 +97,12 @@ class VocoderGANModule(pl.LightningModule):
     def adversarial_phase(self) -> bool:
         return self.g_step >= self.cfg.train.mel_warmup_steps
 
-    def synthesize(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Runs speaker FFN and generator on a batch and checks the output shape."""
-        spk = self.speaker(batch["spk_raw"])
+    def synthesize(self, batch: dict[str, Any], z: torch.Tensor | None = None) -> torch.Tensor:
+        """Runs speaker encoder and generator on a batch and checks the output shape.
+
+        ``z`` overrides the speaker code; otherwise the encoder's deterministic code (VAE: posterior mean) is used.
+        """
+        spk = self.speaker.embed(batch["spk_raw"], batch.get("ref_mask"))[0] if z is None else z
         wav = self.generator(batch["features"], spk)
         expected = (batch["features"].shape[0], 1, batch["features"].shape[-1] * HOP)
         if tuple(wav.shape) != expected:
@@ -125,24 +134,35 @@ class VocoderGANModule(pl.LightningModule):
         self.untoggle_optimizer(opt_d)
         return logs
 
-    def _generator_update(self, opt_g, audio: torch.Tensor, wav_hat: torch.Tensor) -> dict[str, torch.Tensor]:
+    def _generator_update(
+        self, opt_g, audio: torch.Tensor, wav_hat: torch.Tensor, aux: dict | None = None
+    ) -> dict[str, torch.Tensor]:
+        """Generator step. ``aux`` (Phase 3) holds ``recon`` (elements with a target), the codes and the batch;
+        mixed / prior elements get the adversarial loss only."""
         self.toggle_optimizer(opt_g)
         weights = self.cfg.loss
-        mel = self.mel_loss(wav_hat, audio)
+        aux = aux or {}
+        recon = aux.get("recon")
+        idx = None if recon is None or bool(recon.all()) else torch.nonzero(recon).flatten()
+        target, output = (audio, wav_hat) if idx is None else (audio[idx], wav_hat[idx])
+        mel = self.mel_loss(output, target)
         total = weights.mel_weight * mel
         logs = {"train/mel": mel.detach()}
         if self.adversarial_phase:
             for name, disc in self.discriminators.items():
                 real_logits, fake_logits, real_fmaps, fake_fmaps = disc(audio, wav_hat)
                 adv, _ = self.g_loss_fn(fake_logits)
+                if idx is not None:
+                    real_fmaps, fake_fmaps = select_fmaps(real_fmaps, idx), select_fmaps(fake_fmaps, idx)
                 fm = feature_matching_loss(real_fmaps, fake_fmaps)
                 total = total + self.adv_weights[name] * adv + self.fm_weights[name] * fm
                 logs[f"train/g_adv/{name}"] = adv.detach()
                 logs[f"train/g_fm/{name}"] = fm.detach()
             if weights.mss_weight > 0:
-                mss = self.mss_loss(wav_hat, audio)
+                mss = self.mss_loss(output, target)
                 total = total + weights.mss_weight * mss
                 logs["train/mss"] = mss.detach()
+        total = total + self._speaker_terms(aux, audio, wav_hat, logs)
         self.sched_g.apply(opt_g, self.g_step)
         logs["train/grad_norm_g"] = self._step_grads(opt_g, total, self.generator_parameters)
         logs["train/g_total"] = total.detach()
@@ -150,14 +170,63 @@ class VocoderGANModule(pl.LightningModule):
         self.untoggle_optimizer(opt_g)
         return logs
 
+    def _speaker_terms(self, aux: dict, audio: torch.Tensor, wav_hat: torch.Tensor, logs: dict) -> torch.Tensor:
+        """Phase 3 terms: capacity-controlled KL, beta-TC on a side batch, latent cycle. 0 for the comparison arms."""
+        total = torch.zeros((), device=audio.device)
+        info = aux.get("info", {})
+        spk = self.cfg.speaker
+        if self.vae and "mu" in info:
+            kl = gaussian_kl(info["mu"], info["logvar"]).mean()
+            vae = spk.vae
+            capacity = float(vae.capacity_max) * min(1.0, self.g_step / max(int(vae.capacity_steps), 1))
+            total = total + float(vae.gamma) * (kl - capacity).abs()
+            logs["train/kl"], logs["train/kl_capacity"] = kl.detach(), torch.tensor(capacity)
+        if self.tc_weight > 0:
+            pool = self._side_pool(audio.device)
+            pick = torch.randint(len(pool), (int(spk.tc.batch),), device=audio.device)
+            mu, logvar = self.speaker.posterior(pool[pick].float())
+            z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
+            tc = total_correlation(z, mu, logvar, self._tc_dataset_size)
+            total = total + self.tc_weight * tc
+            logs["train/tc"] = tc.detach()
+        if self.crop_stats is not None and self.adversarial_phase:
+            features = aux["features"]
+            with torch.no_grad():
+                code_real = frozen_code(self.speaker, self.crop_stats(audio, features))
+            code_fake = frozen_code(self.speaker, self.crop_stats(wav_hat, features))
+            shift = (aux["z_used"] - aux["z"]).detach()
+            cycle = ((code_fake - code_real - shift) ** 2).mean()
+            total = total + self.cycle_weight * cycle
+            logs["train/cycle"] = cycle.detach()
+        return total
+
+    def _side_pool(self, device: torch.device) -> torch.Tensor:
+        """Random training references (all-layer statistics, fp16) on the GPU for the beta-TC side batch."""
+        if self._tc_pool is None:
+            store = self.trainer.datamodule.train_dataset().store
+            rng = np.random.default_rng([int(self.cfg.seed), 7])
+            size = min(int(self.cfg.speaker.tc.pool_size), len(store))
+            rows = np.sort(rng.choice(len(store), size=size, replace=False))
+            pool = np.stack([store.speaker_vector(int(r)) for r in rows]).astype(np.float16)
+            self._tc_pool = torch.from_numpy(pool).to(device)
+            self._tc_dataset_size = len(store)
+        return self._tc_pool
+
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> None:
         opt_g, opt_d = self.optimizers()
         audio = batch["audio"]
-        wav_hat = self.synthesize(batch)
+        z, info = self.speaker.embed(batch["spk_raw"], batch.get("ref_mask"), sample=self.vae)
+        z_used, recon = z, None
+        if self.mix_p > 0 and self.adversarial_phase:
+            gen = torch.Generator().manual_seed(int(self.cfg.seed) * 1_000_003 + self.g_step)
+            mix = self.cfg.speaker.mix
+            z_used, recon = mix_codes(z, self.mix_p, float(mix.prior_frac), gen)
+        wav_hat = self.synthesize(batch, z=z_used)
+        aux = {"recon": recon, "info": info, "z": z, "z_used": z_used, "features": batch["features"]}
         logs = {}
         if self.adversarial_phase:
             logs.update(self._discriminator_update(opt_d, audio, wav_hat))
-        logs.update(self._generator_update(opt_g, audio, wav_hat))
+        logs.update(self._generator_update(opt_g, audio, wav_hat, aux))
         self.g_step += 1
         self.d_step += int("train/d_total" in logs)
         self.samples_consumed += audio.shape[0] * self.trainer.world_size

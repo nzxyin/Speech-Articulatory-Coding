@@ -164,6 +164,17 @@ class VocoderDataModule(L.LightningDataModule):
         self._logging_ids = logging_ids
         self._val_ids = select_validation_ids(index, data.val_subset_size, logging_ids, seed)
 
+    def _speaker_kwargs(self, train: bool) -> dict:
+        """Speaker-embedding Phase 3 options (``speaker.n_refs``, ``speaker.layer_stats_root``); empty when unset."""
+        speaker = self.cfg.speaker
+        n_refs = speaker.get("n_refs")
+        kwargs = {}
+        if speaker.get("layer_stats_root"):
+            kwargs["layer_stats_root"] = speaker.layer_stats_root
+        if n_refs is not None:
+            kwargs.update({"n_refs": tuple(n_refs)} if train else {"multi_ref": True})
+        return kwargs
+
     def train_dataset(self) -> CropDataset:
         data = self.cfg.data
         return CropDataset(
@@ -178,6 +189,7 @@ class VocoderDataModule(L.LightningDataModule):
             subset_size=data.get("train_subset_size"),
             subset_seed=self.cfg.seed,
             fixed_crops=bool(data.get("fixed_crops", False)),
+            **self._speaker_kwargs(train=True),
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -223,6 +235,7 @@ class VocoderDataModule(L.LightningDataModule):
             condition="T1",
             speaker_layer=self.cfg.speaker.layer,
             ref_min_dur=data.ref_min_dur,
+            **self._speaker_kwargs(train=False),
         )
         return self._eval_loader(dataset)
 
@@ -275,6 +288,7 @@ class VocoderDataModule(L.LightningDataModule):
                 condition=condition,
                 speaker_layer=self.cfg.speaker.layer,
                 ref_min_dur=data.ref_min_dur,
+                **self._speaker_kwargs(train=False),
             )
             if self.predict_output_dir() is not None and len(dataset) == 0:
                 continue

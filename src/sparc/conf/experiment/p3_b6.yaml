@@ -1,0 +1,22 @@
+# @package _global_
+# Speaker-embedding Phase 3 screening arm B6: as B3 with a beta-TC penalty (weight 4) on a side batch of 256 references.
+# Recipe otherwise experiment=ablation_100k (100k generator steps, 16 x 64-frame crops).
+experiment_name: p3_b6
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+speaker:
+  type: layerpool
+  layer: layers
+  layer_stats_root: ${oc.env:SPKEMB_P3_CACHE}
+  p_cross: 1.0
+  n_refs: [1, 3]
+  vae:
+    enabled: true
+  tc:
+    weight: 4.0
