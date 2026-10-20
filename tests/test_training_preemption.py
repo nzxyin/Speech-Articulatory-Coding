@@ -8,8 +8,10 @@ from types import SimpleNamespace
 
 import lightning as pl
 import numpy as np
+import pytest
 import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.plugins.environments import LightningEnvironment
 from torch.utils.data import DataLoader, Dataset
 
 from sparc.cli import train as train_cli
@@ -58,6 +60,8 @@ def test_step_conversion():
     assert OPTIMIZERS_PER_BATCH == 2
     assert batches_to_global_steps(1500000) == 3000000
     assert batches_to_global_steps(None) is None
+    assert batches_to_global_steps(-1) == -1  # unlimited passes through
+    assert _trainer(Path(tempfile.mkdtemp()), max_batches=-1).max_steps == -1
 
 
 def test_steps_rng_and_resume():
@@ -136,14 +140,97 @@ def test_resume_discovery_and_run_name():
         assert train_cli._resolve_run_name(cfg) is None
         os.environ.update(SLURM_JOB_ID="123", SLURM_JOB_NAME="sparc_train")
         assert train_cli._resolve_run_name(cfg) == "slurm_123"
-        os.environ["SLURM_JOB_NAME"] = "interactive"
+        # a genuinely interactive job: the name captured at import is what counts
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "interactive"
         assert train_cli._resolve_run_name(cfg) is None
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "bash"
+        assert not train_cli._under_slurm_batch()
+        os.environ["SPARC_ORIG_SLURM_JOB_NAME"] = "sparc_train"
         assert train_cli._resolve_run_name(SimpleNamespace(run_name="x")) == "x"
         # importing the CLI must not overwrite SLURM_JOB_NAME (that disabled Lightning's requeue plugin)
-        assert os.environ["SLURM_JOB_NAME"] == "interactive"
+        assert os.environ["SLURM_JOB_NAME"] == "sparc_train"
     finally:
         os.environ.clear()
         os.environ.update(saved)
+
+
+def test_job_name_spoof_does_not_disable_batch_mode():
+    import importlib
+
+    keys = ("SLURM_JOB_ID", "SLURM_JOB_NAME", "SPARC_ORIG_SLURM_JOB_NAME")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        # sbatch job; a wrapper then overwrites the job name before calling the trainer
+        os.environ.pop("SPARC_ORIG_SLURM_JOB_NAME", None)
+        os.environ.update(SLURM_JOB_ID="456", SLURM_JOB_NAME="sparc_train")
+        importlib.reload(train_cli)
+        os.environ["SLURM_JOB_NAME"] = "interactive"
+        assert train_cli._under_slurm_batch()
+        assert train_cli._resolve_run_name(SimpleNamespace(run_name=None)) == "slurm_456"
+        # a DDP child re-imports with the spoofed name but inherits the captured one
+        importlib.reload(train_cli)
+        assert train_cli._under_slurm_batch()
+        # genuinely interactive jobs stay non-batch
+        for name in ("interactive", "bash"):
+            os.environ.pop("SPARC_ORIG_SLURM_JOB_NAME", None)
+            os.environ["SLURM_JOB_NAME"] = name
+            importlib.reload(train_cli)
+            assert not train_cli._under_slurm_batch()
+            assert train_cli._resolve_run_name(SimpleNamespace(run_name=None)) is None
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        importlib.reload(train_cli)
+
+
+class _StopAfter(pl.Callback):
+    """Raises KeyboardInterrupt at the end of batch `n`, like a SIGTERM-driven shutdown."""
+
+    def __init__(self, n):
+        self.n = n
+
+    def on_train_batch_end(self, trainer, *args, **kwargs):
+        if trainer.fit_loop.epoch_loop._batches_that_stepped >= self.n:
+            raise KeyboardInterrupt
+
+
+def test_save_on_exception_end_to_end():
+    with tempfile.TemporaryDirectory() as d:
+        ckpt_dir = Path(d) / "vocoder_ckpt" / "slurm_7"
+        ckpt_dir.mkdir(parents=True)
+
+        def trainer(max_batches, extra=()):
+            # callback config of cli/train.py::main; the periodic save never fires within these
+            # runs, so only the exception path can produce last.ckpt before the first stop
+            cb = ModelCheckpoint(
+                dirpath=str(ckpt_dir), save_last=True,
+                every_n_train_steps=batches_to_global_steps(1000), save_on_exception=True,
+                save_top_k=1, monitor=None, mode="max",
+            )
+            return pl.Trainer(
+                max_steps=batches_to_global_steps(max_batches), accelerator="cpu", devices=1,
+                default_root_dir=str(ckpt_dir), logger=False, callbacks=[cb, *extra],
+                enable_progress_bar=False, enable_model_summary=False, log_every_n_steps=1,
+                plugins=[LightningEnvironment()],
+            )
+
+        with pytest.raises(SystemExit):  # Lightning saves the exception checkpoint, then exits
+            trainer(6, extra=[_StopAfter(3)]).fit(_model(), _loader())
+        assert (ckpt_dir / "last.ckpt").is_file(), sorted(p.name for p in ckpt_dir.iterdir())
+        ck = torch.load(ckpt_dir / "last.ckpt", weights_only=False)
+        assert ck["global_step"] % 2 == 0 and ck["global_step"] >= 6  # whole batches, at least 3
+
+        cfg = SimpleNamespace(resume_from_checkpoint=None, run_name=None)
+        picked = train_cli._find_resume_ckpt(cfg, ckpt_dir, "slurm_7")
+        assert picked == str(ckpt_dir / "last.ckpt")
+
+        m2 = _model()
+        t2 = trainer(6)
+        t2.fit(m2, _loader(), ckpt_path=picked)
+        assert t2.global_step == 12 and m2.batch_step == 6
 
 
 def _plugin_cfg(devices, slurm_requeue=True):

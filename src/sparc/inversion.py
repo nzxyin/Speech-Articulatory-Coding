@@ -81,7 +81,9 @@ class Inversion(BaseExtractor):
         self.device = device
     
     
-    def _extract_ema(self, wavs, outputs={}, include_acoustics=False):
+    def _extract_ema(self, wavs, outputs=None, include_acoustics=False):
+        if outputs is None:
+            outputs = {}
         if not isinstance(wavs, SpeechWave):
             wavs = self.process_wavfiles(wavs)
         
@@ -126,7 +128,9 @@ class Inversion(BaseExtractor):
         return outputs
         
     
-    def __call__(self, wavfiles, outputs={}, split_batch=False, **kwargs):
+    def __call__(self, wavfiles, outputs=None, split_batch=False, **kwargs):
+        if outputs is None:
+            outputs = {}
         wavs = self.process_wavfiles(wavfiles)
         outputs = self._extract_ema(wavs, outputs, **kwargs)
         if split_batch:

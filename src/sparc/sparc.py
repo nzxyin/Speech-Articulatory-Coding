@@ -62,7 +62,7 @@ def load_model(model_name=None, config=None, ckpt=None,
         if config['generator_ckpt'] is None:
             config['generator_ckpt'] = ckpt['state_dict']['generator']
         # An explicitly passed head takes precedence over the checkpoint's embedded one.
-        if (config['linear_model_path'] is None and
+        if (config.get('linear_model_path') is None and
             kwargs.get("linear_model_path") is None and
             kwargs.get("linear_model_state_dict") is None):
             config['linear_model_state_dict'] = ckpt['state_dict']['linear_model']
@@ -109,8 +109,9 @@ class SPARC(BaseExtractor):
                  pitch_shift_strategy="standard",
                  output_sr=16000, use_penn=False, **kwargs):
         if use_penn:
-            warnings.warn("use_penn is not implemented and has no effect; torchcrepe is always used "
-                          "for pitch extraction.")
+            # the hub en+ config sets use_penn: true; log instead of warning so default loads stay quiet
+            logger.info("use_penn is not implemented and has no effect; torchcrepe is always used "
+                        "for pitch extraction.")
 
         common_configs = {"device":device, "normalize":normalize, "sr":sr,
                           "ft_sr":ft_sr}

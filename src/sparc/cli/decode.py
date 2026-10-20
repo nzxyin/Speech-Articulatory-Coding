@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import hydra
@@ -7,6 +8,16 @@ import tqdm
 from omegaconf import DictConfig
 
 from sparc import load_model
+
+
+def _pair_by_stem(ft_dir, spk_emb_dir):
+    """Pair feature and speaker-embedding files by file stem; warn about unpaired files."""
+    feats = {p.stem: p for p in ft_dir.glob("*.npy")}
+    spk_embs = {p.stem: p for p in spk_emb_dir.glob("*.npy")}
+    for stem in sorted(feats.keys() ^ spk_embs.keys()):
+        where = ft_dir if stem in feats else spk_emb_dir
+        print(f"Warning: skipping {stem}: present only in {where}", file=sys.stderr)
+    return [(feats[s], spk_embs[s]) for s in sorted(feats.keys() & spk_embs.keys())]
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -19,10 +30,7 @@ def main(cfg: DictConfig) -> None:
 
     coder = load_model(cfg.model.model_name, config=cfg.model.config_path, device=cfg.device)
 
-    feats = sorted(ft_dir.glob("*.npy"))
-    spk_embs = sorted(spk_emb_dir.glob("*.npy"))
-
-    for feat_path, spk_emb_path in tqdm.tqdm(list(zip(feats, spk_embs))):
+    for feat_path, spk_emb_path in tqdm.tqdm(_pair_by_stem(ft_dir, spk_emb_dir)):
         save_name = save_dir / (Path(str(feat_path).replace(str(ft_dir), "")).stem + ".wav")
 
         if save_name.exists():

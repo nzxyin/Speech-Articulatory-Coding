@@ -59,7 +59,9 @@ class SpeakerEncoder(BaseExtractor):
             self.spk_enc = self.spk_enc.to(device)
         self.device = device
         
-    def _extract_spkemb(self, wavs, outputs={}):
+    def _extract_spkemb(self, wavs, outputs=None):
+        if outputs is None:
+            outputs = {}
         if not isinstance(wavs, SpeechWave):
             wavs = self.process_wavfiles(wavs)
         if "acoustics" not in outputs.keys():
@@ -114,7 +116,9 @@ class SpeakerEncoder(BaseExtractor):
         return spk_emb
     
     
-    def __call__(self, wavfiles, outputs={}, split_batch=False):
+    def __call__(self, wavfiles, outputs=None, split_batch=False):
+        if outputs is None:
+            outputs = {}
         wavs = self.process_wavfiles(wavfiles)
         if "periodicity" not in outputs.keys():
             outputs = self.source_extractor._extract_pitch(wavs, outputs)

@@ -20,10 +20,11 @@ from torch.utils.data import Dataset
 
 
 class VocoderDataset(Dataset):
-    def __init__(self, wav_dir, sparc_dir, segment_frames=16, sr=16000, ft_sr=50, min_frames=32):
+    def __init__(self, wav_dir, sparc_dir, segment_frames=16, sr=16000, ft_sr=50, min_frames=32,
+                 spk_raw_subdir="spk_raw"):
         self.wav_dir = Path(wav_dir)
         self.ft_dir = Path(sparc_dir) / "emasrc"
-        self.spk_raw_dir = Path(sparc_dir) / "spk_raw"
+        self.spk_raw_dir = Path(sparc_dir) / spk_raw_subdir
         self.hop = sr // ft_sr
         self.segment_frames = segment_frames
         self.segment_samples = segment_frames * self.hop
