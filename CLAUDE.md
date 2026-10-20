@@ -701,6 +701,22 @@ MFCC, tilt) of the same speaker from an utterance's embedding (RMSE in target-st
 - Pre-set shortlist rule (within 1 SE of the best M1, plus 0 and 6): layers 0, 1, 2, 3, 6. Phase 2 (`spkemb/ffn_refit.py`:
   speaker FFN refit against the frozen en / en+ generators with other-utterance references; resynthesis and
   voice-conversion swap on unseen speakers, ECAPA + WavLM-base-plus-SV similarity, WER) runs on these.
+- Phase 2 result (2026-10-20; `/data/user_data/xoy/spkemb/refit/summary_{en,en+}.md`; FFN refit 30k steps on ~4.4k
+  VCTK + LibriTTS-R dev utterances, mel + MR-STFT loss, frozen generator; embedding always from another utterance).
+  LibriTTS-R test-clean (39 unseen speakers, 376 utterances), SIM ECAPA / WavLM-SV:
+  | arm | en generator | en+ generator |
+  |---|---|---|
+  | shipped FFN (control) | 0.672 / 0.935 | 0.664 / 0.939 |
+  | refit L0 / L1 / L2 / L3 / L6 | 0.583 / 0.587 / 0.592 / 0.596 / 0.594 (ECAPA) | 0.545 / 0.550 / 0.558 / 0.566 / 0.562 |
+  - The refit procedure, not the layer, dominates: refitting the en generator's own layer 0 loses 0.09 SIM against its
+    jointly trained FFN. Among refits, layers 0-6 differ by <= 0.021 ECAPA SIM (SE ~0.012; ~1-1.7 SE), with a slight
+    lean to L3/L6 (opposite of Phase 1's M1 order, within noise); held-out VCTK speakers agree. WER 3.0-3.3 % for every
+    arm (original audio 2.2 %).
+  - Voice-conversion swap: even the shipped model moves only slightly toward the target speaker (ECAPA target 0.39 vs
+    source 0.35; pitch is not shifted), and the refits less (0.29-0.33 vs 0.36-0.40): identity is carried largely by
+    the source's pitch / articulation, consistent with the embedding encoding F0 (Phase 1 M5).
+  - So with a frozen generator, layer choice within 0-6 is not resolvable; the embedding's limitation is how it is
+    trained (same-utterance references, jointly with the vocoder), which Phase 3 addresses.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
