@@ -5,6 +5,18 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Speaker-embedding Phase 3 (branch `spkemb-phase3`; design in `docs/speaker_embedding_plan.md` on `multispeaker-eval`):
+  - `sparc.vocoders.features.spk_layers`: periodicity-weighted mean and std of all 25 WavLM Large hidden states per
+    packed utterance (fp16, `<split>/{mean,std}.npy` + `stats.npz`); layers 0 and 6 are checked against the cached
+    `spk_l0` / `spk_l6` on every utterance.
+  - `LayerPoolSpeakerEncoder` (learned softmax layer weights over the z-scored statistics, MLP to 64-d; optional VAE
+    with a product-of-Gaussians posterior over references including the prior); `SpeakerFFN.embed` for K references;
+    `gaussian_kl`, `total_correlation` (minibatch-weighted sampling).
+  - `PackedStore(speaker_layer="layers")`, `CropDataset(n_refs=...)` (1-3 references per crop) and
+    `FullUtteranceDataset(multi_ref=True)` (T3 = every pool reference through the encoder).
+  - `training/speaker_terms.py` and module hooks: capacity-controlled KL, beta-TC side batch, mixed / prior codes with
+    adversarial-only loss, latent cycle through frozen WavLM; `speaker.*` config keys (defaults keep the comparison's
+    behaviour); experiments `p3_b1` .. `p3_b6`; `scripts/spkemb/p3_job.sh`, `p3_train.sh`.
 - Experiment `main_seed1`: the primary run (`main`) with training seed 1, for a seed-to-seed comparison of the three vocoders.
 - `CLAUDE.md` with the project's current direction and findings, and this changelog.
 - `docs/vocoders/INTERFACES.md`: module contract for the 24 kHz articulatory vocoder comparison (feature cache, data,
