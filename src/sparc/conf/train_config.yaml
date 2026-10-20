@@ -5,6 +5,7 @@ defaults:
 device: cuda:0
 
 # Data
+spk_raw_subdir: spk_raw   # spk_raw_enplus for features from prepare_spk_raw --en-plus-compatible
 segment_frames: 16      # 16 frames @ 50Hz = 320ms, matching paper Appendix B.7
 batch_size: 64
 num_workers: 8

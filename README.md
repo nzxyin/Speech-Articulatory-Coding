@@ -74,6 +74,11 @@ The articulatory code outputs have the following format.
 }
 ```
 
+`loudness` is computed on the per-utterance normalized waveform (`normalize: true`), so it is invariant to
+recording level. CREPE adds random dither to the decoded pitch, so `pitch` differs slightly between calls;
+`coder.encode(wav, seed=0)` seeds numpy before each utterance's pitch decoding (the global RNG state is
+restored afterwards) and makes it reproducible. The default `seed=None` leaves the RNG untouched.
+
 #### Articulatory Synthesis
 
 ```python
@@ -128,6 +133,10 @@ Encode a dataset first (see [CLI Inference](#cli-inference) above), then precomp
 uv run sparc-encode dataset=librittsr_train_clean_100
 uv run python -m sparc.training.prepare_spk_raw <wav_dir> <sparc_dir>
 ```
+
+With `--en-plus-compatible` the script computes the en+ pooled feature (the one the pretrained en+ speaker
+FFN expects) and writes it to `<sparc_dir>/spk_raw_enplus/` instead of `spk_raw/`. To train on it, set
+`spk_raw_subdir=spk_raw_enplus` (default `spk_raw`) for `sparc-train`.
 
 #### 2. Train
 

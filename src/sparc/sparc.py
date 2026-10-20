@@ -109,8 +109,9 @@ class SPARC(BaseExtractor):
                  pitch_shift_strategy="standard",
                  output_sr=16000, use_penn=False, **kwargs):
         if use_penn:
-            warnings.warn("use_penn is not implemented and has no effect; torchcrepe is always used "
-                          "for pitch extraction.")
+            # the hub en+ config sets use_penn: true; log instead of warning so default loads stay quiet
+            logger.info("use_penn is not implemented and has no effect; torchcrepe is always used "
+                        "for pitch extraction.")
 
         common_configs = {"device":device, "normalize":normalize, "sr":sr,
                           "ft_sr":ft_sr}

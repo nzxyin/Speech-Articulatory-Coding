@@ -140,6 +140,7 @@ def main(cfg: DictConfig) -> None:
         wav_dir=cfg.dataset.wav_dir,
         sparc_dir=cfg.dataset.save_dir,
         segment_frames=cfg.segment_frames,
+        spk_raw_subdir=cfg.get("spk_raw_subdir", "spk_raw"),
     )
     print(f"Training set: {len(dataset)} utterances with cached emasrc + spk_raw features")
     loader = DataLoader(
