@@ -89,6 +89,92 @@ layers by how well they can drive that generator, which favours its own layer. P
 - Compute (estimates): 5 arms x 100k steps ~60 GPU-h; 2-3 finalists x 400k ~150-250 GPU-h (+ a second seed); one-time
   caches ~20-40 GPU-h. `vocoder-comparison` and `$SV_ROOT` belong to the vocoder work: changes need agreement first.
 
+### Phase 3 design: an interpolatable speaker space (2026-10-20; fixed before any Phase 3 run)
+
+Requirement: for two speakers A and B, decoding the path z(a) = (1 - a) z_A + a z_B must give natural speech whose
+voice moves steadily from A to B. Three things are needed. (1) The region between speakers must be densely used
+in training; otherwise the generator sees codes there for the first time at inference. (2) The generator must be
+smooth in z. (3) Something must check that a code between speakers decodes to an in-between voice. Reconstruction
+losses cannot do (3): no audio exists for an in-between speaker.
+
+How the options compare:
+- A deterministic encoder (the current FFN) satisfies none of the three: nothing fills the space between training
+  speakers, and the vocoder is free to be arbitrary there.
+- VAE / beta-VAE (KL to N(0, I)) gives (1) and (2). The KL packs the codes of all speakers into one dense
+  Gaussian, and posterior noise trains the generator on a neighbourhood around each code. The KL also limits how
+  much information the code carries, which removes utterance content (Phase 1: content leakage is high in the
+  shallow layers that carry timbre best). Risk: posterior collapse, since the generator gets EMA, pitch and
+  loudness anyway. We use a capacity-controlled KL (Burgess et al. 2018: gamma |KL - C| with C ramped up)
+  rather than a fixed beta, so the information budget is set explicitly.
+- beta-TC-VAE adds a total-correlation penalty that makes the latent dimensions statistically independent. That
+  helps if separate controls are wanted (e.g. one axis for vocal-tract length, one for breathiness). It does not
+  by itself make the space interpolatable, and unsupervised disentanglement is not identifiable without inductive
+  biases (Locatello et al. 2019). Run as an ablation only.
+- Interpolation training addresses (3) directly:
+  - Decode mixed codes z_mix = (1 - a) z_A + a z_B (two speakers in the batch, a ~ U(0, 1)) and prior samples
+    z ~ N(0, I).
+  - These have no target audio, so they get only the adversarial loss: realism, which removes quality dips
+    along the path.
+  - A latent-cycle loss ties the voice to the code: the encoding of the output must move by the same vector as
+    the code, E(G(x, z_mix)) - E(x_real) = z_mix - z_A, computed with frozen WavLM on the crop.
+- Pitch: the Phase 1 embedding predicts median F0 almost perfectly (PCC 0.98), while pitch reaches the vocoder
+  separately. Along interpolation paths the source F0 contour is therefore scaled geometrically toward the target,
+  f0 x (F_B / F_A)^a. Paths are also scored without the pitch scaling, as a check.
+
+Encoder (all arms see the same inputs):
+- Per reference utterance, the cached periodicity-weighted mean and std of all 25 WavLM Large layers.
+- Learned softmax layer weights (separately for mean and std), then a fixed z-score, then an MLP 2048 -> 1024 -> 64.
+- K = 1-3 references, all from other utterances of the speaker (p_cross = 1).
+  - Deterministic arms average the K outputs.
+  - VAE arms output (mu, log var) per reference and combine them as a product of Gaussians that includes the
+    N(0, I) prior. The posterior then gets sharper with more references, which turns K into an explicit
+    "enrolment" knob.
+- Evaluation uses the posterior mean.
+- The VAE terms involve only the encoder, which runs on cached statistics. They are therefore computed on a side
+  batch of 256 random training references per step, much larger than the 16-crop vocoder batch, so the KL and the
+  total-correlation estimate are not limited by the vocoder batch size.
+
+Arms (HiFi-GAN, experiment ablation_100k recipe of `vocoder-comparison`: 100k generator steps, 16 x 64-frame
+crops, one seed each; generator, losses and data unchanged):
+| arm | speaker input | references | latent | interpolation training |
+|---|---|---|---|---|
+| B0 | l6 FFN (existing ablation_100k run, p_cross 0.5) | 1, own or other | deterministic | - |
+| B1 | l6 FFN | 1-3 other | deterministic | - |
+| B2 | layer pool, mean + std | 1-3 other | deterministic | - |
+| B3 | layer pool | 1-3 other | VAE, capacity C -> 32 nats, PoG | - |
+| B4 | layer pool | 1-3 other | as B3 | mixup + prior samples (25 % of the crops), adversarial only |
+| B5 | layer pool | 1-3 other | as B3 | as B4 + latent cycle |
+| B6 | layer pool | 1-3 other | as B3 + beta-TC (beta_TC = 4) | - |
+
+Evaluation (unseen speakers: LibriTTS-R test-clean; held-out VCTK speakers):
+- Speaker similarity with ECAPA and WavLM-base-plus-SV. Neither is used in training.
+- Conditions T2 (another utterance) and T3 (speaker mean of the other utterances), plus a speaker swap.
+- WER (whisper-large-v3), UTMOS, mel distance.
+- Interpolation, on 40 unseen-speaker pairs (20 same-gender, 20 cross-gender):
+  - 9 points a = 0, 1/8, ..., 1, on the content of a third speaker's utterance.
+  - Each output is scored against both endpoint speakers' reference means, giving d(a) = SIM_B - SIM_A per SV model.
+  - Monotonicity: per-pair Spearman of d with a, and the fraction of increasing steps.
+  - Evenness: the largest step |d(a+1/8) - d(a)| divided by the range d(1) - d(0); 1/8 is ideal.
+  - Range: d(1) - d(0).
+  - Crossing: |a* - 0.5|, where d(a*) = 0.
+  - Quality dip: the minimum UTMOS along the path minus the mean of its endpoints, plus the midpoint WER.
+  - Deterministic arms are interpolated linearly in their embedding, in the same way.
+- Prior samples (VAE arms), 200 draws:
+  - Naturalness (UTMOS), WER, diversity (mean pairwise 1 - SIM, compared with that of real test speakers) and
+    novelty (the highest SIM to any training speaker).
+
+Pre-registered contrasts and decisions (paired over the test speakers, with a speaker-level bootstrap; one seed,
+so these contrasts screen arms rather than establish effects):
+- S1, B1 vs B0 (training on other-utterance references): T2 SIM.
+- S2, B2 vs B1 (layer pool + std vs l6 FFN): T2 SIM.
+- S3, B3 vs B2 (VAE): T2 SIM may drop by at most 0.01 (mean of both SV models), and the interpolation score must
+  improve. The interpolation score is the mean of monotonicity Spearman, 1 - evenness excess and 1 + quality dip.
+- S4, B4 / B5 vs B3 (interpolation training): interpolation score and prior-sample naturalness.
+- B6 is reported descriptively.
+- Finalists (400k steps x 2 seeds), chosen on these screens:
+  - the best deterministic arm by T2 SIM;
+  - the best interpolatable arm, i.e. the best interpolation score among arms within 0.01 T2 SIM of the best arm.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
