@@ -683,6 +683,25 @@ under `adapt/wavlm-large/prefix12_..._gruconv_k9_nosm_m0.0002_s{0,1,2}`). 3 seed
   USC F1 0.463 / 0.902, F5 0.436 / 0.902, M1 0.613 / 0.864, M3 0.574 / 0.847; EMA_5EMO jn 0.667 / 0.726, jr 0.540 /
   0.740, kf 0.555 / 0.756. Not a held-out number; LOSO above is the new-speaker estimate.
 
+### Speaker embedding for resynthesis: layer screen (2026-10-20; plan `docs/speaker_embedding_plan.md`)
+Phase 1 (`spkemb/layers.py`, `/data/user_data/xoy/spkemb/layers/summary.md`): WavLM Large hidden states pooled with
+SPARC's (en+) periodicity weights, 5470 utterances (VCTK 109 x 30, LibriTTS-R dev/test-clean), probes fitted on 126
+speakers and scored on 62 held-out speakers. M1 = predicting another utterance's spectral targets (log-mel mean/std,
+MFCC, tilt) of the same speaker from an utterance's embedding (RMSE in target-std units; primary).
+- Speaker timbre is best in the shallowest layers and decays with depth: M1 L0 0.819 (SE 0.014), L1 0.823, L2 0.827,
+  L3 0.834, L6 0.845, L9 0.862, L12 0.882, L18-20 ~0.916 (worst), L24 0.892. Uniform pooling is similar (best L1
+  0.822). The shipped `en` choice (layer 0) is the best single layer; `en+`'s layer 6 is ~1.8 SE worse; the shipped en+
+  64-d embedding (L6 + trained FFN) 0.836.
+- Content leakage runs the other way (M3 PCC: L0-L3 0.78-0.81, L6 0.72, L12 0.60, L18-20 ~0.51); the en+ FFN brings
+  it down to 0.505 while keeping L6's timbre -- a learned projection separates the two.
+- Short references fail: with 1 s, M1 RMSE > 1 (worse than the mean) at every layer, L1-L2 best (1.18-1.20); 2 s
+  0.88-0.92 for L0-L3. Speaker identification (5-shot, raw pooled): L0 0.75, decreasing with depth; en+ 64-d 0.94.
+- Median F0 is almost fully predictable from the embedding (PCC 0.98 in L0-L6, 0.95 for en+), although pitch is given
+  to the vocoder separately -- a possible conflict in voice conversion (tested in Phase 2).
+- Pre-set shortlist rule (within 1 SE of the best M1, plus 0 and 6): layers 0, 1, 2, 3, 6. Phase 2 (`spkemb/ffn_refit.py`:
+  speaker FFN refit against the frozen en / en+ generators with other-utterance references; resynthesis and
+  voice-conversion swap on unseen speakers, ECAPA + WavLM-base-plus-SV similarity, WER) runs on these.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
