@@ -26,7 +26,8 @@ contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.
   test.other; ground truth 1.9 and 3.4 percent).
 - Prosody failures differ (robust): Vocos has the largest F0 error (about 35 cents RMSE); DDSP has the largest voicing and
   loudness errors. The HiFi-GAN-DDSP F0 ordering and the Vocos-DDSP UTMOS ordering are not robust.
-- F0 and loudness edits are followed closely; single EMA channel edits are not (gain about 0.1). Pairing the X and Y
+- F0 and loudness edits are followed closely; single EMA channel edits are not (gain about 0.1). Both replicate in the
+  second seed (RESULTS.md section 5.2); HiFi-GAN and Vocos follow EMA edits slightly more than DDSP (by about 0.02, robust). Pairing the X and Y
   edits of a sensor does not help; time-varying edits and the direction within a sensor do (best about 0.57).
 - Compute: Vocos uses 11.5 times fewer FLOPs than HiFi-GAN and is 7-10 times faster at inference, but only 1.5 times
   faster to train; the SPARC feature extractor dominates the end-to-end cost.
