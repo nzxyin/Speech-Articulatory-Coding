@@ -8,7 +8,8 @@ set -uo pipefail
 [ -d src/sparc ] || cd "${SLURM_SUBMIT_DIR:?submit from the repo root}"
 [ -d src/sparc ] || { echo "not in the repo root: $PWD" >&2; exit 2; }
 export HF_HUB_OFFLINE=1
-if [ -d /data/user_data/xoy/hf_hub_jobs ]; then export HF_HUB_CACHE=/data/user_data/xoy/hf_hub_jobs; fi
+# default to the jobs copy of the needed repos; a caller-set HF_HUB_CACHE (e.g. for en+ / other repos) wins
+if [ -z "${HF_HUB_CACHE:-}" ] && [ -d /data/user_data/xoy/hf_hub_jobs ]; then export HF_HUB_CACHE=/data/user_data/xoy/hf_hub_jobs; fi
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 PY=${PY:-.venv/bin/python}
 [ -x "$PY" ] || PY=/home/xoy/Speech-Articulatory-Coding/.venv/bin/python
