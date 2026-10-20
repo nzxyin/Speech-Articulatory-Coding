@@ -15,9 +15,16 @@ from sparc.training.dataset import VocoderDataset, collate
 from sparc.training.lightning_module import SparcVocoderTraining, batches_to_global_steps
 
 
+# Wrappers around this module may overwrite SLURM_JOB_NAME (e.g. to "interactive") before calling
+# main(); remember the job name as it was at import. setdefault keeps the parent's value in DDP children.
+_ORIG_JOB_NAME_ENV = "SPARC_ORIG_SLURM_JOB_NAME"
+os.environ.setdefault(_ORIG_JOB_NAME_ENV, os.environ.get("SLURM_JOB_NAME", ""))
+
+
 def _under_slurm_batch() -> bool:
     """True inside an sbatch job; False in salloc/srun-interactive shells and outside SLURM."""
-    return "SLURM_JOB_ID" in os.environ and os.environ.get("SLURM_JOB_NAME") not in ("bash", "interactive")
+    name = os.environ.get(_ORIG_JOB_NAME_ENV, os.environ.get("SLURM_JOB_NAME"))
+    return "SLURM_JOB_ID" in os.environ and name not in ("bash", "interactive")
 
 
 def _resolve_run_name(cfg) -> str | None:

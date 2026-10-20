@@ -56,7 +56,10 @@ OPTIMIZERS_PER_BATCH = 2
 
 
 def batches_to_global_steps(n_batches):
-    return None if n_batches is None else n_batches * OPTIMIZERS_PER_BATCH
+    # None and -1 (Lightning's "unlimited") pass through unchanged
+    if n_batches is None or n_batches == -1:
+        return n_batches
+    return n_batches * OPTIMIZERS_PER_BATCH
 
 
 def lr_lambda(step, halve_every=200000, static_after=None):

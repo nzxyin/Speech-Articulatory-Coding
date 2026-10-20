@@ -191,8 +191,9 @@ which then resumes by itself; SIGTERM also saves a checkpoint. Multi-GPU: `devic
 `ddp_find_unused_parameters_true`). `train_slurm.sh` runs one SLURM task, so with `devices>1` Lightning
 spawns the DDP processes itself and SIGUSR1 auto-requeue is disabled (SIGUSR1 is turned into SIGTERM,
 which saves a checkpoint); launch through `srun --ntasks-per-node=N` to keep it. With an explicit `checkpoint_dir`, auto-resume
-only happens if `run_name` is also set. Known gap: the DataLoader is not stateful, so a resumed run
-restarts the epoch's shuffle (RNG-restored, but not the same samples as an uninterrupted run).
+only happens if `run_name` is also set. Known limitations (left as is): RNG state is restored only for
+single-process runs (`world_size == 1`, same CUDA device count as when saved), and the DataLoader is not
+stateful, so a resumed run reshuffles instead of replaying the exact sample order of an uninterrupted run.
 
 #### 5. Listen to samples
 
