@@ -20,6 +20,7 @@ dependencies = [
     "pesq>=0.0.4",
     "pyarrow>=17",
     "pysptk>=1.0.1",
+    "safetensors>=0.6.2",
     "soundfile>=0.13.1",
     "speechbrain>=1.1.1",
     "tensorboard>=2.21.0",
@@ -42,6 +43,7 @@ sparc-train = "sparc.cli.train:main"
 sparc-cache = "sparc.cli.cache_features:main"
 sparc-predict = "sparc.cli.predict_vocoder:main"
 sparc-eval = "sparc.cli.eval_vocoder:main"
+sparc-export = "sparc.cli.export_vocoder:main"
 
 [build-system]
 requires = ["uv_build>=0.9.15,<0.10.0"]

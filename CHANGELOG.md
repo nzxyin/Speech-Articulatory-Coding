@@ -70,6 +70,14 @@ All notable changes to this fork. Earlier history is in `git log`.
 - Results: seed-1 controllability probes and natural-variation baseline (section 5.2 of `docs/vocoders/RESULTS.md`) and
   seed-1 X-Y probes (section 5.3); `docs/vocoders/results/{probes_seeds,xy_probes_seeds,xy_probes_s1}.md`.
 
+- Inference export (`sparc.vocoders.export`, CLI `sparc-export`, `docs/vocoders/EXPORT.md`): writes the generator and
+  speaker FFN of a training checkpoint as `model.safetensors` with `config.json`, `stats.json`, a model card and
+  optionally the refit inversion head; reloads and compares it with the checkpoint, verifies synthesis against the
+  training module, and uploads to a Hugging Face model repository only with `--upload` (private by default, only the
+  export files). `load_exported` accepts only the three vocoder classes of the package; `load_feature_extractor` and
+  `extraction_to_inputs` build model inputs from a waveform. Tests in `tests/test_export.py`.
+- Direct dependency `safetensors`.
+
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).
 - Training: validation and prediction synthesis run under a fixed torch RNG (the DDSP noise branch draws from it);

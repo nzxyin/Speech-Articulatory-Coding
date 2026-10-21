@@ -48,6 +48,13 @@ references) with this branch's HiFi-GAN recipe; six 100k-step screening arms are
 - Ablations at 100k: Vocos option B beats A; MSD instead of MRD does not change the ranking; the native SPARC recipe
   raises UTMOS but worsens mel L1, PESQ and WER; at about 6 M parameters the HiFi-GAN lead over DDSP is not supported.
 
+## Export (2026-10-21)
+
+`sparc-export` (docs/vocoders/EXPORT.md) writes inference exports (generator + speaker FFN, about 60 MB, or 28 MB for
+DDSP) and uploads them to the Hugging Face Hub only with `--upload`. Recommended checkpoints: HiFi-GAN and Vocos
+`main_800k` step 800k, DDSP `main` step 400k (seed 0); all three verified exact against their checkpoints, and the
+documented WAV-to-input path reproduces the cached inputs to within 8e-5. Local exports: `$SV_ROOT/exports/<vocoder>`.
+
 ## Measurements so far
 
 - fp32 train step at the main shape (batch 16 × 64 frames, RTX 6000 Ada, `cudnn.benchmark` off): HiFi-GAN 304 ms,
