@@ -718,6 +718,47 @@ MFCC, tilt) of the same speaker from an utterance's embedding (RMSE in target-st
   - So with a frozen generator, layer choice within 0-6 is not resolvable; the embedding's limitation is how it is
     trained (same-utterance references, jointly with the vocoder), which Phase 3 addresses.
 
+### Speaker embedding Phase 3: resynthesis-trained, interpolatable speaker encoders, 100k screening (2026-10-21)
+Code on branch `spkemb-phase3` (built on `vocoder-comparison`): `sparc.vocoders.features.spk_layers` (all-layer
+periodicity-weighted mean + std of WavLM Large per utterance; layers 0 / 6 reproduce the comparison's cached vectors to
+cosine 1 - 1e-12), `models/speaker.py` (`LayerPoolSpeakerEncoder`, VAE with product-of-Gaussians posterior over
+references), `training/speaker_terms.py`, experiments `p3_b*`; evaluation `eval/p3_tables.py` (T1/T2/T3, reproduces
+the comparison's ablation table to 5e-7) and `eval/interp.py` (40 unseen-speaker interpolation paths, 200 swaps, 200
+prior samples). Outputs `/data/user_data/xoy/spkemb/phase3/{cache,runs,eval}`; tables `eval/tables/_summary/`,
+`eval/compare_interp.md`. HiFi-GAN, ablation_100k recipe (100k steps), one seed per arm; LibriTTS-R test.clean (39
+unseen speakers). B0 = the comparison's own ablation_100k run (l6 FFN, reference from the own utterance half the time).
+| arm | T2 SIM same / spk (mean of ECAPA, WavLM-SV) | T2 UTMOS | interp score (ECAPA / WavLM-SV) | swap target - source (ECAPA) | prior UTMOS |
+|---|---|---|---|---|---|
+| B0 l6 FFN, p_cross 0.5 | 0.813 / 0.836 | 3.95 | 0.871 / 0.866 | 0.311 | - |
+| B1 l6 FFN, 1-3 other-utterance refs | 0.809 / 0.827 | 3.94 | 0.879 / 0.878 | 0.268 | - |
+| B2 layer pool (25 layers, mean + std) | 0.808 / 0.826 | 3.93 | 0.889 / 0.887 | 0.270 | - |
+| B3 B2 + VAE (capacity 32 nats) | 0.771 / 0.779 | 3.88 | 0.853 / 0.860 | 0.144 | 3.73 |
+| B4 B3 + mixed / prior codes (adv. only) | 0.766 / 0.777 | 3.85 | 0.841 / 0.850 | 0.147 | 3.59 |
+| B5 B4 + latent cycle | 0.768 / 0.781 | 3.91 | 0.853 / 0.877 | 0.144 | 3.84 |
+| B6 B3 + beta-TC (4) | 0.765 / 0.765 | 3.90 | 0.778 / 0.801 | 0.078 | 2.01 |
+Interp score and swap with the source F0 scaled toward the target speaker (unscaled: same ordering). Pre-registered
+screen (speaker-level paired bootstrap, single seeds):
+- S1 B1 - B0: training only on other-utterance references does not improve transfer: T2 -0.004 / -0.009 (CIs exclude 0).
+  It does remove content (T1 own-utterance SIM ECAPA 0.801 -> 0.732), so B0's T1 is optimistic, as found before.
+- S2 B2 - B1: tie (-0.001, CIs span 0). Learned pooling over all layers neither helps nor hurts at this scale.
+- S3 B3 - B2: the VAE fails both criteria: T2 -0.037 / -0.048 (limit 0.01) and the interpolation score drops. A 32-nat
+  information cap removes speaker identity (swaps keep about half their effect).
+- S4: mixed / prior codes alone (B4) do not help; adding the latent cycle (B5) recovers UTMOS (+0.07 over B4) and gives
+  the most natural prior samples (UTMOS 3.84; novelty vs test speakers 0.52, like real speakers' 0.50; diversity 0.60 vs
+  real 0.80), but T2 stays at the VAE level. B6 (beta-TC) is worst on every measure.
+- The deterministic embeddings already interpolate well: monotone paths (Spearman 0.995-1.0), no WER dip; what remains is
+  uneven steps (largest step 0.20 of the range vs ideal 0.125) and a UTMOS dip of 0.24-0.30 at the midpoint, mostly from
+  the F0 scaling (unscaled dip 0.08-0.11). Explicit interpolatability machinery does not improve on that.
+- Finalists by the pre-registered rule: best deterministic = B0's definition (already trained at 400k, two seeds, in the
+  vocoder comparison); best interpolatable within 0.01 T2 SIM of the best = B2 (gap -0.005 / -0.0100; best interpolation
+  score). B2 at the primary recipe (400k steps, seeds 0 and 1: `p3_b2_main`, `p3_b2_main_seed1`) submitted 2026-10-21.
+- Implementation notes: references are cached full utterances >= 3 s (not random 1-10 s cuts); the KL is per sample on the
+  vocoder batch, the side batch of 256 references serves only the TC estimate, whose minibatch-weighted-sampling value
+  carries a large constant offset (~800 nats; gradients unaffected). The latent-cycle error rose during training
+  (1.1 -> 1.9 per dimension) as the code spread grew, so its effect is on quality more than on identity.
+- Open: the VAE's value is sampling new voices, not interpolation; a looser capacity (64-128 nats) might keep identity.
+  Not pre-registered; needs a decision.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
