@@ -18,10 +18,20 @@ from torch.nn.utils import clip_grad_norm_
 from sparc.vocoders.constants import HOP, SAMPLE_RATE
 from sparc.vocoders.losses.losses import ADVERSARIAL_LOSSES, feature_matching_loss, mr_stft_distance
 from sparc.vocoders.models.frontend import load_stats
-from sparc.vocoders.models.speaker import gaussian_kl, total_correlation
+from sparc.vocoders.models.speaker import PitchCode, gaussian_kl, total_correlation
 from sparc.vocoders.training.callbacks import EVAL_SEED, capture_rng_state, fixed_torch_rng, restore_rng_state
 from sparc.vocoders.training.schedules import WarmupCosine
-from sparc.vocoders.training.speaker_terms import CropSpeakerStats, build_speaker, frozen_code, mix_codes, select_fmaps
+from sparc.vocoders.training.speaker_terms import (
+    CropSpeakerStats,
+    CropSpeakerVerifier,
+    build_speaker,
+    frozen_code,
+    identity_loss,
+    mix_codes,
+    relative_f0_features,
+    select_fmaps,
+    swap_batch,
+)
 
 
 def render_mel(log_mel: torch.Tensor, vmin: float, vmax: float) -> np.ndarray:
@@ -58,6 +68,19 @@ class VocoderGANModule(pl.LightningModule):
         self.cycle_weight = float(spk.get("mix", {}).get("cycle_weight", 0.0))
         self.tc_weight = float(spk.get("tc", {}).get("weight", 0.0))
         self.crop_stats = CropSpeakerStats() if self.cycle_weight > 0 else None
+        # Phase 4 (speaker-embedding cloning): swap-in-training, SV identity loss, speaker-relative F0
+        self.swap_p = float(spk.get("swap", {}).get("p", 0.0))
+        self.identity_weight = float(spk.get("identity", {}).get("weight", 0.0))
+        self.rel_f0 = bool(spk.get("rel_f0", {}).get("enabled", False))
+        ident_cfg = spk.get("identity", {})
+        self.grad_probe_every = int(ident_cfg.get("grad_probe_every", 0))
+        self.verifier = (
+            CropSpeakerVerifier(ident_cfg.get("sv_dir") or None) if self.identity_weight > 0 else None
+        )
+        self.pitch_code = PitchCode(stats["logf0_mean"], stats["logf0_std"]) if self.rel_f0 else None
+        self.f0_fallback_hz = float(np.exp(stats["logf0_mean"]))
+        if self.rel_f0 and cfg.vocoder.generator.get("pitch_mode") != "log_relative":
+            raise ValueError("speaker.rel_f0.enabled needs vocoder.generator.pitch_mode=log_relative")
         self._tc_pool: torch.Tensor | None = None
         self._tc_dataset_size = 0
         self.discriminators = nn.ModuleDict(
@@ -84,7 +107,8 @@ class VocoderGANModule(pl.LightningModule):
 
     @property
     def generator_parameters(self) -> list[nn.Parameter]:
-        return list(chain(self.generator.parameters(), self.speaker.parameters()))
+        extra = [] if self.pitch_code is None else list(self.pitch_code.parameters())
+        return list(chain(self.generator.parameters(), self.speaker.parameters(), extra))
 
     def configure_optimizers(self) -> list[torch.optim.Optimizer]:
         optim = self.cfg.optim
@@ -97,13 +121,35 @@ class VocoderGANModule(pl.LightningModule):
     def adversarial_phase(self) -> bool:
         return self.g_step >= self.cfg.train.mel_warmup_steps
 
-    def synthesize(self, batch: dict[str, Any], z: torch.Tensor | None = None) -> torch.Tensor:
+    def speaker_code(self, batch: dict[str, Any], sample: bool = False) -> tuple[torch.Tensor, dict]:
+        """``(z, info)`` of the batch's references. With speaker-relative F0 (``speaker.rel_f0``) the code carries the
+        reference utterances' pitch level (``batch["ref_f0"]``, Hz): ``z = encoder(refs) + PitchCode(ref_f0)``."""
+        z, info = self.speaker.embed(batch["spk_raw"], batch.get("ref_mask"), sample=sample)
+        if self.pitch_code is not None:
+            z = z + self.pitch_code(batch["ref_f0"].to(z.device))
+        return z, info
+
+    def synthesize(
+        self, batch: dict[str, Any], z: torch.Tensor | None = None, features: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """Runs speaker encoder and generator on a batch and checks the output shape.
 
         ``z`` overrides the speaker code; otherwise the encoder's deterministic code (VAE: posterior mean) is used.
+        ``features`` overrides ``batch["features"]`` (absolute F0 in Hz); with speaker-relative F0 the F0 channel is
+        divided by ``batch["utt_f0"]`` (median voiced F0 of the source utterance) before the generator, so a
+        conversion only needs the source batch with the target's ``ref_f0``.
         """
-        spk = self.speaker.embed(batch["spk_raw"], batch.get("ref_mask"))[0] if z is None else z
-        wav = self.generator(batch["features"], spk)
+        spk = self.speaker_code(batch)[0] if z is None else z
+        feats = batch["features"] if features is None else features
+        if self.rel_f0:
+            if "utt_f0" not in batch:
+                raise KeyError(
+                    "speaker-relative F0 checkpoint: the batch needs 'utt_f0' (source median voiced F0, Hz) and "
+                    "'ref_f0' (target reference median, Hz); build it with f0_conditioning, and take the code from "
+                    "module.speaker_code(batch), not module.speaker.embed (which drops the pitch term)"
+                )
+            feats = relative_f0_features(feats, batch["utt_f0"].to(feats.device), self.f0_fallback_hz)
+        wav = self.generator(feats, spk)
         expected = (batch["features"].shape[0], 1, batch["features"].shape[-1] * HOP)
         if tuple(wav.shape) != expected:
             raise ValueError(f"generator returned {tuple(wav.shape)}, expected {expected}")
@@ -162,13 +208,28 @@ class VocoderGANModule(pl.LightningModule):
                 mss = self.mss_loss(output, target)
                 total = total + weights.mss_weight * mss
                 logs["train/mss"] = mss.detach()
-        total = total + self._speaker_terms(aux, audio, wav_hat, logs)
+        speaker_total = self._speaker_terms(aux, audio, wav_hat, logs)
+        total = total + speaker_total
+        if aux.get("identity_term") is not None and self.grad_probe_every > 0 and self.g_step % self.grad_probe_every == 0:
+            logs["train/identity_grad_ratio"] = self._identity_grad_ratio(weights.mel_weight * mel, aux["identity_term"])
         self.sched_g.apply(opt_g, self.g_step)
         logs["train/grad_norm_g"] = self._step_grads(opt_g, total, self.generator_parameters)
         logs["train/g_total"] = total.detach()
         logs["train/lr_g"] = torch.tensor(opt_g.param_groups[0]["lr"])
         self.untoggle_optimizer(opt_g)
         return logs
+
+    def _identity_grad_ratio(self, mel_term: torch.Tensor, identity_term: torch.Tensor) -> torch.Tensor:
+        """``||grad of the weighted identity term|| / ||grad of the weighted mel term||`` over the generator parameters:
+        the diagnostic for choosing ``speaker.identity.weight`` (aim for roughly 0.05-0.2). Graphs are kept for the
+        real backward pass; the cost is two extra backward passes, paid only every ``grad_probe_every`` steps."""
+        params = self.generator_parameters
+
+        def norm(term: torch.Tensor) -> torch.Tensor:
+            grads = torch.autograd.grad(term, params, retain_graph=True, allow_unused=True)
+            return torch.sqrt(sum((g.detach().float() ** 2).sum() for g in grads if g is not None))
+
+        return (norm(identity_term) / norm(mel_term).clamp_min(1e-12)).detach()
 
     def _speaker_terms(self, aux: dict, audio: torch.Tensor, wav_hat: torch.Tensor, logs: dict) -> torch.Tensor:
         """Phase 3 terms: capacity-controlled KL, beta-TC on a side batch, latent cycle. 0 for the comparison arms."""
@@ -189,6 +250,19 @@ class VocoderGANModule(pl.LightningModule):
             tc = total_correlation(z, mu, logvar, self._tc_dataset_size)
             total = total + self.tc_weight * tc
             logs["train/tc"] = tc.detach()
+        if self.verifier is not None and self.adversarial_phase:
+            with torch.no_grad():
+                real_emb = self.verifier(audio)
+            fake_emb = self.verifier(wav_hat)
+            target = aux.get("target_index")
+            target = torch.arange(len(audio), device=audio.device) if target is None else target
+            ok = aux.get("identity_ok")  # mixed / prior codes have no speaker to compare with
+            idx = torch.arange(len(audio), device=audio.device) if ok is None else torch.nonzero(ok).flatten()
+            if len(idx):
+                ident = identity_loss(fake_emb[idx], real_emb, target[idx])
+                total = total + self.identity_weight * ident
+                aux["identity_term"] = self.identity_weight * ident
+                logs["train/identity"] = ident.detach()
         if self.crop_stats is not None and self.adversarial_phase:
             features = aux["features"]
             with torch.no_grad():
@@ -215,15 +289,27 @@ class VocoderGANModule(pl.LightningModule):
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> None:
         opt_g, opt_d = self.optimizers()
         audio = batch["audio"]
-        z, info = self.speaker.embed(batch["spk_raw"], batch.get("ref_mask"), sample=self.vae)
-        z_used, recon = z, None
+        z, info = self.speaker_code(batch, sample=self.vae)
+        z_used, recon, features = z, None, batch["features"]
         if self.mix_p > 0 and self.adversarial_phase:
             gen = torch.Generator().manual_seed(int(self.cfg.seed) * 1_000_003 + self.g_step)
             mix = self.cfg.speaker.mix
             z_used, recon = mix_codes(z, self.mix_p, float(mix.prior_frac), gen)
-        wav_hat = self.synthesize(batch, z=z_used)
-        aux = {"recon": recon, "info": info, "z": z, "z_used": z_used, "features": batch["features"]}
+        identity_ok, target_index, n_swapped = recon, None, 0
+        if self.swap_p > 0 and self.adversarial_phase:
+            gen = torch.Generator().manual_seed(int(self.cfg.seed) * 1_000_003 + self.g_step + 7_000_001)
+            z_used, features, recon, target_index, n_swapped = swap_batch(
+                z_used, features, batch["speaker_id"], batch.get("speaker_f0"), self.swap_p, gen,
+                recon=recon, partner_z=z, scale_f0=not self.rel_f0,
+            )  # fmt: skip
+        wav_hat = self.synthesize(batch, z=z_used, features=features)
+        aux = {
+            "recon": recon, "info": info, "z": z, "z_used": z_used, "features": batch["features"],
+            "target_index": target_index, "identity_ok": identity_ok,
+        }  # fmt: skip
         logs = {}
+        if self.swap_p > 0:
+            logs["train/swap_frac"] = torch.tensor(n_swapped / audio.shape[0])
         if self.adversarial_phase:
             logs.update(self._discriminator_update(opt_d, audio, wav_hat))
         logs.update(self._generator_update(opt_g, audio, wav_hat, aux))

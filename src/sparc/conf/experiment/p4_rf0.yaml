@@ -1,0 +1,22 @@
+# @package _global_
+# Speaker-embedding Phase 4 screen arm R-F0: the generator sees f0 / (median voiced F0 of the utterance) and the
+# reference utterance's median F0 is added to the speaker code, so the pitch level comes only from the target speaker.
+# Recipe otherwise B0 = experiment=ablation_100k (100k generator steps, 16 x 64-frame crops, l6 FFN, p_cross 0.5).
+experiment_name: p4_rf0
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  rel_f0:
+    enabled: true
+vocoder:
+  generator:
+    pitch_mode: log_relative

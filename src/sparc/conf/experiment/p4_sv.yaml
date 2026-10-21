@@ -1,0 +1,26 @@
+# @package _global_
+# Speaker-embedding Phase 4 screen arm S+V: swap-in-training plus the SV identity loss; a swapped crop is scored against
+# the real crop of the partner whose code it uses. Needs the per-speaker F0 file (see p4_s).
+# Arm trained against WavLM-SV: its decision must use ECAPA (and the held-out SV model); WavLM-SV is informational.
+# Recipe otherwise B0 = experiment=ablation_100k (100k generator steps, 16 x 64-frame crops, l6 FFN, p_cross 0.5).
+experiment_name: p4_sv
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  swap:
+    p: 0.25
+  identity:
+    # PROVISIONAL (from loss scales: mel is 45 x L1, ~13, while 1 - cos is ~0.1-0.4; weight 1 would be 1-3 % of the
+    # generator loss). Before launch run ~200 post-warm-up steps with grad_probe_every and set the weight so that
+    # train/identity_grad_ratio is ~0.05-0.2; fix it, using no eval metric, and record it in the plan.
+    weight: 20.0
+    grad_probe_every: 500

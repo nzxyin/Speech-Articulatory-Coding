@@ -4,7 +4,10 @@ Features and speaker vectors come from the packed ``.npy`` files (memory-mapped)
 24 kHz files with ``soundfile`` seeks, so the crop of features and audio always covers the same samples.
 """
 
+import argparse
 import hashlib
+import json
+import os
 import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,7 +19,7 @@ import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
-from sparc.vocoders.constants import HOP, LOUDNESS_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.constants import F0_CHANNEL, HOP, LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
 from sparc.vocoders.data.gain import DEFAULT_GAIN_DB_RANGE, apply_gain, gain_factor, sample_gain_db
 from sparc.vocoders.data.sampler import SampleKey
 
@@ -24,6 +27,66 @@ CONDITIONS = ("T1", "T2", "T3")
 SPEAKER_LAYERS = ("l0", "l6", "enplus64", "layers")  # "layers": all-layer statistics of a separate cache
 FIXED_CROP_STREAM = 2**32 - 1
 INDEX_COLUMNS = ("id", "speaker", "chapter", "wav_path", "n24", "T", "offset", "peak24", "spk_wsum")
+F0_STATS_DEFAULT = "/data/user_data/xoy/spkemb/phase4/stats/speaker_f0.json"
+
+
+def voiced_f0(feats: np.ndarray) -> np.ndarray:
+    """F0 values (Hz) of the voiced frames of ``feats [T, 15]``: periodicity > 0 and F0 > 0.
+
+    The cached F0 channel is never 0 (unvoiced frames carry filled-in values), so voicing comes from the
+    periodicity channel, as in ``eval/interp.py``.
+    """
+    voiced = (feats[:, PERIODICITY_CHANNEL] > 0.0) & (feats[:, F0_CHANNEL] > 0.0)
+    return feats[voiced, F0_CHANNEL]
+
+
+def median_voiced_f0(feats: np.ndarray) -> float:
+    """Median F0 (Hz) over the voiced frames of ``feats [T, 15]``; NaN when there is none."""
+    values = voiced_f0(feats)
+    return float(np.median(values)) if len(values) else float("nan")
+
+
+def geometric_mean_f0(values: Sequence[float]) -> float:
+    """Geometric mean of the finite positive entries of ``values`` (the mean in the log-F0 domain); NaN if none."""
+    v = np.asarray(values, dtype=np.float64)
+    v = v[np.isfinite(v) & (v > 0)]
+    return float(np.exp(np.log(v).mean())) if len(v) else float("nan")
+
+
+def build_speaker_f0_stats(packed_dirs: Sequence[str | Path]) -> dict:
+    """Median voiced F0 (Hz) of every speaker over all voiced frames of the given packed splits.
+
+    Returns ``{"splits": [...], "median_f0": {speaker: Hz}, "n_voiced_frames": {speaker: n}}``. Speakers without a
+    voiced frame are left out. Frames are pooled over a speaker's utterances (not the median of utterance medians), so
+    long utterances weigh more, like the frame-level F0 statistics of the frontend.
+    """
+    store = PackedStore(packed_dirs)
+    pools: dict[int, list[np.ndarray]] = {}
+    for utt in range(len(store)):
+        feats, _ = store.frames(utt, 0, int(store.T[utt]))
+        pools.setdefault(int(store.speaker_codes[utt]), []).append(voiced_f0(feats))
+    median, count = {}, {}
+    for code, parts in pools.items():
+        values = np.concatenate(parts)
+        if len(values):
+            median[str(store.speakers[code])] = float(np.median(values))
+            count[str(store.speakers[code])] = int(len(values))
+    return {"splits": [Path(d).name for d in store.packed_dirs], "median_f0": median, "n_voiced_frames": count}
+
+
+def save_speaker_f0_stats(stats: dict, path: str | Path) -> None:
+    """Writes the statistics as JSON through a temporary file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(stats, indent=1, sort_keys=True))
+    os.replace(tmp, path)
+
+
+def load_speaker_f0(path: str | Path, speakers: Sequence[str]) -> np.ndarray:
+    """Median F0 (Hz, float32) of each of ``speakers`` from a statistics file; NaN for speakers it does not hold."""
+    median = json.loads(Path(path).read_text())["median_f0"]
+    return np.array([median.get(str(s), np.nan) for s in speakers], dtype=np.float32)
 
 
 class PackedStore:
@@ -113,6 +176,10 @@ class PackedStore:
         d = self.dir_id[utt]
         begin = int(self.offset[utt]) + start
         return np.array(feats[d][begin : begin + length]), np.array(loud[d][begin : begin + length])
+
+    def median_f0(self, utt: int) -> float:
+        """Median voiced F0 (Hz) of the whole utterance ``utt``; NaN when it has no voiced frame."""
+        return median_voiced_f0(self.frames(utt, 0, int(self.T[utt]))[0])
 
     def speaker_vector(self, utt: int) -> np.ndarray:
         """Pooled speaker vector of ``utt``, float32 (``[2, 25, 1024]`` for ``speaker_layer="layers"``)."""
@@ -277,6 +344,12 @@ class CropDataset(Dataset):
     ``p_cross`` rule above (references may repeat); ``spk_raw`` is then ``[hi, ...]`` zero padded with ``ref_mask
     [hi]``, ``ref_index`` is the first reference and ``is_cross`` is true when any reference is another utterance.
     ``n_refs=None`` keeps the single-reference sample and its random stream unchanged.
+
+    Speaker-embedding Phase 4 (both off by default; neither draws from the random stream): ``f0_stats`` (a file of
+    :func:`build_speaker_f0_stats`) adds ``speaker_id`` (int, the store's speaker code) and ``speaker_f0`` (median voiced
+    F0 of the sample's speaker in Hz, NaN if unknown) for swap-in-training; ``f0_conditioning`` adds ``utt_f0`` (median
+    voiced F0 of the whole source utterance) and ``ref_f0`` (geometric mean of the references' medians) for the
+    speaker-relative F0 arm. Full-utterance medians (not crop medians) are used so training matches inference.
     """
 
     def __init__(
@@ -294,8 +367,19 @@ class CropDataset(Dataset):
         fixed_crops: bool = False,
         n_refs: Sequence[int] | None = None,
         layer_stats_root: str | Path | None = None,
+        f0_stats: str | Path | None = None,
+        f0_conditioning: bool = False,
     ):
         self.store = PackedStore(packed_dirs, speaker_layer, layer_stats_root)
+        self.speaker_f0 = None if f0_stats is None else load_speaker_f0(f0_stats, self.store.speakers)
+        if self.speaker_f0 is not None:
+            missing = float(np.isnan(self.speaker_f0).mean())
+            if missing > 0.01:  # a stale or partial file would silently turn the swap's F0 scaling off
+                raise ValueError(
+                    f"{f0_stats}: no median F0 for {100 * missing:.1f} % of the {len(self.speaker_f0)} speakers; "
+                    "rebuild it with `python -m sparc.vocoders.data.dataset f0-stats` for the training splits"
+                )
+        self.f0_conditioning = bool(f0_conditioning)
         self.n_refs = None if n_refs is None else (int(n_refs[0]), int(n_refs[1]))
         if self.n_refs is not None and not 1 <= self.n_refs[0] <= self.n_refs[1]:
             raise ValueError(f"n_refs must be (lo, hi) with 1 <= lo <= hi, got {n_refs}")
@@ -363,6 +447,15 @@ class CropDataset(Dataset):
         else:
             vectors, mask = store.speaker_references(refs, self.n_refs[1])
             sample["spk_raw"], sample["ref_mask"] = torch.from_numpy(vectors), torch.from_numpy(mask)
+        if self.speaker_f0 is not None:
+            code = int(store.speaker_codes[utt])
+            sample["speaker_id"] = torch.tensor(code, dtype=torch.int64)
+            sample["speaker_f0"] = torch.tensor(float(self.speaker_f0[code]), dtype=torch.float32)
+        if self.f0_conditioning:
+            medians = {utt: store.median_f0(utt)}
+            medians.update({r: store.median_f0(r) for r in refs if r not in medians})
+            sample["utt_f0"] = torch.tensor(medians[utt], dtype=torch.float32)
+            sample["ref_f0"] = torch.tensor(geometric_mean_f0([medians[r] for r in refs]), dtype=torch.float32)
         return sample
 
 
@@ -379,6 +472,10 @@ class FullUtteranceDataset(Dataset):
     ``multi_ref`` (encoders that take several references, speaker-embedding Phase 3): ``spk_raw`` gets a reference
     axis with ``ref_mask``; T1 and T2 hold their one reference, and T3 holds every vector of the pool, so the
     encoder combines them (instead of the mean of the raw vectors).
+
+    ``f0_conditioning`` (Phase 4, speaker-relative F0) adds ``utt_f0``, the median voiced F0 of the utterance, and
+    ``ref_f0``, the geometric mean of the reference utterances' medians (the own utterance for T1, the T2 reference, the
+    whole pool for T3).
     """
 
     def __init__(
@@ -391,11 +488,13 @@ class FullUtteranceDataset(Dataset):
         ref_min_dur: float = 3.0,
         multi_ref: bool = False,
         layer_stats_root: str | Path | None = None,
+        f0_conditioning: bool = False,
     ):
         if condition not in CONDITIONS:
             raise ValueError(f"condition must be one of {CONDITIONS}, got {condition!r}")
         self.store = PackedStore([packed_dir], speaker_layer, layer_stats_root)
         self.multi_ref = bool(multi_ref)
+        self.f0_conditioning = bool(f0_conditioning)
         self.gain_db = float(gain_db)
         self.condition = condition
         chosen = range(len(self.store)) if ids is None else [self.store.index_of(str(i)) for i in ids]
@@ -456,6 +555,12 @@ class FullUtteranceDataset(Dataset):
         ref = self.references[i]
         spk = self._speaker_vector(i)
         extra = {"ref_mask": torch.ones(len(spk), dtype=torch.bool)} if self.multi_ref else {}
+        if self.f0_conditioning:
+            refs = self.pools[i] if self.condition == "T3" else [ref]
+            own = median_voiced_f0(feats)
+            ref_medians = [own if int(r) == utt else store.median_f0(int(r)) for r in refs]
+            extra["utt_f0"] = torch.tensor(own, dtype=torch.float32)
+            extra["ref_f0"] = torch.tensor(geometric_mean_f0(ref_medians), dtype=torch.float32)
         return {
             **extra,
             "features": torch.from_numpy(features),
@@ -470,3 +575,23 @@ class FullUtteranceDataset(Dataset):
             "condition": self.condition,
             "ref_id": str(store.ids[ref]) if ref >= 0 else "speaker_mean",
         }
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """``python -m sparc.vocoders.data.dataset f0-stats``: writes the per-speaker median voiced F0 file."""
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    f0 = sub.add_parser("f0-stats", help="median voiced F0 per speaker of the packed training splits (swap-in-training)")
+    f0.add_argument("--cache-root", default=os.environ.get("SPARC_VOC_CACHE"), help="default: $SPARC_VOC_CACHE")
+    f0.add_argument("--splits", nargs="+", default=["train.clean.100", "train.clean.360", "train.other.500"])
+    f0.add_argument("--out", default=F0_STATS_DEFAULT)
+    args = parser.parse_args(argv)
+    if not args.cache_root:
+        parser.error("--cache-root or $SPARC_VOC_CACHE is required")
+    stats = build_speaker_f0_stats([Path(args.cache_root) / "packed" / s for s in args.splits])
+    save_speaker_f0_stats(stats, args.out)
+    print(f"{len(stats['median_f0'])} speakers -> {args.out}")
+
+
+if __name__ == "__main__":
+    main()

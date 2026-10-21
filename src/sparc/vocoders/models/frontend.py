@@ -16,7 +16,12 @@ from sparc.vocoders.constants import (
     PERIODICITY_CHANNEL,
 )
 
-PITCH_MODES = ("log", "sparc_linear", "linear500")
+PITCH_MODES = ("log", "sparc_linear", "linear500", "log_relative")
+# Phase 4 ``log_relative``: the F0 channel holds the ratio f0 / (median voiced f0 of the utterance), so the input is
+# ln(ratio) / REL_LOGF0_STD. The constant is the pooled std of ln(f0 / utterance median) over all frames of 1500
+# LibriTTS-R train.clean.100 utterances (0.178 in one sample, 0.195 in a review sample of 300; voiced fraction 0.56),
+# rounded to 0.19; the mean (~0.00-0.01) is left alone.
+REL_LOGF0_STD = 0.19
 
 
 @dataclass
@@ -39,7 +44,9 @@ class FeatureFrontend(nn.Module):
     """Turns raw features ``[B, 15, T]`` into the normalized network input.
 
     EMA channels are z-scored per channel; pitch is ``(ln f0 - mean) / std`` (``pitch_mode="log"``), SPARC's
-    ``(f0 - 50) * 0.01`` (``"sparc_linear"``) or ``f0 / 500`` (``"linear500"``); loudness is
+    ``(f0 - 50) * 0.01`` (``"sparc_linear"``), ``f0 / 500`` (``"linear500"``) or, for a speaker-relative F0 channel
+    (a ratio to the utterance's median voiced F0, written by the training module), ``ln(ratio) / REL_LOGF0_STD``
+    (``"log_relative"``; ``FrontendOut.f0_hz`` then holds the ratio, not Hz); loudness is
     ``(ln(loudness + 1e-4) - mean) / std`` with global constants, so the gain stays visible; periodicity is
     z-scored. With ``voiced_flag=True`` a 16th channel ``1[periodicity > 0]`` is appended. The input tensor is never
     modified. Statistics are buffers, so they are saved with the model.
@@ -77,6 +84,8 @@ class FeatureFrontend(nn.Module):
         ema_n = (ema - self.ema_mean) / self.ema_std
         if self.pitch_mode == "log":
             f0_n = (torch.log(f0.clamp_min(1.0)) - self.logf0_mean) / self.logf0_std
+        elif self.pitch_mode == "log_relative":
+            f0_n = torch.log(f0.clamp_min(1e-2)) / REL_LOGF0_STD
         elif self.pitch_mode == "sparc_linear":
             f0_n = (f0 - 50.0) * 0.01
         else:

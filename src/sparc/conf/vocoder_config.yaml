@@ -53,6 +53,18 @@ speaker:
     p: 0.0                # fraction of each batch decoded from a mixed or prior code (adversarial loss only)
     prior_frac: 0.5       # of those, the fraction drawn from N(0, I); the rest interpolate two batch speakers
     cycle_weight: 0.0     # latent cycle through frozen WavLM on the crops
+  # Speaker-embedding Phase 4 (zero-shot cloning); the defaults leave training unchanged.
+  swap:
+    p: 0.0                # fraction of each batch (after the mel warm-up) decoded with another speaker's code and the
+                          # voiced F0 scaled by the speakers' median-F0 ratio (adversarial loss only)
+    f0_stats: /data/user_data/xoy/spkemb/phase4/stats/speaker_f0.json   # python -m sparc.vocoders.data.dataset f0-stats
+  identity:
+    weight: 0.0           # 1 - cos(WavLM-SV(output crop), WavLM-SV(real crop of the code's speaker)); 0 = off
+    grad_probe_every: 0   # >0: log train/identity_grad_ratio (identity vs mel gradient norm) every N steps
+    sv_dir: /data/user_data/xoy/sparc-vocoders/hf_hub/models--microsoft--wavlm-base-plus-sv/snapshots/feb593a6c23c1cc3d9510425c29b0a14d2b07b1e
+  rel_f0:
+    enabled: false        # F0 input as a ratio to the utterance median; the reference's median F0 enters the code
+                          # (needs vocoder.generator.pitch_mode=log_relative)
 
 predict:           # `sparc-predict`: the split and conditions come from data.predict_split / data.predict_conditions
   ckpt: null       # null: newest loadable checkpoint of the run

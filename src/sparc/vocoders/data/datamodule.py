@@ -173,6 +173,12 @@ class VocoderDataModule(L.LightningDataModule):
             kwargs["layer_stats_root"] = speaker.layer_stats_root
         if n_refs is not None:
             kwargs.update({"n_refs": tuple(n_refs)} if train else {"multi_ref": True})
+        # Phase 4: swap-in-training needs each speaker's median F0; the speaker-relative F0 arm needs the medians of
+        # the utterance and its references (training, validation and prediction alike).
+        if train and float(speaker.get("swap", {}).get("p", 0.0)) > 0:
+            kwargs["f0_stats"] = speaker.swap.f0_stats
+        if bool(speaker.get("rel_f0", {}).get("enabled", False)):
+            kwargs["f0_conditioning"] = True
         return kwargs
 
     def train_dataset(self) -> CropDataset:

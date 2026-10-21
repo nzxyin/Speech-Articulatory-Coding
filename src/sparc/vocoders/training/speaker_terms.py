@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.func import functional_call
 
-from sparc.vocoders.constants import PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.constants import F0_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
 from sparc.vocoders.models.speaker import LayerPoolSpeakerEncoder, SpeakerFFN
 
 WAVLM_DIR = (
@@ -124,6 +124,148 @@ class CropSpeakerStats(nn.Module):
         mean = (w * h).sum(2)
         std = torch.sqrt((w * (h - mean[:, :, None]) ** 2).sum(2) + 1e-8)
         return torch.stack([mean, std], 1)
+
+
+SV_DIR = (
+    Path("/data/user_data/xoy/sparc-vocoders/hf_hub/models--microsoft--wavlm-base-plus-sv/snapshots")
+    / "feb593a6c23c1cc3d9510425c29b0a14d2b07b1e"
+)  # the revision pinned in cfg.eval_metrics.speaker.wavlm_sv
+
+
+# ---- Phase 4: swap-in-training, identity loss, speaker-relative F0 --------------------------------------------------
+
+
+def pick_swaps(speaker_ids: torch.Tensor, p: float, generator: torch.Generator) -> tuple[torch.Tensor, torch.Tensor]:
+    """Elements to swap and their partners: ``round(p B)`` distinct elements ``i`` of the batch, each paired with a
+    random element ``j`` of a different speaker (``speaker_ids [B]``).
+
+    An element whose batch holds no other speaker is left out, so the pairs never have equal speakers. Returns
+    ``(picked, partner)``, both ``[n]`` long tensors on the CPU (``n`` may be below ``round(p B)``).
+    """
+    ids = speaker_ids.detach().cpu()
+    b = len(ids)
+    picked, partner = [], []
+    for i in torch.randperm(b, generator=generator)[: int(round(p * b))].tolist():
+        candidates = torch.nonzero(ids != ids[i]).flatten()
+        if len(candidates) == 0:
+            continue
+        picked.append(i)
+        partner.append(int(candidates[torch.randint(len(candidates), (1,), generator=generator)]))
+    return torch.tensor(picked, dtype=torch.long), torch.tensor(partner, dtype=torch.long)
+
+
+def swap_f0_factor(speaker_f0: torch.Tensor, picked: torch.Tensor, partner: torch.Tensor) -> torch.Tensor:
+    """F0 ratio ``median(partner's speaker) / median(own speaker)`` per swapped element; 1 where either is unknown."""
+    ratio = speaker_f0[partner].float() / speaker_f0[picked].float()
+    return torch.where(torch.isfinite(ratio) & (ratio > 0), ratio, torch.ones_like(ratio))
+
+
+def scale_voiced_f0(features: torch.Tensor, index: torch.Tensor, factor: torch.Tensor) -> torch.Tensor:
+    """Copy of ``features [B, 15, T]`` whose elements ``index`` have the F0 of voiced frames (periodicity > 0)
+    multiplied by ``factor`` (one per element); unvoiced frames, as in ``eval/interp.py``, keep their value."""
+    out = features.clone()
+    if len(index) == 0:
+        return out
+    voiced = out[index, PERIODICITY_CHANNEL] > 0
+    f0 = out[index, F0_CHANNEL]
+    out[index, F0_CHANNEL] = torch.where(voiced, f0 * factor.to(f0)[:, None], f0)
+    return out
+
+
+def swap_batch(
+    z: torch.Tensor,
+    features: torch.Tensor,
+    speaker_ids: torch.Tensor,
+    speaker_f0: torch.Tensor | None,
+    p: float,
+    generator: torch.Generator,
+    recon: torch.Tensor | None = None,
+    partner_z: torch.Tensor | None = None,
+    scale_f0: bool = True,
+):
+    """Swap-in-training: element ``i`` is decoded with the code of an element ``j`` of another speaker, and (with
+    ``scale_f0``) its voiced F0 is scaled by ``median F0 of j's speaker / median F0 of i's speaker``, so the pitch fits
+    the borrowed voice. Only elements still marked in ``recon`` (not already mixed) are swapped. ``z`` is the code to
+    start from (it may hold mixed codes) and ``partner_z`` (default ``z``) the codes that are borrowed.
+
+    Returns ``(z_used, features_used, recon, target_index, n_swapped)``: ``recon`` is False for swapped elements (they
+    have no target audio) and ``target_index [B]`` names, per element, the batch element whose real crop shows the
+    speaker of the code used (itself unless swapped).
+    """
+    b = z.shape[0]
+    recon = torch.ones(b, dtype=torch.bool, device=z.device) if recon is None else recon.clone()
+    target = torch.arange(b, device=z.device)
+    picked, partner = pick_swaps(speaker_ids, p, generator)
+    keep = recon[picked.to(z.device)].cpu()
+    picked, partner = picked[keep].to(z.device), partner[keep].to(z.device)
+    z_used, features_used = z.clone(), features
+    if len(picked):
+        z_used[picked] = (z if partner_z is None else partner_z)[partner]
+        recon[picked] = False
+        target[picked] = partner
+        if scale_f0 and speaker_f0 is not None:
+            features_used = scale_voiced_f0(features, picked, swap_f0_factor(speaker_f0, picked, partner))
+    return z_used, features_used, recon, target, len(picked)
+
+
+def relative_f0_features(features: torch.Tensor, utt_f0: torch.Tensor, fallback_hz: float) -> torch.Tensor:
+    """Copy of ``features [B, 15, T]`` whose F0 channel is the ratio ``f0 / utt_f0`` (every frame; unvoiced frames
+    keep their filled-in contour). ``utt_f0 [B]`` is the median voiced F0 of the whole source utterance in Hz; an
+    unknown (NaN or non-positive) median is replaced by ``fallback_hz`` (the frontend's mean F0).
+
+    Inverse: ``f0 = ratio * utt_f0``. The pitch level is then carried only by the speaker code.
+    """
+    out = features.clone()
+    median = torch.where(torch.isfinite(utt_f0) & (utt_f0 > 0), utt_f0.float(), torch.full_like(utt_f0, fallback_hz))
+    out[:, F0_CHANNEL] = features[:, F0_CHANNEL] / median.to(features)[:, None]
+    return out
+
+
+def identity_loss(emb_fake: torch.Tensor, emb_real: torch.Tensor, target_index: torch.Tensor) -> torch.Tensor:
+    """``mean_i (1 - cos(emb_fake[i], emb_real[target_index[i]]))`` for ``[B, D]`` embeddings.
+
+    ``emb_real`` is the WavLM-SV embedding of the REAL CROP of the batch element ``target_index[i]`` (the item's own
+    crop for arm V; the swap partner's crop for S+V), not of the reference utterance the code was computed from. This
+    deviates from the plan's wording ("WavLM-SV embedding of the reference"): the reference audio is not loaded in the
+    training batch. Consequence for V: the target shares content with the output, so the term partly overlaps the mel
+    loss; for S+V the partner crop is another utterance of the code's speaker, a valid identity target.
+    """
+    cos = torch.nn.functional.cosine_similarity(emb_fake, emb_real[target_index], dim=-1)
+    return (1.0 - cos).mean()
+
+
+class CropSpeakerVerifier(nn.Module):
+    """Frozen WavLM-base-plus-SV (``WavLMForXVector``, 512-d) on audio crops, differentiable in the audio.
+
+    Same model and revision as the evaluation's WavLM-SV similarity. Input: 24 kHz crops resampled to 16 kHz by
+    torchaudio's sinc resampler; the checkpoint's feature extractor has ``do_normalize: false``, so the waveform goes in
+    unnormalized (as ``eval/metrics/speaker.py`` feeds it). Kept outside the module tree (like ``CropSpeakerStats``):
+    not saved in checkpoints, not seen by the optimizers; always in eval mode (no spec-augment), fp32.
+    """
+
+    def __init__(self, sv_dir: str | Path | None = None):
+        super().__init__()
+        self.sv_dir = Path(sv_dir) if sv_dir else SV_DIR  # config: speaker.identity.sv_dir
+        self._sv: list = []
+
+    def model(self, device: torch.device):
+        if not self._sv:
+            from transformers import WavLMForXVector
+
+            model = WavLMForXVector.from_pretrained(str(self.sv_dir)).float().eval()
+            model.requires_grad_(False)
+            self._sv.append(model)
+        model = self._sv[0]
+        param = next(model.parameters(), None)
+        if param is not None and param.device != device:
+            model.to(device)
+        return model
+
+    def forward(self, audio: torch.Tensor) -> torch.Tensor:
+        """``audio [B, 1, N]`` at 24 kHz -> raw x-vector embeddings ``[B, D]``."""
+        x = resample_24k_to_16k(audio[:, 0].float())
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            return self.model(x.device)(input_values=x).embeddings
 
 
 def frozen_code(encoder: nn.Module, spk_raw: torch.Tensor) -> torch.Tensor:

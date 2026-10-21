@@ -161,3 +161,31 @@ def total_correlation(z: torch.Tensor, mu: torch.Tensor, logvar: torch.Tensor, d
     log_qz = torch.logsumexp(log_qzi_xj.sum(-1), dim=1) - log_norm
     log_prod_qzd = (torch.logsumexp(log_qzi_xj, dim=1) - log_norm).sum(-1)
     return (log_qz - log_prod_qzd).mean()
+
+
+class PitchCode(nn.Module):
+    """Phase 4 (R-F0): additive speaker-code term from the reference utterance's median voiced F0.
+
+    The generator sees only pitch ratios, so the pitch level has to come from the speaker code: this maps
+    ``(ln f0_ref - logf0_mean) / logf0_std`` (training-set statistics of the frontend, so the scalar is ~N(0, 1)
+    across utterances) through a linear layer to ``out_dim``, and the training module adds it to the encoder's code.
+    With several references the caller passes the geometric mean of their medians. Weight and bias start at zero (the
+    arm starts as B0 without the pitch input); a NaN or non-positive median (no voiced frames) maps to 0, the
+    training mean.
+    """
+
+    def __init__(self, logf0_mean: float, logf0_std: float, out_dim: int = SPEAKER_DIM):
+        super().__init__()
+        self.register_buffer("logf0_mean", torch.tensor(float(logf0_mean)))
+        self.register_buffer("logf0_std", torch.tensor(max(float(logf0_std), 1e-6)))
+        self.proj = nn.Linear(1, out_dim)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def normalize(self, ref_f0_hz: torch.Tensor) -> torch.Tensor:
+        """``[B]`` median F0 in Hz -> ``[B, 1]`` normalized log median (NaN or non-positive -> 0)."""
+        z = (torch.log(ref_f0_hz.float().clamp_min(1.0)) - self.logf0_mean) / self.logf0_std
+        return torch.where(ref_f0_hz > 0, z, torch.zeros_like(z))[:, None]
+
+    def forward(self, ref_f0_hz: torch.Tensor) -> torch.Tensor:
+        return self.proj(self.normalize(ref_f0_hz))
