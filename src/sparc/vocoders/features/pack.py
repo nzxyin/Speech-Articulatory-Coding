@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from omegaconf import DictConfig
 
 from sparc.vocoders.constants import N_FEATURES
@@ -62,11 +63,20 @@ def pack_split(cfg: DictConfig, split: str) -> Path:
     if rows.empty:
         raise ValueError(f"nothing to pack for split {split}")
 
+    return write_packed(
+        rows, paths, Path(cfg.cache.packed_dir) / split, meta_hash, int(cfg.pack.num_threads), int(cfg.pack.chunk_utterances)
+    )
+
+
+def write_packed(
+    rows: pd.DataFrame, paths: list[Path], final: Path, meta_hash: str, num_threads: int, chunk: int
+) -> Path:
+    """Packs the cache files ``paths`` of ``rows`` (the manifest columns ``id, split, speaker, chapter, wav_path, n24,
+    T, duration``) into ``final``, built next to it and renamed. Returns ``final``."""
     frames = rows["T"].to_numpy(dtype=np.int64)
     offsets = np.concatenate([[0], np.cumsum(frames)[:-1]])
     total, count = int(frames.sum()), len(rows)
 
-    final = Path(cfg.cache.packed_dir) / split
     work = final.with_name(final.name + ".tmp")
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -79,8 +89,7 @@ def pack_split(cfg: DictConfig, split: str) -> Path:
     }
     peak, seed, wsum, fallback = np.zeros(count), np.zeros(count, np.int64), np.zeros(count), np.zeros(count, bool)
 
-    chunk = int(cfg.pack.chunk_utterances)
-    with ThreadPoolExecutor(int(cfg.pack.num_threads)) as pool:
+    with ThreadPoolExecutor(num_threads) as pool:
         for start in range(0, count, chunk):
             stop = min(start + chunk, count)
             loaded = pool.map(lambda i: load_checked(paths[i], int(frames[i]), meta_hash), range(start, stop))
@@ -107,7 +116,7 @@ def pack_split(cfg: DictConfig, split: str) -> Path:
         final.rename(backup)
     work.rename(final)
     shutil.rmtree(backup, ignore_errors=True)
-    print(f"packed {split}: {count} utterances, {total} frames -> {final}")
+    print(f"packed {final.name}: {count} utterances, {total} frames -> {final}")
     return final
 
 

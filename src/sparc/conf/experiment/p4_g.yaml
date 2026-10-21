@@ -1,0 +1,25 @@
+# @package _global_
+# Speaker-embedding Phase 4 arm G (pre-registered in docs/speaker_embedding_plan.md, "Phase 4 addendum: training-data
+# diversity arm G"): the B0 recipe (experiment=ablation_100k: 100k generator steps, 16 x 64-frame crops, l6 FFN, p_cross
+# 0.5) trained on LibriTTS-R train plus the filtered GLOBE v3 train list (ECAPA leak filter, cosine < 0.70 to the
+# evaluation GLOBE pool), uniform over utterances. Every GLOBE utterance is its own speaker, so its reference is itself.
+# Normalization statistics stay the LibriTTS-R ones (stats_path unchanged). Build the GLOBE cache first:
+#   python -m sparc.vocoders.features.globe_train list | extract --shard i --nshards n | pack
+experiment_name: p4_g
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+  train_splits:
+    - train.clean.100
+    - train.clean.360
+    - train.other.500
+    - /data/user_data/xoy/spkemb/phase4/globe_train/packed/globe.train
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5

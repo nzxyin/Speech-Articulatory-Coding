@@ -134,6 +134,9 @@ class VocoderDataModule(L.LightningDataModule):
         return list(self._val_ids)
 
     def _packed(self, split: str) -> Path:
+        """Packed directory of a split name (``<cache_root>/packed/<split>``) or, for an absolute path, that directory."""
+        if os.path.isabs(str(split)):
+            return Path(str(split))
         return Path(self.cfg.paths.cache_root) / "packed" / split
 
     def _rank_and_world(self) -> tuple[int, int]:
