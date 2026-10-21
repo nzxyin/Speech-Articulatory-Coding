@@ -733,6 +733,9 @@ def test_select_baseline_ranks_on_heldout_references():
     assert r["best_variant"] == "k5_f0" and r["best_by_primary"] == "k10" and not r["agrees_with_primary"] and "ctl_src" not in r["table"]
     del summary["pools"]["libritts_dev"]["variants"]["k5"]["all"]["metrics"]["ecapa/sim_target_heldout"]
     assert clone.select_baseline(summary, "libritts_dev")["best_variant"] == "k5_f0"
+    # a NaN mean written to summary.json comes back as null
+    summary["pools"]["libritts_dev"]["variants"]["k10"]["all"]["metrics"]["ecapa/sim_target_heldout"] = {"mean": None}
+    assert clone.select_baseline(summary, "libritts_dev")["best_variant"] == "k5_f0"
 
 
 def test_resolve_best_variant_reads_selection_json(tmp_path):

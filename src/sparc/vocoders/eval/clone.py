@@ -1452,7 +1452,8 @@ def select_baseline(summary: dict[str, Any], pool: str, model: str = PRIMARY_MOD
     table = {}
     for v in names:
         m = variants[v]["all"]["metrics"]
-        get = lambda k: (m.get(f"{model}/{k}") or {}).get("mean", math.nan)  # noqa: E731
+        # NaN means are stored as JSON null
+        get = lambda k: float((m.get(f"{model}/{k}") or {}).get("mean") if (m.get(f"{model}/{k}") or {}).get("mean") is not None else math.nan)  # noqa: E731
         table[v] = {"sim_target": get("sim_target"), "sim_target_heldout": get("sim_target_heldout")}
     held = {v: t["sim_target_heldout"] for v, t in table.items() if np.isfinite(t["sim_target_heldout"])}
     key = "sim_target_heldout" if held else "sim_target"
