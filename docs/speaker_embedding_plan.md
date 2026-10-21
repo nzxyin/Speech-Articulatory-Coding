@@ -175,6 +175,87 @@ so these contrasts screen arms rather than establish effects):
   - the best deterministic arm by T2 SIM;
   - the best interpolatable arm, i.e. the best interpolation score among arms within 0.01 T2 SIM of the best arm.
 
+## Phase 4 -- zero-shot cloning of unseen voices (goal set by the user 2026-10-21; fixed before any Phase 4 number)
+
+Evidence from existing outputs (B0, 100k, LibriTTS-R test.clean; design workflow 2026-10-21):
+- **Resynthesis.** Identity is largely kept in resynthesis.
+  - Nearest-speaker ID among 39 speakers (ECAPA): ground truth 0.966, T2 0.956, T3 0.974.
+  - T3 sim_spk is within 0.01 of the ground-truth leave-one-out level.
+  - T3 - T2 = +0.029. The single-reference gap is reference noise, not encoder capacity.
+- **Conversion is the gap.**
+  - Swap target similarity is 0.648 with F0 scaled, against 0.724 for same-speaker T2.
+  - It falls from 0.686 to 0.488 as |ln F0 ratio| grows from < 0.15 to > 0.5.
+  - The source keeps 0.34-0.38.
+  - The generator never sees a content / speaker mismatch in training.
+- **Source features still identify the speaker.** LDA on per-utterance statistics, 246 speakers, chance 0.4 %:
+  - EMA mean + std 27.8 %; all features 39 %.
+  - Between-speaker spread: EMA means 0.05-0.10 of the global sd, scales 3-8 %; F0 4.7 semitones.
+- **Long utterances lose more identity.** The synth - ground-truth gap goes from -0.03 at < 2 s to +0.07 at > 12 s.
+  The sim_spk metric is itself duration-confounded: ground truth reaches 0.53 at < 2 s and 0.88 at > 12 s.
+
+Protocol (`eval/clone.py`, to be built):
+- **Pools.** Unseen-speaker pools are LibriTTS-R test.clean, VCTK and GLOBE. The last two are required for any
+  unseen-voice claim.
+- **Swap pairs.** 400 per pool: half same-gender and half cross-gender, stratified by target duration.
+  Each target speaker gets 10 references of at least 3 s, all disjoint from the target utterance.
+- **Inference variants.** These need no training:
+  - K-reference code averaging;
+  - target F0 median plus semitone-range matching;
+  - loudness matching;
+  - EMA mean / std matching to the reference audio's inverter EMA, run as an ablation only.
+- **Controls.**
+  - F0 / loudness matching with the source speaker's own code. This separates pitch from embedding.
+  - A wrong-speaker code.
+- **Primary metric.** Swap ECAPA cosine to the target's reference-mean embedding, averaged per target speaker
+  first, then over speakers. Reported per pool and per duration stratum.
+- **Secondary metrics.**
+  - Margin over both controls.
+  - Top-1 speaker ID among the pool's speakers.
+  - Verification acceptance at the ground-truth EER threshold.
+  - WavLM-SV similarity.
+  - A held-out third SV model, used in no training loss and no selection. It needs a download; see the
+    decisions below.
+- **Guards.**
+  - T2 / T3 sim_spk, overall and for > 4 s targets.
+  - WER: at most +0.5 points over the baseline.
+  - UTMOS: at most -0.10.
+  - Similarity to the source: at most +0.02.
+  - A reference-length curve over 1, 3, 10 and 30 s of references.
+  - Noisy references (white noise, 20 dB SNR).
+- **Baseline for every trained arm.** B0 plus the best inference variant, chosen on the LibriTTS dev split, never
+  on test.
+
+Screen arms (100k HiFi-GAN recipe, one seed; plus a second B0 seed for the noise floor, about 8 GPU-h):
+- **S+V.** Swap-in-training plus an SV identity loss.
+  - Swap-in-training pairs content j with speaker i's code, scales F0 to i's median and uses the adversarial loss
+    only.
+  - The identity loss is 1 - cos(WavLM-SV(output crop), WavLM-SV reference embedding).
+  - Arm V is trained against WavLM-SV, so its decision uses ECAPA and the held-out SV model only.
+- **S.** Swap-in-training without the identity loss, as the ablation of S+V.
+- **V.** The identity loss alone, on own-speaker crops.
+- **R-F0.** Source F0 as semitones relative to the utterance median. The target speaker's median goes into the
+  speaker code input, so pitch level comes only from the target.
+- **M.** Training with up to 8 references, evaluated with K = 5.
+- Not run: R-EMA (only if the EMA-matching inference variant helps), input perturbation, VAE / beta-TC, reference
+  cross-attention, a bigger encoder, new training data.
+
+Decision rule:
+- **Noise floor.** The margin m = max(0.02, 2 x the B0 seed-to-seed difference in the primary metric), fixed once
+  the second B0 seed is scored, before any arm is looked at.
+- **Advancing.** An arm advances if all of these hold:
+  - its primary gain over the baseline is >= m, with the speaker-level bootstrap CI excluding 0 in LibriTTS
+    test.clean;
+  - the gain has the same sign in VCTK and GLOBE, and in the held-out SV model;
+  - all guards pass.
+- **After the screen.** At most one combination of passing arms, then the winner at 400k with 2 seeds.
+- **Success target at 400k.** On duration-matched pairs, swap target similarity of at least 0.93 of the
+  ground-truth same-speaker level, and top-1 ID of at least 0.95. Similarity to the source must not exceed the
+  ground-truth level between different speakers.
+
+Decisions for the user:
+- Downloading a held-out SV model (e.g. WeSpeaker ResNet34 or CAM++, ~0.1-0.3 GB).
+- The screen compute, about 55 GPU-h, then about 70 GPU-h to confirm the winner.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
