@@ -26,9 +26,9 @@ extractor (it downloads the pinned snapshots and then runs offline), and `extrac
 1. The export is reloaded and every tensor is compared with the checkpoint (exact).
 2. `--verify N` synthesizes N test.clean utterances (T1, evaluation gain) with the original training module and with the
    reloaded export under the same torch RNG seed; the largest absolute sample difference must not exceed `--tolerance`
-   (default 1e-5). It was 0 for all three exports on the CPU (2026-10-21).
+   (default 1e-5). It was 0 for all three exports on the CPU (2026-10-21, fork commit 53c8923).
 3. End to end (`phase3/export_e2e_check.py`, not in the repository): extracting two test.clean WAVs with
-   `load_feature_extractor` and the cache's seed rule reproduces the cached inputs to within 8e-5 (cache on GPU,
+   `load_feature_extractor` and the cache's seed rule reproduces the cached inputs to within 1.2e-4 (cache on GPU,
    check on CPU), and the export gives the same audio as the training module on those inputs.
 
 ## Commands

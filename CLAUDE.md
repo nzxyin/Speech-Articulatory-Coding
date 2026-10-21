@@ -53,7 +53,7 @@ references) with this branch's HiFi-GAN recipe; six 100k-step screening arms are
 `sparc-export` (docs/vocoders/EXPORT.md) writes inference exports (generator + speaker FFN, about 60 MB, or 28 MB for
 DDSP) and uploads them to the Hugging Face Hub only with `--upload`. Recommended checkpoints: HiFi-GAN and Vocos
 `main_800k` step 800k, DDSP `main` step 400k (seed 0); all three verified exact against their checkpoints, and the
-documented WAV-to-input path reproduces the cached inputs to within 8e-5. Local exports: `$SV_ROOT/exports/<vocoder>`.
+documented WAV-to-input path reproduces the cached inputs to within 1.2e-4. Local exports: `$SV_ROOT/exports/<vocoder>`.
 
 ## Measurements so far
 
