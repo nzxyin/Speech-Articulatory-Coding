@@ -252,6 +252,43 @@ Decision rule:
   ground-truth same-speaker level, and top-1 ID of at least 0.95. Similarity to the source must not exceed the
   ground-truth level between different speakers.
 
+### Phase 4 addendum: training-data diversity arm G (2026-10-21; fixed before any G number)
+The B0 day-0 evaluation (100k steps, ECAPA) shows that most of the out-of-domain gap exists without any speaker
+swap. Own-speaker resynthesis reaches this fraction of the ground-truth same-speaker level:
+
+| pool | own-speaker | ground truth | fraction |
+|---|---|---|---|
+| LibriTTS | 0.73 | 0.80 | 0.90 |
+| VCTK | 0.52 | 0.80 | 0.65 |
+| GLOBE | 0.42 | 0.72 | 0.58 |
+
+Swap verification acceptance is 54-84 % on LibriTTS against 0.3-2 % on VCTK and GLOBE. The lever is training-data
+diversity, which the conversion arms above do not address. The user proposed adding GLOBE v3 (2026-10-21).
+- Data:
+  - LibriTTS-R train (the comparison's filtered 339k) plus the filtered GLOBE v3 train list of the articulatory-tts
+    accent work (`/data/user_data/xoy/globe_v3_accent_splits/v1/train.tsv`; 228,606 utterances).
+    - Common Voice 21 English, 13 accents, SNR > 25, train capped at 40k per accent.
+  - Features re-extracted with this cache's `SparcFeatureExtractor` (refit head, soxr_hq, batch size 1, per-utterance
+    CREPE seed).
+  - GLOBE has no speaker ids in train, so each GLOBE utterance is its own speaker. Its speaker reference is always
+    itself, which is p_cross = 0 for GLOBE.
+  - Train utterances whose ECAPA embedding has cosine >= 0.70 to any utterance of the evaluation GLOBE pool are
+    dropped, to reduce speaker leakage. Utterance overlap is already 0.
+  - Normalization statistics stay the LibriTTS ones.
+- Arm G: B0 recipe (`ablation_100k`, l6 FFN, p_cross 0.5, 100k steps), trained on the combined data, uniform over
+  utterances.
+- Decision rule for G:
+  - G advances if its primary swap gain over B0 is >= m with the bootstrap CI excluding 0 in both VCTK (fully out of
+    domain) and GLOBE (unseen speakers of a training corpus).
+  - LibriTTS must not drop by more than m.
+  - The held-out CAM++ model must agree in sign.
+  - All guards apply.
+  - Variant: the same inference variant for both arms, chosen on the LibriTTS dev pool.
+  - VCTK is the cleaner test of the two, because GLOBE becomes partly in-domain. If they disagree, VCTK decides and
+    the result is reported as such.
+- Compute: GLOBE extraction ~10-25 GPU-h, G ~9 GPU-h. A 400k confirmation of the winner, possibly G combined with a
+  passing conversion arm, comes after the screen.
+
 Decisions for the user:
 - Downloading a held-out SV model (e.g. WeSpeaker ResNet34 or CAM++, ~0.1-0.3 GB).
 - The screen compute, about 55 GPU-h, then about 70 GPU-h to confirm the winner.
