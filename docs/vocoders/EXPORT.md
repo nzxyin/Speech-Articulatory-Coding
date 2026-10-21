@@ -48,3 +48,9 @@ T=$SV_ROOT/eval/tables/test.clean
 The checkpoints recommended for export (2026-10-21, chosen on test.clean and confirmed by the dev-set mel L1):
 HiFi-GAN `main_800k` step 800,000, Vocos `main_800k` step 800,000 and DDSP `main` (seed 0) step 400,000; their
 metrics are in `$T/long/table.csv` (`hifigan_800k`, `vocos_800k`) and `$T/table.csv` (`ddsp`).
+
+Published (2026-10-21, private, MIT, with the inversion head; uploaded from fork commit `dce6efa`):
+[`nzxyin/sparc-hifigan-24k`](https://huggingface.co/nzxyin/sparc-hifigan-24k),
+[`nzxyin/sparc-vocos-24k`](https://huggingface.co/nzxyin/sparc-vocos-24k) and
+[`nzxyin/sparc-ddsp-24k`](https://huggingface.co/nzxyin/sparc-ddsp-24k). `load_exported(<repo id>)` from the Hub gives
+the same weights and audio as the local export. To make a repository public: `hf repos settings <repo id> --public`.

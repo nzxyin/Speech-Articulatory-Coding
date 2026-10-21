@@ -54,6 +54,8 @@ references) with this branch's HiFi-GAN recipe; six 100k-step screening arms are
 DDSP) and uploads them to the Hugging Face Hub only with `--upload`. Recommended checkpoints: HiFi-GAN and Vocos
 `main_800k` step 800k, DDSP `main` step 400k (seed 0); all three verified exact against their checkpoints, and the
 documented WAV-to-input path reproduces the cached inputs to within 1.2e-4. Local exports: `$SV_ROOT/exports/<vocoder>`.
+Uploaded 2026-10-21 as private Hub repositories (MIT, with the refit inversion head): `nzxyin/sparc-hifigan-24k`,
+`nzxyin/sparc-vocos-24k`, `nzxyin/sparc-ddsp-24k`; loading them by repo id reproduces the local exports exactly.
 
 ## Measurements so far
 
