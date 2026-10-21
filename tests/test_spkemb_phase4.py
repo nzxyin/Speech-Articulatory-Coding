@@ -453,7 +453,7 @@ def test_phase4_experiments_compose_over_b0(arm, monkeypatch):
     assert cfg.speaker.layer == "l6" and cfg.speaker.p_cross == 0.5 and cfg.speaker.type == "ffn"
     swap_on, ident_on = arm in ("s", "sv"), arm in ("v", "sv")
     assert cfg.speaker.swap.p == (0.25 if swap_on else 0.0)
-    assert cfg.speaker.identity.weight == (20.0 if ident_on else 0.0)
+    assert cfg.speaker.identity.weight == (2.0 if ident_on else 0.0)
     assert cfg.speaker.rel_f0.enabled == (arm == "rf0")
     assert cfg.vocoder.generator.pitch_mode == ("log_relative" if arm == "rf0" else "log")
     assert list(cfg.speaker.n_refs) == [1, 8] if arm == "m" else cfg.speaker.n_refs is None
