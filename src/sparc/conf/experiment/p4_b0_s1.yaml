@@ -1,0 +1,13 @@
+# @package _global_
+# Speaker-embedding Phase 4 noise floor: the ablation_100k recipe (B0: l6 FFN, p_cross 0.5) with training seed 1, to
+# measure the seed-to-seed spread of the cloning metrics (compare with experiment=ablation_100k, seed 0).
+experiment_name: p4_b0_s1
+seed: 1
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
