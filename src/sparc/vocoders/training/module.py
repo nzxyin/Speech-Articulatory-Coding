@@ -210,7 +210,9 @@ class VocoderGANModule(pl.LightningModule):
                 logs["train/mss"] = mss.detach()
         speaker_total = self._speaker_terms(aux, audio, wav_hat, logs)
         total = total + speaker_total
-        if aux.get("identity_term") is not None and self.grad_probe_every > 0 and self.g_step % self.grad_probe_every == 0:
+        # g_step is incremented after this update and logging tests the incremented value, so probe on g_step + 1
+        probe_due = self.grad_probe_every > 0 and (self.g_step + 1) % self.grad_probe_every == 0
+        if aux.get("identity_term") is not None and probe_due:
             logs["train/identity_grad_ratio"] = self._identity_grad_ratio(weights.mel_weight * mel, aux["identity_term"])
         self.sched_g.apply(opt_g, self.g_step)
         logs["train/grad_norm_g"] = self._step_grads(opt_g, total, self.generator_parameters)

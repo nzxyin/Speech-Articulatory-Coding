@@ -494,7 +494,9 @@ def test_identity_grad_ratio_is_logged_on_probe_steps(tmp_path, monkeypatch):
     cfg = phase4_cfg(tmp_path, monkeypatch, identity={"weight": 5.0, "grad_probe_every": 2})
     rows, _ = fit(cfg, monkeypatch)
     probed = [i for i, r in enumerate(rows) if "train/identity_grad_ratio" in r]
-    assert probed == [2, 4]  # post-warm-up steps whose g_step is a multiple of 2
+    # the probe fires on the update after which g_step (the value logging tests) is a multiple of 2
+    assert probed and all(rows[i]["g_step"] % 2 == 0 for i in probed)
+    assert probed == [3, 5]  # post-warm-up updates
     assert all(np.isfinite(rows[i]["train/identity_grad_ratio"]) and rows[i]["train/identity_grad_ratio"] > 0 for i in probed)
     assert all("train/identity_grad_ratio" not in r for r in fit(phase4_cfg(tmp_path / "b", monkeypatch, identity={"weight": 5.0}), monkeypatch)[0])
 
