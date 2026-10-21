@@ -1146,6 +1146,10 @@ class HoldoutEmbedder:
         if kind in self.LOADERS:
             self.model = self.LOADERS[kind](location, self.device)
             self.fn = self.model
+        elif kind == "campplus":
+            from sparc.vocoders.eval.metrics.campplus import CHECKPOINT, CAMPPlusEmbedder
+
+            self.fn = CAMPPlusEmbedder(location or CHECKPOINT, self.device)
         elif kind == "speechbrain":
             from speechbrain.inference.speaker import EncoderClassifier
 
