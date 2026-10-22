@@ -1,0 +1,29 @@
+# @package _global_
+# Speaker-embedding Phase 4 combination (user decision 2026-10-22): arms M (1-8 references), R-F0 (speaker-relative F0
+# with the reference median F0 in the speaker code) and G (LibriTTS-R + filtered GLOBE v3) together, at the primary
+# recipe (400k generator steps, 16 x 64-frame crops), seed 0. Baseline: experiment main (B0 at 400k, seed 0).
+experiment_name: p4_mrg_main
+seed: 0
+train:
+  max_g_steps: 400000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+  train_splits:
+    - train.clean.100
+    - train.clean.360
+    - train.other.500
+    - /data/user_data/xoy/spkemb/phase4/globe_train/packed/globe.train
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  n_refs: [1, 8]
+  rel_f0:
+    enabled: true
+vocoder:
+  generator:
+    pitch_mode: log_relative
