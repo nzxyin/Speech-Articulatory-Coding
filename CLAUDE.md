@@ -758,6 +758,15 @@ screen (speaker-level paired bootstrap, single seeds):
   (1.1 -> 1.9 per dimension) as the code spread grew, so its effect is on quality more than on identity.
 - Open: the VAE's value is sampling new voices, not interpolation; a looser capacity (64-128 nats) might keep identity.
   Not pre-registered; needs a decision.
+- 400k finalists (2026-10-22; `eval/tables/_summary_400k`, `eval/compare_interp_400k.md`; two seeds each, paired by seed).
+  The learned pooling over all WavLM layers (B2) is worse than the existing speaker network at 400k in both seeds:
+  - T2 similarity to the speaker, mean of the two SV models: 0.842 / 0.843 against 0.854 / 0.855. That is -0.012
+    paired, with the CI excluding 0 in both seeds; ECAPA alone gives -0.022.
+  - Interpolation score (ECAPA): 0.868 / 0.879 against 0.885 / 0.876.
+  - Swap similarity to the target (ECAPA): 0.629 / 0.634 against 0.672 / 0.679.
+  - UTMOS and WER are unchanged.
+
+  The existing network therefore stays the speaker encoder. Phase 3 is closed; voice cloning continues as Phase 4.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
