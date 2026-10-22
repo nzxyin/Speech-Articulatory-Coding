@@ -289,6 +289,40 @@ diversity, which the conversion arms above do not address. The user proposed add
 - Compute: GLOBE extraction ~10-25 GPU-h, G ~9 GPU-h. A 400k confirmation of the winner, possibly G combined with a
   passing conversion arm, comes after the screen.
 
+### Phase 4 decisions and amendments (recorded 2026-10-22)
+
+**Settings fixed before any arm was scored:**
+- **Held-out SV model:** CAM++ (WeSpeaker VoxCeleb2, pinned, `eval/metrics/campplus.py`). Ground-truth EER 4.2 % on
+  LibriTTS-R test.clean.
+- **Identity-loss weight:** 2.0, from the gradient probe. At weight 20 the identity / mel gradient ratio was 0.92-1.26;
+  the target was 0.05-0.2. No evaluation metric was used.
+- **Baseline variant:** `k5_f0_loud`, chosen on the LibriTTS dev pool. The held-out-reference and primary rankings
+  agree.
+- **Margin:** m = 0.0266, twice the B0 seed-to-seed difference of 0.0133 on the primary metric.
+
+**Implementation deviations:**
+- The identity target is the real crop of the speaker whose code was used, not that speaker's reference utterance.
+- GLOBE pseudo-speakers have 2-9 references.
+- In arm G, GLOBE utterances serve as their own references, so about 70 % of crops use their own utterance as
+  reference, against 50 % in B0.
+- The T2/T3 sim_spk guard was set at a drop of at most 0.01 per SV model. The builder chose this value; the user
+  confirmed it on 2026-10-22, after the screen results.
+
+**Screen outcome (100k):**
+- **M:** advances.
+- **R-F0:** gains +0.035 to +0.045 in every pool, and the held-out CAM++ model agrees. It fails only the T2/T3 guard
+  on GLOBE (-0.011), so it does not advance.
+- **G:** the VCTK gain of +0.024 is below m. GLOBE improves by +0.080, with guard failures: GLOBE UTMOS -0.50 and
+  LibriTTS CAM++ own-speaker resynthesis -0.030. G does not advance.
+- **S:** worse on every primary metric, with WER up 8-34 points.
+
+**Amendment by the user (2026-10-22, after the screen):** train the combination M + R-F0 + G at 400k steps with two
+seeds (`p4_mrg_main`, `p4_mrg_main_seed1`). The baselines are the B0 400k runs `main` / `main_seed1`, compared
+seed by seed with the same rule, variant and margin.
+- This departs from "at most one combination of passing arms": R-F0 and G did not pass. The combination's result
+  must therefore be reported as a post-screen choice, not as a confirmed screen winner.
+- M alone at 400k was not run.
+
 Decisions for the user:
 - Downloading a held-out SV model (e.g. WeSpeaker ResNet34 or CAM++, ~0.1-0.3 GB).
 - The screen compute, about 55 GPU-h, then about 70 GPU-h to confirm the winner.
