@@ -768,6 +768,66 @@ screen (speaker-level paired bootstrap, single seeds):
 
   The existing network therefore stays the speaker encoder. Phase 3 is closed; voice cloning continues as Phase 4.
 
+### Speaker embedding Phase 4: zero-shot cloning of unseen voices (2026-10-21 to 10-23)
+Plan, pre-registration and amendments: `docs/speaker_embedding_plan.md` "Phase 4".
+
+Code is on `spkemb-phase3`:
+- `eval/clone.py`, `eval/clone_pools.py`, `eval/metrics/campplus.py`;
+- `features/globe_train.py`;
+- experiments `p4_*`.
+
+Outputs are under `/data/user_data/xoy/spkemb/phase4/`: `eval/<label>/summary.{json,md}` and `eval/decision_*.md`.
+
+Setup:
+- **Model:** 24 kHz HiFi-GAN.
+- **Pools:** unseen speakers from LibriTTS-R test.clean (36), VCTK (40) and GLOBE (400 ECAPA-clustered pseudo-speakers).
+- **Swap pairs:** 400 per pool, duration-stratified.
+- **Primary metric:** swap similarity to the target's reference-mean embedding, with ECAPA, WavLM-SV and the held-out
+  CAM++. CAM++ was used in no training loss and no selection; its ground-truth EER is 2.2 / 0 / 1 % on LibriTTS /
+  VCTK / GLOBE.
+- **Baseline:** the existing speaker network at the inference variant chosen on dev: 5 references, target F0 median
+  and range matched, loudness matched.
+- **Margin:** 0.0266, twice the seed-to-seed difference.
+
+Baseline results, existing network at 100k:
+- **LibriTTS:**
+  - Swap ECAPA similarity to the target 0.556 single-reference, rising to 0.639 with the dev-selected variant.
+  - Acceptance 54 % rising to 84 %.
+- **VCTK:** 0.316 rising to 0.381, acceptance 1-2 %.
+- **GLOBE:** 0.249 rising to 0.294, acceptance 0.3-1 %.
+- **Gap without a swap:** own-speaker resynthesis reaches only 0.65 (VCTK) and 0.58 (GLOBE) of the ground-truth
+  same-speaker level, against 0.90 on LibriTTS. Most of the out-of-domain gap exists without any swap.
+- **Inference variants:** matching F0 median and range gives about +0.06 everywhere. More references give about
+  +0.02. Loudness matching does nothing. EMA statistic matching does not help.
+- **400k steps:** adds +0.02 to +0.05 in every pool. VCTK acceptance only reaches 3-4 %.
+
+Screen at 100k against the existing network (ECAPA gain to the target, LibriTTS / VCTK / GLOBE):
+
+| arm | LibriTTS | VCTK | GLOBE | decision |
+|---|---|---|---|---|
+| up to 8 references in training | +0.028 | +0.044 | +0.034 | advances |
+| speaker-relative pitch | +0.035 | +0.038 | +0.038 | fails the 0.01 own-speaker guard on GLOBE by 0.001 |
+| + GLOBE v3 training data | -0.003 | +0.024 | +0.080 | VCTK gain below the margin; guards fail (GLOBE UTMOS -0.50) |
+| swapped speaker/content pairs | -0.049 | -0.045 | -0.003 | fails (WER +8 to +34 points) |
+| SV identity loss alone | -0.001 | +0.009 | +0.004 | fails |
+| swapped pairs + identity loss | -0.001 | -0.009 | +0.018 | fails |
+
+400k combination of up to 8 references, speaker-relative pitch and GLOBE data. This was the user's post-screen
+choice; two seeds, each paired with the existing network at 400k:
+
+| pool | ECAPA gain | ECAPA to target | acceptance | top-1 ID | UTMOS |
+|---|---|---|---|---|---|
+| LibriTTS | +0.056 to +0.061 | 0.66 -> 0.72 | 86 % -> 97 % | - | 3.74 -> 3.96 |
+| VCTK | +0.097 to +0.101 | 0.40 -> 0.50 | 3 % -> 20 % | 72 % -> 85 % | 3.44 -> 3.83 |
+| GLOBE | +0.134 to +0.135 | 0.31 -> 0.45 | 2 % -> 26 % | 34 % -> 63 % | 3.04 -> 2.86 |
+
+- CAM++ agrees, and WER improves by 0.5-15 points.
+- Three guards fail in both seeds, so by the rule the combination does not advance:
+  - LibriTTS own-speaker resynthesis drops 0.016-0.027;
+  - GLOBE UTMOS drops 0.14-0.15;
+  - GLOBE similarity to the source rises 0.03-0.05.
+- VCTK passes every guard.
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their

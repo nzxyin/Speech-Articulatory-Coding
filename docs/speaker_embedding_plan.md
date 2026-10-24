@@ -323,6 +323,23 @@ seed by seed with the same rule, variant and margin.
   must therefore be reported as a post-screen choice, not as a confirmed screen winner.
 - M alone at 400k was not run.
 
+**Outcome of the amendment** (2026-10-23; `phase4/eval/decision_mrg_400k_s{0,1}.md`):
+- **Primary gains:** M + R-F0 + G clears the margin in every pool, seed and SV model. The gains in ECAPA similarity
+  to the target, seed 0 / seed 1, are:
+
+  | pool | seed 0 | seed 1 |
+  |---|---|---|
+  | LibriTTS | +0.061 | +0.056 |
+  | VCTK | +0.101 | +0.097 |
+  | GLOBE | +0.135 | +0.134 |
+
+  CAM++ gains are of the same size. All CIs exclude 0.
+- **Guards:** it fails three in both seeds, so by the rule it does **not** advance.
+  - LibriTTS own-speaker T2 drops by 0.016-0.017 (ECAPA) and 0.025-0.027 (CAM++), against a limit of 0.01.
+  - GLOBE UTMOS drops by 0.14-0.15, against a limit of 0.10.
+  - GLOBE similarity to the source rises by 0.03 (ECAPA) and 0.05 (CAM++), against a limit of 0.02.
+- **VCTK:** every guard passes, and UTMOS rises by 0.38-0.42.
+
 Decisions for the user:
 - Downloading a held-out SV model (e.g. WeSpeaker ResNet34 or CAM++, ~0.1-0.3 GB).
 - The screen compute, about 55 GPU-h, then about 70 GPU-h to confirm the winner.
