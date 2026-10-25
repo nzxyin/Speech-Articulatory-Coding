@@ -5,6 +5,10 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- `sparc.vocoders.features.vctk_train` (Phase 5): VCTK training list (all speakers except the 40 evaluation-pool speakers,
+  trimmed 1-15 s, native trim bounds recorded), resumable sharded trimmed 24 kHz wav preparation, and the ECAPA leak
+  check (cosine >= 0.70) against the LibriTTS-R, VCTK and GLOBE evaluation pools; `extract` / `pack` are disabled hooks
+  until the Phase 5 quality thresholds exist. Test: `tests/test_vctk_train.py`.
 - Speaker-embedding Phase 3 (branch `spkemb-phase3`; design in `docs/speaker_embedding_plan.md` on `multispeaker-eval`):
   - `sparc.vocoders.features.spk_layers`: periodicity-weighted mean and std of all 25 WavLM Large hidden states per
     packed utterance (fp16, `<split>/{mean,std}.npy` + `stats.npz`); layers 0 and 6 are checked against the cached
