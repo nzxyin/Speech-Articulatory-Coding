@@ -120,3 +120,40 @@ def test_report_retention_and_accent_flag():
     r = q.retention(anchor, th, q.MEASURES, 10)
     assert abs(r["utmos"]["frac"] - 0.9) < 0.02 and abs(r["hours"] - 1.0) < 1e-9
     assert r["joint"]["frac"] < r["utmos"]["frac"]
+
+
+def test_load_list_fails_loudly_without_audio_column(tmp_path):
+    import pytest
+
+    path = tmp_path / "list.parquet"
+    pd.DataFrame({"id": ["a"], "wav48": ["x.wav"], "trim_start": [0], "trim_end": [10]}).to_parquet(path)
+    with pytest.raises(SystemExit, match="audio"):
+        q.load_list(path)
+
+
+def test_load_row_applies_native_and_audio_spans(tmp_path):
+    sr = 24000
+    x = np.concatenate([np.zeros(sr, np.float32), _noise(2, sr), np.zeros(sr, np.float32)])
+    sf.write(tmp_path / "a.wav", x, sr)
+    sf.write(tmp_path / "n.wav", x, sr)
+    base = {"id": "u", "corpus": "c", "accent": "", "speaker": "s", "text": "", "do_wer": False,
+            "audio": str(tmp_path / "a.wav"), "native_path": str(tmp_path / "n.wav")}  # fmt: skip
+    whole = q.load_row({**base, "start_s": np.nan, "end_s": np.nan, "audio_start_s": np.nan, "audio_end_s": np.nan})
+    cut = q.load_row({**base, "start_s": 1.0, "end_s": 3.0, "audio_start_s": 1.0, "audio_end_s": 3.0})
+    assert whole["error"] == "" and cut["error"] == ""
+    assert abs(whole["duration_s"] - 4.0) < 1e-3 and abs(cut["duration_s"] - 2.0) < 1e-3
+
+
+def test_retention_includes_wer_when_all_rows_have_it_and_samples_otherwise():
+    n = 100
+    df = pd.DataFrame({"duration_s": 3600.0 / 50, "wada_snr": np.arange(n, dtype=float), "has_wer": True,
+                       "wer": np.where(np.arange(n) < 20, 0.5, 0.0), "cer": 0.0})  # fmt: skip
+    th = {"wada_snr": {10: 10.0}, "wer": {10: 0.1}, "cer": {10: 0.1}}
+    r = q.retention(df, th, {"wada_snr": True}, 10)
+    assert r["wer"]["kept"] == 80 and r["cer"]["kept"] == 100
+    assert r["joint"]["includes_wer"] and r["joint"]["kept"] == 80  # snr >= 10 and wer <= 0.1 (rows 20..99)
+    part = df.copy()
+    part["has_wer"] = np.arange(n) % 2 == 0
+    r = q.retention(part, th, {"wada_snr": True}, 10)
+    assert r["wer"]["n_scored"] == 50 and not r["joint"]["includes_wer"] and r["joint"]["kept"] == 90
+    assert r["joint_with_wer_sample"]["n_scored"] == 50 and r["joint_with_wer_sample"]["kept"] == 40

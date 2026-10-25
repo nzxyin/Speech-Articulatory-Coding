@@ -81,7 +81,8 @@ MEASURES = {
     "clip_frac": False,
 }
 TEXT_MEASURES = {"wer": False, "cer": False}
-ANCHORS = ("libritts_test_clean", "vctk_eval")
+ANCHORS = ("libritts_test_clean", "vctk_eval", "vctk_eval_trim")
+REQUIRED_COLUMNS = ("id", "audio")
 ANCHOR_PERCENTILES = (5, 10, 25)
 
 SCORE_COLUMNS = [
@@ -327,6 +328,42 @@ def make_list(corpus: str, workers: int = 16) -> pd.DataFrame:
             "id": d["id"], "audio": d["wav_path"], "native_path": d["src"], "corpus": corpus, "accent": d["accent"],
             "speaker": d["speaker"], "text": d["text"], "do_wer": True,
         })  # fmt: skip
+    elif corpus == "vctk_eval_trim":
+        # the eval pool scored on the span the training list is scored on (vctk_train.trim_bounds on the native file)
+        import soundfile as sf
+
+        from sparc.vocoders.features.vctk_train import trim_bounds
+
+        d = pd.read_parquet(VCTK_POOL)
+
+        def bounds(path: str) -> tuple[float, float]:
+            wav, rate = sf.read(path, dtype="float32", always_2d=False)
+            lo, hi = trim_bounds(wav, rate)
+            return lo / rate, hi / rate
+
+        with ThreadPoolExecutor(workers) as pool:
+            span = list(pool.map(bounds, d["src"]))
+        out = pd.DataFrame({
+            "id": d["id"], "audio": d["wav_path"], "native_path": d["src"], "corpus": corpus, "accent": d["accent"],
+            "speaker": d["speaker"], "text": d["text"], "do_wer": True,
+            "start_s": [a for a, _ in span], "end_s": [b for _, b in span],
+            "audio_start_s": [a for a, _ in span], "audio_end_s": [b for _, b in span],
+        })  # fmt: skip
+    elif corpus == "vctk_train":
+        # Phase 5 VCTK training list: trimmed 24 kHz wavs (audio) plus the native span (trim bounds are sample indices)
+        from sparc.vocoders.features import vctk_train as vt
+
+        if vt.out_paths(vt.OUT_ROOT)["dropped"].is_file():
+            d = vt.kept_table(vt.OUT_ROOT)
+        else:
+            logger.warning("VCTK leak check has not run: scoring the unfiltered list")
+            d = pd.read_parquet(vt.out_paths(vt.OUT_ROOT)["list"])
+        rate = d["native_sr"].astype(float)
+        out = pd.DataFrame({
+            "id": d["id"], "audio": [str(vt.wav24_path(vt.OUT_ROOT, s, i)) for s, i in zip(d["speaker"], d["id"])],
+            "native_path": d["wav48"], "corpus": corpus, "accent": d["accent"], "speaker": d["speaker"], "text": d["text"],
+            "do_wer": True, "start_s": d["trim_start"] / rate, "end_s": d["trim_end"] / rate,
+        })  # fmt: skip
     elif corpus == "globe_train":
         d = pd.read_parquet(GLOBE_LIST)
         man = pd.read_csv(GLOBE_MANIFEST, sep="\t", usecols=["stem", "transcript"]).drop_duplicates("stem").set_index("stem")
@@ -347,10 +384,13 @@ def make_list(corpus: str, workers: int = 16) -> pd.DataFrame:
 
 def load_list(path: Path) -> pd.DataFrame:
     d = pd.read_parquet(path) if str(path).endswith(".parquet") else pd.read_csv(path, sep="\t")
+    missing = [c for c in REQUIRED_COLUMNS if c not in d]
+    if missing:
+        raise SystemExit(f"{path}: list lacks column(s) {missing}; build it with `make-list` (columns {list(d.columns)})")
     for col, default in (("native_path", ""), ("corpus", path.parent.name), ("accent", ""), ("speaker", ""), ("text", ""), ("do_wer", False)):
         if col not in d:
             d[col] = default
-    for col in ("start_s", "end_s"):
+    for col in ("start_s", "end_s", "audio_start_s", "audio_end_s"):
         if col not in d:
             d[col] = np.nan
     d["native_path"] = d["native_path"].fillna("").astype(str)
@@ -368,7 +408,7 @@ def load_row(row: dict) -> dict:
         "has_wer": False, "hyp": "", "error": "", "native_unavailable": not row["native_path"],
     }  # fmt: skip
     try:
-        audio, sr = read_audio(row["audio"])
+        audio, sr = read_audio(row["audio"], row.get("audio_start_s"), row.get("audio_end_s"))
         if row["native_path"]:
             native, nsr = read_audio(row["native_path"], row.get("start_s"), row.get("end_s"))
         else:
@@ -507,7 +547,11 @@ def passes(df: pd.DataFrame, m: str, thr: float, higher: bool) -> pd.Series:
 
 
 def retention(df: pd.DataFrame, thresholds: dict[str, dict[int, float]], measures: dict[str, bool], p: int) -> dict:
-    """Retained utterances and hours at percentile ``p``: each measure alone and the joint over all of them."""
+    """Retained utterances and hours at percentile ``p``: each measure alone and the joint over all of them.
+
+    WER / CER are judged on the rows that have a transcript score. When every row has one they join the joint; when only
+    a sample does (GLOBE) the joint stays WER-free and ``joint_with_wer_sample`` is the joint of all measures and WER on
+    the sample rows alone."""
     out: dict = {"n": int(len(df)), "hours": float(df["duration_s"].sum() / 3600)}
     joint = pd.Series(True, index=df.index)
     for m, higher in measures.items():
@@ -516,7 +560,24 @@ def retention(df: pd.DataFrame, thresholds: dict[str, dict[int, float]], measure
         ok = passes(df, m, thresholds[m][p], higher)
         joint &= ok
         out[m] = {"kept": int(ok.sum()), "frac": float(ok.mean()), "hours": float(df.loc[ok, "duration_s"].sum() / 3600)}
-    out["joint"] = {"kept": int(joint.sum()), "frac": float(joint.mean()), "hours": float(df.loc[joint, "duration_s"].sum() / 3600)}
+    has = df["has_wer"].astype(bool) if "has_wer" in df else pd.Series(False, index=df.index)
+    text_ok = pd.Series(True, index=df.index)
+    for m, higher in TEXT_MEASURES.items():
+        if m not in thresholds or has.sum() == 0:
+            continue
+        sub = df[has]
+        ok = passes(sub, m, thresholds[m][p], higher)
+        text_ok &= ok.reindex(df.index, fill_value=False)
+        out[m] = {"n_scored": int(has.sum()), "kept": int(ok.sum()), "frac": float(ok.mean()),
+                  "hours": float(sub.loc[ok, "duration_s"].sum() / 3600)}  # fmt: skip
+    if has.sum() > 0 and has.all():
+        joint &= text_ok
+    elif has.sum() > 0:
+        j = (joint & text_ok)[has]
+        out["joint_with_wer_sample"] = {"n_scored": int(has.sum()), "kept": int(j.sum()), "frac": float(j.mean()),
+                                        "hours": float(df.loc[has & joint & text_ok, "duration_s"].sum() / 3600)}  # fmt: skip
+    out["joint"] = {"kept": int(joint.sum()), "frac": float(joint.mean()), "hours": float(df.loc[joint, "duration_s"].sum() / 3600),
+                    "includes_wer": bool(has.sum() > 0 and has.all())}  # fmt: skip
     return out
 
 
@@ -588,18 +649,21 @@ def render_markdown(rep: dict) -> str:
                     s = q[m]
                     lines.append(f"| {gname} | {q['n']} | {q['hours']:.1f} | {m} | {_fmt(s['q05'])} | {_fmt(s['q25'])} | {_fmt(s['q50'])} | {_fmt(s['q75'])} | {_fmt(s['q95'])} | {_fmt(s['mean'])} |")
         lines.append("")
-    lines += ["## Retained utterances and hours at candidate thresholds (joint = every measure above at once)", ""]
+    lines += ["## Retained utterances and hours at candidate thresholds (joint = every measure above at once, incl. WER/CER when every row has a transcript score; otherwise a separate WER-sample row)", ""]
     for name, entry in rep["corpora"].items():
         lines += [f"### {name}", "", "| anchor@p | group | n | hours | joint kept | joint frac | joint hours |", "|---|---|---|---|---|---|---|"]
         for key, res in entry["retention"].items():
             for gname, r in res.items():
                 lines.append(f"| {key} | {gname} | {r['n']} | {r['hours']:.1f} | {r['joint']['kept']} | {r['joint']['frac']:.3f} | {r['joint']['hours']:.1f} |")
+                if "joint_with_wer_sample" in r:
+                    w = r["joint_with_wer_sample"]
+                    lines.append(f"| {key} (WER sample only) | {gname} | {w['n_scored']} | - | {w['kept']} | {w['frac']:.3f} | {w['hours']:.1f} |")
         flags = {k: v for k, v in entry["accent_loss_flag"].items() if v}
         lines += ["", "Accent-loss flag (joint retention below 50 %): " + (json.dumps(flags) if flags else "none"), ""]
-        lines += ["Single-measure retention (fraction kept), group all:", "", "| anchor@p | " + " | ".join(MEASURES) + " |", "|---|" + "---|" * len(MEASURES)]
+        lines += ["Single-measure retention (fraction kept), group all:", "", "| anchor@p | " + " | ".join([*MEASURES, *TEXT_MEASURES]) + " |", "|---|" + "---|" * (len(MEASURES) + len(TEXT_MEASURES))]
         for key, res in entry["retention"].items():
             r = res["all"]
-            lines.append(f"| {key} | " + " | ".join(_fmt(r[m]["frac"]) if m in r else "-" for m in MEASURES) + " |")
+            lines.append(f"| {key} | " + " | ".join(_fmt(r[m]["frac"]) if m in r else "-" for m in [*MEASURES, *TEXT_MEASURES]) + " |")
         lines.append("")
     return "\n".join(lines)
 
