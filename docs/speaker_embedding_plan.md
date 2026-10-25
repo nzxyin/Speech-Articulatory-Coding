@@ -356,7 +356,7 @@ to +0.135 GLOBE), but failed three guards in both seeds: LibriTTS own-speaker re
 GLOBE similarity to the source. Question: does adding filtered VCTK (real speakers with many utterances each) and/or a
 quality filter on GLOBE keep the gains and pass the guards?
 
-### Arms
+### Arms [SUPERSEDED by Amendment 1]
 All arms use the combination recipe (up to 8 references, speaker-relative pitch), the 100k-step HiFi-GAN recipe and
 seed 0. Training data is sampled in natural corpus proportions, uniform over utterances, with no reweighting.
 - **R** (LibriTTS-R plus GLOBE): the Phase 4 combination data (LibriTTS-R train plus the filtered GLOBE v3 train list,
@@ -375,7 +375,7 @@ from Phase 4.
   (`SparcFeatureExtractor`, soxr_hq, batch size 1, per-utterance CREPE seed). Normalization statistics stay the
   LibriTTS ones.
 - **Duration.** Keep utterances of 1 to 15 s after trimming.
-- **Noise.** Keep utterances with SNR > 25 dB. The GLOBE filter used the dataset's own precomputed `snr` field
+- **Noise.** [SUPERSEDED by Amendment 1] Keep utterances with SNR > 25 dB. The GLOBE filter used the dataset's own precomputed `snr` field
   (`build_globe_v3_manifest.py`, `snr > 25`), which cannot be computed for VCTK, and no estimator code exists in the
   GLOBE work. The estimator is therefore WADA-SNR, applied to the trimmed 24 kHz audio. This differs from the GLOBE
   field, and the two thresholds are not calibrated against each other.
@@ -385,7 +385,7 @@ from Phase 4.
   three evaluation pools (LibriTTS-R test.clean, VCTK, GLOBE), as in Phase 4. Counts dropped by each filter are
   reported.
 
-### GLOBE quality filter (arm VQ only)
+### GLOBE quality filter (arm VQ only) [SUPERSEDED by Amendment 1]
 - Score every utterance of the GLOBE training list with the UTMOS predictor used in the Phase 4 evaluation, and a fixed
   random sample of 5000 LibriTTS-R training utterances (numpy seed 0, drawn from the packed train list).
 - Threshold: the 25th percentile of the LibriTTS-R sample's UTMOS. Keep GLOBE utterances with UTMOS >= this threshold.
@@ -410,6 +410,46 @@ from Phase 4.
   same rule. If no arm passes every guard, the results are reported and the phase stops, with no combination or
   rescue arm.
 - Outputs: `/data/user_data/xoy/spkemb/phase5/`.
+
+### Phase 5 Amendment 1 (2026-10-24, user direction: stricter filtering for a vocoder)
+
+Written before any Phase 5 data, statistic or number exists. It REPLACES the arms (R / V / VQ), the VCTK "Noise" bullet
+and the "GLOBE quality filter" section above (marked superseded there; kept for the record). Everything else in Phase 5
+(decision rule, margin m = 0.0266, guards, pools, inference variant `k5_f0_loud`, leak check, outputs) is unchanged,
+except where stated here. Reason: the earlier filters were a single SNR threshold (GLOBE's shipped `snr > 25`, WADA-SNR
+for VCTK, not calibrated against each other) and one UTMOS cut on GLOBE only. A vocoder learns from the audio itself, so
+noise, reverberation, narrow bandwidth, clipping and unnatural or mis-transcribed speech all matter.
+
+**Measures.** One implementation, computed by us on every corpus: LibriTTS-R training splits, the GLOBE training list
+(228,391 utterances) and VCTK non-eval speakers; 16 kHz input where the model needs it.
+- (a) Noise: WADA-SNR and the Squim SI-SDR estimate (`torchaudio.pipelines.SQUIM_OBJECTIVE`).
+- (b) Reverberation: Brouhaha C50 if it installs in the venv without network access at run time; otherwise Squim STOI
+  as a proxy. The report states which was used.
+- (c) Naturalness: UTMOS (the Phase 4 predictor) and the Squim reference-free PESQ estimate. True PESQ is intrusive and
+  needs a clean reference, which corpus audio lacks.
+- (d) Bandwidth: effective bandwidth = the highest frequency below which 99% of the spectral energy lies, on the
+  native-rate audio before resampling. Audio upsampled from a lower native rate is flagged.
+- (e) Clipping: fraction of samples within 0.1% of full scale.
+- (f) WER and CER with Whisper large-v3 against the reference text for LibriTTS-R and VCTK. GLOBE already passed an
+  exact-match Whisper check upstream; it is recomputed on a fixed random 5,000-utterance GLOBE sample only, to confirm.
+
+**Threshold procedure (values fixed later).** A calibration report gives each measure's distribution per corpus and per
+GLOBE accent, and the retained hours per corpus and accent at candidate thresholds anchored on the 5th, 10th and 25th
+percentiles of LibriTTS-R test.clean and of the VCTK eval pool. The user reviews the report. The final thresholds are
+written into this section BEFORE any Phase 5 training starts, and are the same for all corpora. Accent guard: any
+accent losing more than 50% of its utterances is reported.
+
+**VCTK set.** All VCTK speakers except the 40 eval-pool speakers; same trimming and 24 kHz resampling as the eval pool
+build; 1 to 15 s after trimming; ECAPA cosine >= 0.70 leak check against all three eval pools as in Phase 4. The
+strict filters above replace the earlier VCTK SNR rule.
+
+**Arms** (100k steps, seed 0, combination recipe: up to 8 references plus speaker-relative pitch, natural corpus
+proportions, uniform over utterances):
+1. LibriTTS-R plus GLOBE as used so far (reference; no 100k run of this combination exists).
+2. LibriTTS-R plus GLOBE, both strictly filtered (isolates the effect of filtering).
+3. LibriTTS-R plus GLOBE plus VCTK, all strictly filtered.
+The baseline is still the existing speaker network at 100k, seed 0. Descriptive contrasts: arm 2 vs 1 and arm 3 vs 2,
+paired by speaker within each pool. "Advancing" applies to the best arm passing every guard, as above.
 
 ## Coordination and compute
 
