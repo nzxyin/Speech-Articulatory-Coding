@@ -344,6 +344,73 @@ Decisions for the user:
 - Downloading a held-out SV model (e.g. WeSpeaker ResNet34 or CAM++, ~0.1-0.3 GB).
 - The screen compute, about 55 GPU-h, then about 70 GPU-h to confirm the winner.
 
+## Phase 5: three-corpus training data (LibriTTS-R + filtered VCTK + filtered GLOBE)
+
+Fixed 2026-10-24, before any Phase 5 data, feature cache, filter statistic or number exists. Everything not stated here
+is the Phase 4 protocol unchanged.
+
+### Motivation
+The 400k combination (up to 8 references, speaker-relative pitch, GLOBE training data) gave large cloning gains in
+every pool, seed and speaker-verification model (ECAPA gain +0.056 to +0.061 LibriTTS, +0.097 to +0.101 VCTK, +0.134
+to +0.135 GLOBE), but failed three guards in both seeds: LibriTTS own-speaker resynthesis similarity, GLOBE UTMOS and
+GLOBE similarity to the source. Question: does adding filtered VCTK (real speakers with many utterances each) and/or a
+quality filter on GLOBE keep the gains and pass the guards?
+
+### Arms
+All arms use the combination recipe (up to 8 references, speaker-relative pitch), the 100k-step HiFi-GAN recipe and
+seed 0. Training data is sampled in natural corpus proportions, uniform over utterances, with no reweighting.
+- **R** (LibriTTS-R plus GLOBE): the Phase 4 combination data (LibriTTS-R train plus the filtered GLOBE v3 train list,
+  228,391 utterances). Its 100k run does not exist yet (Phase 4 ran this combination only at 400k) and is trained here.
+- **V** (R plus filtered VCTK): R plus the VCTK training set defined below.
+- **VQ** (LibriTTS-R plus filtered VCTK plus quality-filtered GLOBE): as V, but GLOBE restricted by the quality filter
+  below.
+The baseline for every arm is the existing speaker network (the comparison's ablation recipe) at 100k steps, seed 0,
+from Phase 4.
+
+### VCTK training set
+- **Speakers.** Drop the 40 speakers of the VCTK evaluation pool (`phase4/pools/vctk/table.parquet`). All other VCTK
+  speakers are kept. A speaker without transcripts is kept (transcripts are unused).
+- **Audio.** Source `/data/group_data/UTD-NAS/Databases/VCTK/VCTK-Corpus/wav48`, with the same trimming and resampling
+  as the evaluation pool build (`clone_pools.py`), to 24 kHz, and the same feature extraction as the other corpora
+  (`SparcFeatureExtractor`, soxr_hq, batch size 1, per-utterance CREPE seed). Normalization statistics stay the
+  LibriTTS ones.
+- **Duration.** Keep utterances of 1 to 15 s after trimming.
+- **Noise.** Keep utterances with SNR > 25 dB. The GLOBE filter used the dataset's own precomputed `snr` field
+  (`build_globe_v3_manifest.py`, `snr > 25`), which cannot be computed for VCTK, and no estimator code exists in the
+  GLOBE work. The estimator is therefore WADA-SNR, applied to the trimmed 24 kHz audio. This differs from the GLOBE
+  field, and the two thresholds are not calibrated against each other.
+- **Speaker identity.** Each kept VCTK speaker is one training speaker (real speaker ids; references are other
+  utterances of the same speaker, p_cross as for LibriTTS-R).
+- **Leak check.** Drop every training utterance whose ECAPA embedding has cosine >= 0.70 to any utterance of any of the
+  three evaluation pools (LibriTTS-R test.clean, VCTK, GLOBE), as in Phase 4. Counts dropped by each filter are
+  reported.
+
+### GLOBE quality filter (arm VQ only)
+- Score every utterance of the GLOBE training list with the UTMOS predictor used in the Phase 4 evaluation, and a fixed
+  random sample of 5000 LibriTTS-R training utterances (numpy seed 0, drawn from the packed train list).
+- Threshold: the 25th percentile of the LibriTTS-R sample's UTMOS. Keep GLOBE utterances with UTMOS >= this threshold.
+- The ECAPA leak filter against the GLOBE pool still applies. Arm R uses the unfiltered list.
+- The threshold and kept count are recorded before any arm is trained or scored.
+
+### Decision rule
+- **Per arm vs baseline:** the Phase 4 rule, unchanged. Primary metric: swap similarity to the target's reference-mean
+  embedding (ECAPA, WavLM-SV, held-out CAM++), speaker-level bootstrap, inference variant `k5_f0_loud`, margin
+  m = 0.0266. An arm advances if its primary gain is >= m with the CI excluding 0 on LibriTTS-R test.clean, the gain
+  has the same sign in VCTK and GLOBE and in CAM++, and all guards pass.
+- **Guards (Phase 4):** own-speaker T2/T3 similarity drop at most 0.01 per SV model; UTMOS drop at most 0.10 in every
+  pool; similarity to the source rise at most 0.02; WER at most +0.5 points; reference-length curve and noisy-reference
+  checks reported as before.
+- **Caveat for VCTK:** the evaluation pool has no training speaker in any arm, but V and VQ train on other VCTK
+  speakers, so VCTK is in-domain for them in recording conditions. It is no longer a fully out-of-domain test for V and
+  VQ, and LibriTTS-R and GLOBE results carry that weight; this is reported next to the VCTK numbers.
+- **Descriptive contrasts (no decision):** V vs R and VQ vs V, paired by speaker within each pool, for the primary
+  metrics and every guard quantity.
+- **Advancing:** the best arm that passes every guard (best by mean ECAPA gain over the three pools) goes to 400k with
+  two seeds, each paired with the existing network at 400k of the same seed (Phase 4 `main`, `main_seed1`), with the
+  same rule. If no arm passes every guard, the results are reported and the phase stops, with no combination or
+  rescue arm.
+- Outputs: `/data/user_data/xoy/spkemb/phase5/`.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
