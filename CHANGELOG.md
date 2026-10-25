@@ -5,6 +5,13 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- `sparc.vocoders.features.quality` (Phase 5): one shared, sharded, atomic and resumable quality scorer for every corpus
+  (WADA-SNR and Squim SI-SDR, Squim STOI as the reverberation proxy because Brouhaha would downgrade the shared venv's
+  speechbrain, UTMOS, Squim PESQ, 99 % energy bandwidth on the native-rate audio with an upsampled flag, clipping
+  fraction, Whisper large-v3 WER/CER with the Phase 4 normalization), list builders for LibriTTS-R train / test.clean,
+  the VCTK evaluation pool and the GLOBE training list, and a `report` subcommand (quantiles per corpus and GLOBE accent,
+  retention at thresholds anchored on LibriTTS-R test.clean and the VCTK pool, accent-loss flag). Runner scripts
+  `scripts/spkemb/p5_job.sh`, `p5_quality_anchors.sh`. Test: `tests/test_quality.py`.
 - `sparc.vocoders.features.vctk_train` (Phase 5): VCTK training list (all speakers except the 40 evaluation-pool speakers,
   trimmed 1-15 s, native trim bounds recorded), resumable sharded trimmed 24 kHz wav preparation, and the ECAPA leak
   check (cosine >= 0.70) against the LibriTTS-R, VCTK and GLOBE evaluation pools; `extract` / `pack` are disabled hooks
