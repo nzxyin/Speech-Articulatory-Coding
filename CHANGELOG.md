@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Speaker-encoder screen, pooling-operator family (`spkscreen/variants/pooling_ops.py`, tests `tests/test_spkscreen_pooling.py`): attentive statistics (two), multi-head and multi-query attentive pooling, NetVLAD, GhostVLAD, fixed k-means codebook, mean+std, skewness, low-rank covariance, trimmed mean and quantiles; 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_pooling.md`.
 - Speaker-encoder screen, segment-aware family (`spkscreen/variants/segment.py`, tests `tests/test_spkscreen_segment.py`): voiced / unvoiced / silence split pooling (three forms), learned soft gates (two), fixed k-means codebooks (K 6 and 16) and a cepstral log-mel side branch (two); 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_segment.md`.
 - `sparc.vocoders.spkscreen` (speaker-encoder architecture screen, `docs/spkemb_encoder_screen.md`): resumable frame
   cache (WavLM Large layers 0, 1, 3, 6, 12, 24 in fp16, SPARC periodicity / loudness / F0, 80-bin log-mel; 6344 training
