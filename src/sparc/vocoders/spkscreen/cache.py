@@ -35,6 +35,7 @@ CHUNK = 250
 PER_SPK = 30
 T_MIN, T_MAX = 100, 800
 MIN_UTT_PER_SPK = 20
+MIN_SAMPLES = 9600  # 0.4 s at 24 kHz; the extractor fails below 9239 samples
 N_MEL = 80
 TARGET_DIM = 80 + 80 + 24 + 1  # logmel mean, logmel std, MFCC 1-24 mean, tilt (Phase 1 targets_matrix order)
 AUX_COLS = ("periodicity", "zloud", "loud", "f0")
@@ -183,6 +184,17 @@ class FrameExtractor:
         self.wavlm = load_wavlm(self.device)
 
     def encode(self, wav24: np.ndarray, seed: int) -> dict:
+        """Features of one utterance. Utterances under ``MIN_SAMPLES`` (cannot be encoded, issue #12) are padded with
+        digital silence at the end and their frames cut back to the utterance's own length."""
+        if len(wav24) >= MIN_SAMPLES:
+            return self._encode(wav24, seed)
+        keep = max(1, len(wav24) // 480 - 1)
+        out = self._encode(np.concatenate([wav24, np.zeros(MIN_SAMPLES - len(wav24), np.float32)]), seed)
+        out["hidden"], out["aux"], out["mel"] = out["hidden"][:, :keep], out["aux"][:keep], out["mel"][:keep]
+        out["padded"] = True
+        return out
+
+    def _encode(self, wav24: np.ndarray, seed: int) -> dict:
         import librosa
 
         from sparc.vocoders.constants import F0_CHANNEL, LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
@@ -238,7 +250,7 @@ def extract(set_name: str, worker: int, nworkers: int, root: Path = ROOT, limit_
         rows = range(c * CHUNK, min(len(man), (c + 1) * CHUNK))
         hid = {k: [] for k in LAYERS}
         aux, mel, lens, tgs, f0s = [], [], [], [], []
-        worst = {"periodicity_maxdiff": 0.0, "l6_cosine_min": 1.0}
+        worst = {"periodicity_maxdiff": 0.0, "l6_cosine_min": 1.0, "padded_utts": 0}
         for r in rows:
             row = man.iloc[r]
             enc = fx.encode(read_wav24(row["wav_path"]), int(row["seed"]))
@@ -247,6 +259,7 @@ def extract(set_name: str, worker: int, nworkers: int, root: Path = ROOT, limit_
             aux.append(enc["aux"])
             mel.append(enc["mel"])
             lens.append(len(enc["aux"]))
+            worst["padded_utts"] += int(enc.get("padded", False))
             tgs.append(enc["targets"])
             f0s.append(enc["logf0"])
             if packed_feats is not None:

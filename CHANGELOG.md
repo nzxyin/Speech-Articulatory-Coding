@@ -5,6 +5,12 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- `sparc.vocoders.spkscreen` (speaker-encoder architecture screen, `docs/spkemb_encoder_screen.md`): resumable frame
+  cache (WavLM Large layers 0, 1, 3, 6, 12, 24 in fp16, SPARC periodicity / loudness / F0, 80-bin log-mel; 6344 training
+  utterances of 212 LibriTTS-R train.clean.100 speakers and the 5470 Phase 1 utterances, 41 GB), pluggable pooling-module
+  interface with a variant registry (`spkscreen/variants/`), AAM-softmax plus auxiliary M1-head trainer, the Phase 1
+  metric suite with speaker-level SEs, the pre-registered selection report, and the layer 6 periodicity-mean FFN
+  baseline. Evaluation utterances under 0.4 s are padded with silence for extraction and cut back to their own frames.
 - `sparc.vocoders.features.quality` (Phase 5): one shared, sharded, atomic and resumable quality scorer for every corpus
   (WADA-SNR and Squim SI-SDR, Squim STOI as the reverberation proxy because Brouhaha would downgrade the shared venv's
   speechbrain, UTMOS, Squim PESQ, 99 % energy bandwidth on the native-rate audio with an upsampled flag, clipping
