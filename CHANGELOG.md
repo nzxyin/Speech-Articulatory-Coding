@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Speaker-encoder screen, multi-scale family (`spkscreen/variants/multiscale.py`, `spkscreen/multiref.py`, `scripts/spkscreen/submit_multiscale.sh`, tests `tests/test_spkscreen_multiscale.py`): layer 1 plus layer 6 means, learned layer weights, 0.5 s segment pooling, multi-layer aggregation before pooling, dilated-convolution and transformer frame networks, gradient reversal against content, F0 and both; plus an inference-only study of multi-reference fusion on the trained baseline encoders. 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_multiscale.md`.
 - Speaker-encoder screen, pooling-operator family (`spkscreen/variants/pooling_ops.py`, tests `tests/test_spkscreen_pooling.py`): attentive statistics (two), multi-head and multi-query attentive pooling, NetVLAD, GhostVLAD, fixed k-means codebook, mean+std, skewness, low-rank covariance, trimmed mean and quantiles; 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_pooling.md`.
 - Speaker-encoder screen, segment-aware family (`spkscreen/variants/segment.py`, tests `tests/test_spkscreen_segment.py`): voiced / unvoiced / silence split pooling (three forms), learned soft gates (two), fixed k-means codebooks (K 6 and 16) and a cepstral log-mel side branch (two); 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_segment.md`.
 - `sparc.vocoders.spkscreen` (speaker-encoder architecture screen, `docs/spkemb_encoder_screen.md`): resumable frame
