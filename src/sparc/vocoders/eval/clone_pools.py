@@ -45,7 +45,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from sparc.vocoders.constants import PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.constants import LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.features.spk_phase6 import P6_LAYERS, compose_input, pool_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -377,17 +378,28 @@ class FeatureEncoder:
         from sparc.vocoders.features.spk_layers import hidden_states, pooled_stats
 
         out = self.extractor.extract(np.ascontiguousarray(wav24, dtype=np.float32), seed)
-        mean, std = pooled_stats(hidden_states(self.wavlm, wav24, self.device), out["feats"][:, PERIODICITY_CHANNEL])
+        hidden = hidden_states(self.wavlm, wav24, self.device)
+        mean, std = pooled_stats(hidden, out["feats"][:, PERIODICITY_CHANNEL])
         keep = ("feats", "loud_raw", "spk_l0", "spk_l6", "spk_wsum", "peak24", "n24", "T")
-        return {**{k: np.asarray(out[k]) for k in keep}, "mean": mean.astype(np.float16), "std": std.astype(np.float16)}
+        feats = np.asarray(out["feats"])
+        p6 = pool_inputs(hidden[1], hidden[6], feats[:, PERIODICITY_CHANNEL], feats[:, LOUDNESS_CHANNEL])
+        return {
+            **{k: np.asarray(out[k]) for k in keep},
+            "mean": mean.astype(np.float16),
+            "std": std.astype(np.float16),
+            "spk_l1": p6["l1"],
+            "spk_vus3": p6["vus3"],
+        }
 
 
 def speaker_vector(enc: dict[str, np.ndarray], layer: str) -> np.ndarray:
-    """Speaker-encoder input of an encoded waveform for the layout ``layer`` (``l6``, ``l0`` or ``layers``)."""
+    """Speaker-encoder input of an encoded waveform for the layout ``layer`` (``l6``, ``l0``, ``layers`` or a Phase 6 one)."""
     if layer == "layers":
         return np.stack([enc["mean"], enc["std"]]).astype(np.float32)
     if layer in ("l0", "l6"):
         return np.asarray(enc[f"spk_{layer}"], dtype=np.float32)
+    if layer in P6_LAYERS:  # Phase 6 layouts, pooled by the same code as the training side files
+        return compose_input(layer, np.asarray(enc["spk_l6"], np.float32), enc.get("spk_l1"), enc.get("spk_vus3"))
     raise ValueError(f"unsupported speaker layer {layer!r}")
 
 

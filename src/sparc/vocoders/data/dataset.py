@@ -22,9 +22,10 @@ from torch.utils.data import Dataset
 from sparc.vocoders.constants import F0_CHANNEL, HOP, LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
 from sparc.vocoders.data.gain import DEFAULT_GAIN_DB_RANGE, apply_gain, gain_factor, sample_gain_db
 from sparc.vocoders.data.sampler import SampleKey
+from sparc.vocoders.features.spk_phase6 import NEEDS_SIDE, P6_LAYERS, P6_ROOT, SideIndex, compose_input
 
 CONDITIONS = ("T1", "T2", "T3")
-SPEAKER_LAYERS = ("l0", "l6", "enplus64", "layers")  # "layers": all-layer statistics of a separate cache
+SPEAKER_LAYERS = ("l0", "l6", "enplus64", "layers", *P6_LAYERS)  # "layers": all-layer statistics of a separate cache
 FIXED_CROP_STREAM = 2**32 - 1
 INDEX_COLUMNS = ("id", "speaker", "chapter", "wav_path", "n24", "T", "offset", "peak24", "spk_wsum")
 F0_STATS_DEFAULT = "/data/user_data/xoy/spkemb/phase4/stats/speaker_f0.json"
@@ -98,10 +99,18 @@ class PackedStore:
     ``speaker_layer="layers"`` reads the all-layer statistics of ``layer_stats_root/<split>/{mean,std}.npy`` (written by
     ``sparc.vocoders.features.spk_layers`` in the row order of each ``index.parquet``) instead of ``spk_*.npy``;
     :meth:`speaker_vector` then returns ``[2, 25, 1024]`` (mean, std).
+
+    ``speaker_layer`` in ``l1l6`` / ``vus3_l6`` / ``l6_rep3`` (speaker-embedding Phase 6, see
+    ``features.spk_phase6``) returns the 2048- / 3072- / 3072-d input built from ``spk_l6`` and the side files under
+    ``side_root`` (default ``$SPKEMB_P6_CACHE``), which are looked up by utterance id.
     """
 
     def __init__(
-        self, packed_dirs: Sequence[str | Path], speaker_layer: str = "l6", layer_stats_root: str | Path | None = None
+        self,
+        packed_dirs: Sequence[str | Path],
+        speaker_layer: str = "l6",
+        layer_stats_root: str | Path | None = None,
+        side_root: str | Path | None = None,
     ):
         if speaker_layer not in SPEAKER_LAYERS:
             raise ValueError(f"speaker_layer must be one of {SPEAKER_LAYERS}, got {speaker_layer!r}")
@@ -141,6 +150,11 @@ class PackedStore:
                 ids = (directory / "ids.txt").read_text().split()
                 if not np.array_equal(np.array(ids), self.ids[self.dir_id == d]):
                     raise ValueError(f"{directory}/ids.txt does not match the index of {self.packed_dirs[d]}")
+        self.side = None
+        if speaker_layer in P6_LAYERS and NEEDS_SIDE[speaker_layer]:
+            self.side = SideIndex(side_root or P6_ROOT)
+            self.side_dir, self.side_row = self.side.locate(self.ids)
+            self.side.where = {}  # only needed to locate
         self._arrays: tuple | None = None
 
     def __len__(self) -> int:
@@ -161,7 +175,8 @@ class PackedStore:
                 feats.append(np.load(directory / "feats.npy", mmap_mode="r"))
                 loud.append(np.load(directory / "loud_raw.npy", mmap_mode="r"))
                 if self.layer_stats_dirs is None:
-                    spk.append(np.load(directory / f"spk_{self.speaker_layer}.npy", mmap_mode="r"))
+                    base = "l6" if self.speaker_layer in P6_LAYERS else self.speaker_layer
+                    spk.append(np.load(directory / f"spk_{base}.npy", mmap_mode="r"))
                 else:
                     stats_dir = self.layer_stats_dirs[d]
                     spk.append(tuple(np.load(stats_dir / f"{k}.npy", mmap_mode="r") for k in ("mean", "std")))
@@ -184,9 +199,17 @@ class PackedStore:
     def speaker_vector(self, utt: int) -> np.ndarray:
         """Pooled speaker vector of ``utt``, float32 (``[2, 25, 1024]`` for ``speaker_layer="layers"``)."""
         spk = self._open()[2][self.dir_id[utt]]
+        if self.speaker_layer in P6_LAYERS:
+            return self._phase6_vector(utt, np.array(spk[self.row[utt]], dtype=np.float32))
         if self.layer_stats_dirs is None:
             return np.array(spk[self.row[utt]], dtype=np.float32)
         return np.stack([np.asarray(a[self.row[utt]], dtype=np.float32) for a in spk])
+
+    def _phase6_vector(self, utt: int, l6: np.ndarray) -> np.ndarray:
+        kind = self.speaker_layer
+        need = NEEDS_SIDE[kind]
+        extra = {k: np.array(self.side.array(k, int(self.side_dir[utt]))[int(self.side_row[utt])], np.float32) for k in need}
+        return compose_input(kind, l6, extra.get("l1"), extra.get("vus3"))
 
     def speaker_references(self, refs: Sequence[int], n_slots: int) -> tuple[np.ndarray, np.ndarray]:
         """Speaker vectors of ``refs`` stacked into ``n_slots`` slots (zero padded) and the mask of filled slots."""

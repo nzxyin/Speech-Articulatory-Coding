@@ -1,0 +1,10 @@
+# @package _global_
+# Speaker-embedding Phase 6, arm e1 on the Phase 5 arm p5_f: exactly the experiment p5_f (data, recipe, HiFi-GAN,
+# 100k steps, seed 0) with only the speaker-FFN input changed to the concatenated periodicity-weighted means of WavLM Large layers 1 and 6 (2048-d).
+# Needs the side vectors of sparc.vocoders.features.spk_phase6 ($SPKEMB_P6_CACHE) and the stats.npz next to them.
+defaults:
+  - p5_f
+  - _self_
+experiment_name: p6_e1_p5_f
+speaker:
+  layer: l1l6

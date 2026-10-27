@@ -5,6 +5,19 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Phase 6 speaker-encoder arms (code only; no vocoder run is started until the Phase 5 winner is known):
+  `speaker.layer` accepts `l1l6` (periodicity-weighted means of WavLM Large layers 1 and 6, 2048-d), `vus3_l6` (the
+  screen's voiced / unvoiced speech / silence layer 6 means, 3072-d) and `l6_rep3` (layer 6 mean repeated three times,
+  3072-d, width control), all into the same speaker FFN (hidden 1024, output 64) with the z-score taken from
+  `phase6/stats.npz`. `features/spk_phase6.py`: per-utterance side vectors (layer 1 mean, three-way layer 6 means)
+  pooled with the screen's own code (`segment_masks`, `class_means`, `pool_weights`), extraction from a truncated WavLM
+  forward (layers 1 and 6; checked against `spk_l6` at cosine >= 1 - 1e-6 on every utterance), sharded and resumable,
+  stored by tag under `$SPKEMB_P6_CACHE` and found by utterance id (so the Phase 5 subset splits need no files of
+  their own); `PackedStore` / `build_speaker` / `clone_pools.speaker_vector` / `FeatureEncoder.encode` use it, so
+  training, validation and cloning-evaluation references (clean and re-encoded from audio) share the pooling. The `l6`
+  path is untouched. Experiments `p6_<e1|e2|e3>_<p5_r|p5_f|p5_fv>` (include the Phase 5 experiment, change only
+  `experiment_name` and `speaker.layer`); check `scripts/spkemb/p6_validate_configs.py`; tests
+  `tests/test_spkemb_phase6.py`.
 - Speaker-encoder screen precondition checks: `spkscreen/precond.py` (seed-paired speaker-level jackknife inference, Holm,
   per-corpus and GLOBE statistics), `precond_report.py`, `globe_embed.py`, `cache.py globe-manifest` and the `globe` cache
   set, capacity-matched control variants `cap_rep3` / `cap_rep2` (`variants/capacity.py`); results in

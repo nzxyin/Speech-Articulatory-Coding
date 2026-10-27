@@ -18,6 +18,10 @@ contract `docs/vocoders/EVALUATION.md`). The write-up is `docs/vocoders/RESULTS.
 `docs/vocoders/results/`. Large outputs (checkpoints, audio, per-utterance results, samples, failure cases) are under
 `/data/user_data/xoy/sparc-vocoders/` (`runs/`, `eval/`).
 
+Phase 6 (speaker-encoder pooling in the vocoder; pre-registered in `docs/speaker_embedding_plan.md` on the plan branch) is
+prepared but not started: arms `p6_<e1|e2|e3>_<p5_r|p5_f|p5_fv>` (`speaker.layer` `l1l6` / `vus3_l6` / `l6_rep3`) wait for the
+Phase 5 winner. Side vectors: `/data/user_data/xoy/spkemb/phase6/` (`features/spk_phase6.py`).
+
 ## Main findings (test.clean; robust = same sign and supported in both training seeds and larger than the seed spread)
 
 - HiFi-GAN leads on quality and speaker similarity (robust, also on test.other): UTMOS 4.17 / 4.16 (two seeds) against

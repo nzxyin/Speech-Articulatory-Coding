@@ -15,6 +15,7 @@ from torch import nn
 from torch.func import functional_call
 
 from sparc.vocoders.constants import F0_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.features.spk_phase6 import INPUT_DIMS, P6_LAYERS, input_stats
 from sparc.vocoders.models.speaker import LayerPoolSpeakerEncoder, SpeakerFFN
 
 WAVLM_DIR = (
@@ -29,6 +30,9 @@ def build_speaker(cfg: DictConfig, stats: dict) -> nn.Module:
     kind = spk.get("type", "ffn")
     if kind == "ffn":
         layer = spk.layer
+        if layer in P6_LAYERS:  # Phase 6: wider input, same hidden width (1024) and output
+            mean, std = input_stats(layer, stats, spk.get("input_stats"))
+            return SpeakerFFN(in_dim=INPUT_DIMS[layer], dropout=spk.dropout, mean=mean, std=std)
         return SpeakerFFN(dropout=spk.dropout, mean=stats[f"spk_{layer}_mean"], std=stats[f"spk_{layer}_std"])
     if kind != "layerpool":
         raise ValueError(f"unknown speaker.type {kind!r}")

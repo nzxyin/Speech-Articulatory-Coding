@@ -1,0 +1,10 @@
+# @package _global_
+# Speaker-embedding Phase 6, arm e3 on the Phase 5 arm p5_fv: exactly the experiment p5_fv (data, recipe, HiFi-GAN,
+# 100k steps, seed 0) with only the speaker-FFN input changed to the layer 6 periodicity-weighted mean repeated three times (3072-d; width control for e2).
+# Needs the side vectors of sparc.vocoders.features.spk_phase6 ($SPKEMB_P6_CACHE) and the stats.npz next to them.
+defaults:
+  - p5_fv
+  - _self_
+experiment_name: p6_e3_p5_fv
+speaker:
+  layer: l6_rep3
