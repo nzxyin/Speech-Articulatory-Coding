@@ -491,6 +491,35 @@ m = 0.0266 and the 400k combination are HiFi-GAN. Experiments `p5_r`, `p5_f`, `p
 implement arms 1-3; they differ only in `data.train_splits`. The reference arm is trained fresh: the 100k checkpoint of
 the 400k combination run is not equivalent, because the learning rate follows a cosine schedule over the total steps.
 
+## Phase 6: speaker-encoder pooling in the vocoder (pre-registered 2026-10-26, before any Phase 5 or Phase 6 result)
+
+Evidence: the proxy screen and its precondition checks (branch `spkemb-phase3`,
+`docs/spkemb_encoder_screen_results.md`). Of 30 pooling variants, two survived a speaker-level paired test with Holm
+correction against the existing layer-6 periodicity-weighted pooling: layer 1 + layer 6 (other-utterance spectral
+error -0.015, 48/62 speakers, beats a width-matched control, wins on LibriTTS-R, VCTK and GLOBE; content leakage +0.043)
+and the voiced / unvoiced / silence split (-0.009, but only -0.003 against its width-matched control; large gain with
+1 s references on VCTK and GLOBE, a loss on LibriTTS-R). Proxy gains have not reliably transferred to the vocoder
+before (Phases 2 and 3), so this is a test, not an expected win.
+
+**Data and recipe.** The Phase 5 winner's training data and recipe (combination recipe, HiFi-GAN, 100k steps, seed 0),
+decided by user direction (2026-10-26). "Winner" = the Phase 5 arm that advances under its rule; if none advances, the
+Phase 5 arm with the fewest guard failures, ties broken by the primary measure (mean ECAPA gain to the target over the
+three pools). The reference is that Phase 5 run itself: same data, recipe and seed, existing speaker network.
+
+**Arms** (only the speaker encoder changes; output 64-d, FiLM conditioning unchanged):
+- E1 layer 1 + layer 6: periodicity-weighted means of WavLM Large layers 1 and 6, concatenated (2048-d), into the
+  speaker FFN.
+- E2 voiced / unvoiced / silence split on layer 6: the screen's three-way pooling (`seg_vus3`; thresholds as in the
+  screen: voiced periodicity >= 0.5, silence loudness < 0.1, at least 3 frames per class with back-off), concatenated
+  and fed to the speaker FFN.
+- E3 width control for E2: the layer-6 periodicity-weighted mean repeated to E2's input width, same FFN size.
+
+**Decision.** Each of E1 and E2 against the reference with the Phase 4/5 rule unchanged (margin m = 0.0266 on the
+mean ECAPA gain over LibriTTS-R, VCTK and GLOBE; same sign in VCTK, GLOBE and held-out CAM++; every guard). E2 is
+credited to segment pooling only if it also beats E3 on the primary measure; otherwise its effect is attributed to
+width. Descriptive, not part of the rule: own-utterance vs other-utterance reference similarity (content leakage) and
+cloning with 1 s and 2 s reference slices. An arm that advances goes to 400k with two seeds, as in Phase 4.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
