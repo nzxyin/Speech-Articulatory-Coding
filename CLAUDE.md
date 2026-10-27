@@ -828,6 +828,35 @@ choice; two seeds, each paired with the existing network at 400k:
   - GLOBE similarity to the source rises 0.03-0.05.
 - VCTK passes every guard.
 
+### Speaker embedding Phase 5: filtered three-corpus training data (2026-10-24 to 10-27)
+Plan, Amendments 1-2: `docs/speaker_embedding_plan.md` "Phase 5". Code on `spkemb-phase3`: `features/quality.py`
+(scorer, report, `select`), `features/subset_pack.py`, `features/vctk_train.py`; experiments `p5_r`, `p5_f`, `p5_fv`.
+Outputs `/data/user_data/xoy/spkemb/phase5/{quality,select,packed,eval}`.
+- Quality scoring of every training utterance (UTMOS, Squim PESQ / SI-SDR / STOI estimates, bandwidth floor, clipping,
+  Whisper CER). WADA-SNR is at its 100 dB ceiling for most of GLOBE (GLOBE is likely enhanced), so SNR filters cannot
+  select GLOBE. Thresholds anchored on clean references keep only 8-16 % of GLOBE, every accent below 50 %, South Asian /
+  Singaporean / Malaysian 1-3 % (UTMOS and Squim may be biased against these accents; not separable).
+- User choice: UTMOS >= 3.0, PESQ est. >= 2.5, SI-SDR est. >= 15 dB, STOI est. >= 0.95, bandwidth floor >= 10.5 kHz, no
+  clipping, CER <= 0.10, plus a GLOBE per-accent floor (best 40 % of each accent). Kept: LibriTTS-R 534.6 h (96.9 %),
+  GLOBE 153.3 h (50.2 %; 28,983 utterances via the floor), VCTK 23.3 h (69 non-eval speakers).
+- Three 100k HiFi-GAN arms with the Phase 4 combination recipe (up to 8 references + speaker-relative pitch), each vs the
+  existing speaker network at 100k (ECAPA similarity to the target, gain; CAM++ agrees):
+
+  | arm | LibriTTS | VCTK | GLOBE | GLOBE UTMOS | LibriTTS own-speaker (ECAPA) | advances |
+  |---|---|---|---|---|---|---|
+  | LibriTTS-R + GLOBE, unfiltered | +0.046 | +0.074 | +0.099 | -0.42 | -0.015 | no |
+  | both filtered | +0.051 | +0.081 | +0.092 | -0.28 | -0.016 | no |
+  | filtered + VCTK | +0.055 | +0.084 | +0.096 | -0.29 | -0.009 | no |
+
+  All three fail the same three guards: GLOBE UTMOS, GLOBE source similarity, LibriTTS own-speaker resynthesis.
+- Filtering raises UTMOS on every pool (+0.14 GLOBE, +0.08 LibriTTS, +0.06 VCTK vs unfiltered) and cuts the GLOBE
+  naturalness loss by a third, at -0.007 ECAPA cloning on GLOBE. Adding VCTK adds +0.004 ECAPA on LibriTTS and GLOBE,
+  costs -0.08 UTMOS on VCTK. Neither fixes the guards: the remaining GLOBE quality loss and the own-speaker drop come
+  with the combination recipe and diverse data, not with low-quality audio alone.
+- Phase 6 winner by the pre-registered tie-break (same guard failures; mean ECAPA gain 0.078 / 0.075 / 0.073):
+  filtered + VCTK. Phase 6 encoder arms (layer 1 + layer 6, voiced / unvoiced / silence pooling, width control) are
+  training on that data (jobs 10951469-71, issue #31).
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
