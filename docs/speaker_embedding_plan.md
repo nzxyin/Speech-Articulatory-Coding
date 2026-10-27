@@ -451,6 +451,46 @@ proportions, uniform over utterances):
 The baseline is still the existing speaker network at 100k, seed 0. Descriptive contrasts: arm 2 vs 1 and arm 3 vs 2,
 paired by speaker within each pool. "Advancing" applies to the best arm passing every guard, as above.
 
+### Phase 5 Amendment 2 (2026-10-26, user decisions after the calibration report; before any Phase 5 training)
+
+Written after the calibration report (`/data/user_data/xoy/spkemb/phase5/quality/report.md`) and before any Phase 5
+training run or vocoder number exists.
+
+**Final thresholds**, identical for every corpus (LibriTTS-R, GLOBE, VCTK):
+- UTMOS >= 3.0;
+- Squim PESQ estimate >= 2.5;
+- Squim SI-SDR estimate >= 15 dB;
+- Squim STOI estimate >= 0.95;
+- bandwidth floor (highest frequency above the spectral noise floor) >= 10.5 kHz;
+- clipping fraction <= 1e-4;
+- CER <= 0.10 where a transcript score exists (LibriTTS-R, VCTK; GLOBE passed Whisper exact-match upstream).
+
+**Not used.** WADA-SNR, because it sits at its 100 dB ceiling for most of GLOBE (median 100 dB), so it cannot separate
+GLOBE utterances. The 99 %-energy bandwidth of (d), because it mostly reflects the talker's spectrum (about 2 kHz on
+clean speech); the bandwidth floor above replaces it.
+
+**Departure from Amendment 1: GLOBE per-accent floor.** Amendment 1 required the same thresholds for every utterance. The
+report showed thresholds anchored on clean references keep 8-16 % of GLOBE, every accent below 50 %, and South Asian,
+Singaporean and Malaysian at 1-3 %. UTMOS and the Squim estimates are trained mostly on native-accent studio speech, so
+part of that loss may be predictor bias. Within each GLOBE accent, at least the best 40 % of that accent's utterances
+are kept, ranked by the mean of their within-accent percentile ranks of UTMOS and Squim PESQ (union with the
+utterances passing the thresholds). Chosen by the user.
+
+**Resulting training data** (`/data/user_data/xoy/spkemb/phase5/select/report.md`):
+
+| corpus | kept | hours | share | only via the floor |
+|---|---|---|---|---|
+| LibriTTS-R train | 328,372 | 534.6 | 96.9 % | - |
+| GLOBE train | 114,609 | 153.3 | 50.2 % | 28,983 |
+| VCTK train (non-eval speakers) | 26,293 | 23.3 | 93.7 % | - |
+
+GLOBE accents keep 40-58 %.
+
+**Vocoder: HiFi-GAN** (user decision). Vocos was considered and rejected for this phase: every baseline, the margin
+m = 0.0266 and the 400k combination are HiFi-GAN. Experiments `p5_r`, `p5_f`, `p5_fv` (branch `spkemb-phase3`)
+implement arms 1-3; they differ only in `data.train_splits`. The reference arm is trained fresh: the 100k checkpoint of
+the 400k combination run is not equivalent, because the learning rate follows a cosine schedule over the total steps.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
