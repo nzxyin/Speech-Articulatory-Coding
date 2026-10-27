@@ -854,8 +854,31 @@ Outputs `/data/user_data/xoy/spkemb/phase5/{quality,select,packed,eval}`.
   costs -0.08 UTMOS on VCTK. Neither fixes the guards: the remaining GLOBE quality loss and the own-speaker drop come
   with the combination recipe and diverse data, not with low-quality audio alone.
 - Phase 6 winner by the pre-registered tie-break (same guard failures; mean ECAPA gain 0.078 / 0.075 / 0.073):
-  filtered + VCTK. Phase 6 encoder arms (layer 1 + layer 6, voiced / unvoiced / silence pooling, width control) are
-  training on that data (jobs 10951469-71, issue #31).
+  filtered + VCTK.
+
+### Speaker embedding Phase 6: speaker-encoder pooling in the vocoder (2026-10-26 to 10-27)
+Pre-registered in `docs/speaker_embedding_plan.md` "Phase 6". Proxy screen (no vocoder; `spkemb-phase3`
+`docs/spkemb_encoder_screen_results.md`, `/data/user_data/xoy/spkemb/encoder_screen/`): 30 pooling variants of WavLM
+features, 3 seeds, 62 held-out speakers. Every learned or higher-capacity pooling (attentive, multi-head, NetVLAD /
+GhostVLAD, codebooks, frame networks, adversarial disentanglement) was worse than the existing layer-6
+periodicity-weighted mean. Two survived a speaker-level paired test with Holm correction: layer 1 + layer 6 (other-
+utterance spectral error -0.015, beats a width-matched control) and voiced / unvoiced / silence pooling (-0.009, only
+-0.003 against its width control; large gain with 1 s references on VCTK and GLOBE).
+Vocoder test (100k HiFi-GAN on the filtered LibriTTS-R + GLOBE + VCTK data, combination recipe, seed 0; reference = the
+Phase 5 run on the same data with the existing encoder; `/data/user_data/xoy/spkemb/phase6/eval/`). ECAPA gain in
+similarity to the target, LibriTTS / VCTK / GLOBE (CAM++ on VCTK in parentheses):
+| encoder | LibriTTS | VCTK | GLOBE | guards | advances |
+|---|---|---|---|---|---|
+| layer 1 + layer 6 | +0.000 | +0.013 (+0.021) | -0.001 | pass | no (mean gain 0.004 < 0.0266) |
+| voiced / unvoiced / silence pooling | +0.004 | +0.011 (+0.025) | +0.002 | GLOBE WER +0.51 points | no |
+| width control (layer-6 mean repeated to the same width) | +0.003 | +0.013 (+0.019) | +0.002 | GLOBE WER +0.79 points | - |
+- Neither pooling idea changes cloning in the vocoder. The proxy gains (0.3-1.7 % of the spectral-error measure) did
+  not transfer, as in Phases 2 and 3. The split vs its width control is +-0.002 everywhere, so no credit to
+  segment pooling. The only consistent gain, on VCTK, is shared by all three arms including the width control, so it
+  is a wider speaker-network input (or single-seed variation of the reference on VCTK), not the pooling.
+- Conclusion: keep the layer-6 periodicity-weighted mean. Pooling is not where the remaining cloning gap is; the open
+  problems are the GLOBE naturalness and own-speaker guards that came with diverse data and the combination recipe
+  (Phases 4-5).
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
