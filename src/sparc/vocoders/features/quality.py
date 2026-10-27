@@ -27,6 +27,7 @@ Subcommands::
     python -m sparc.vocoders.features.quality make-list --corpus libritts_train|libritts_test_clean|vctk_eval|globe_train
     python -m sparc.vocoders.features.quality run --corpus globe_train --shard 0 --nshards 8 [--max-minutes 50] [--limit N]
     python -m sparc.vocoders.features.quality report
+    python -m sparc.vocoders.features.quality select [--corpus libritts_train globe_train vctk_train]
 
 Lists live in ``<ROOT>/<corpus>/list.parquet`` with columns ``id, audio, corpus, accent, speaker`` and optional
 ``native_path, start_s, end_s, text, do_wer`` (any list given with ``--list`` works, for example the VCTK training
@@ -669,6 +670,120 @@ def render_markdown(rep: dict) -> str:
 
 
 # --------------------------------------------------------------------------------------------------------------------
+# Phase 5 selection
+# --------------------------------------------------------------------------------------------------------------------
+SELECT_ROOT = Path(os.environ.get("SPKEMB_P5_SELECT", "/data/user_data/xoy/spkemb/phase5/select"))
+SELECT_CORPORA = ("libritts_train", "globe_train", "vctk_train")
+# measure -> (threshold, higher is better); applied identically to every corpus (user decision 2026-10-26).
+# WADA-SNR and bw99_hz are not used. The CER bound applies to rows with a transcript score (``has_wer``) only.
+THRESHOLDS = {
+    "utmos": (3.0, True),
+    "squim_pesq": (2.5, True),
+    "squim_si_sdr": (15.0, True),
+    "squim_stoi": (0.95, True),
+    "bw_floor_hz": (10500.0, True),
+    "clip_frac": (1e-4, False),
+}
+CER_MAX = 0.10
+FLOOR_CORPORA = ("globe_train",)
+FLOOR_FRACTION = 0.40
+
+
+def is_scoring_error(df: pd.DataFrame) -> pd.Series:
+    """Rows with a scoring error: a non-empty ``error`` or a missing value in a measure the rule needs."""
+    bad = df["error"].fillna("").astype(str) != ""
+    for m in THRESHOLDS:
+        bad |= df[m].isna()
+    return bad | (df["has_wer"].astype(bool) & df["cer"].isna())
+
+
+def accent_floor(df: pd.DataFrame, fraction: float = FLOOR_FRACTION) -> pd.Series:
+    """True for the best ``ceil(fraction * n)`` rows of each accent, ranked by the mean of the within-accent percentile
+    ranks of ``utmos`` and ``squim_pesq`` (ties broken by row order). Rows with a missing measure are never selected."""
+    ok = df["utmos"].notna() & df["squim_pesq"].notna()
+    flag = pd.Series(False, index=df.index)
+    for _, g in df[ok].groupby("accent", sort=True):
+        score = (g["utmos"].rank(pct=True) + g["squim_pesq"].rank(pct=True)) / 2
+        n = int(math.ceil(fraction * len(g) - 1e-9))
+        flag[score.sort_values(ascending=False, kind="stable").index[:n]] = True
+    return flag
+
+
+def select_rows(df: pd.DataFrame, floor: bool, fraction: float = FLOOR_FRACTION) -> pd.DataFrame:
+    """Selection table: ``id`` and context columns, one ``pass_<measure>`` flag per measure, ``pass_cer``, ``pass_all``,
+    ``floor`` (in the accent floor; only for ``floor`` corpora), ``scoring_error`` and ``keep`` (= passes all, or floor,
+    and no scoring error). The accent floor ranks error-free rows only."""
+    df = df.reset_index(drop=True)
+    out = df[["id", "corpus", "accent", "speaker", "duration_s"]].copy()
+    err = is_scoring_error(df)
+    for m, (thr, higher) in THRESHOLDS.items():
+        out[f"pass_{m}"] = passes(df, m, thr, higher)
+    out["pass_cer"] = ~df["has_wer"].astype(bool) | (df["cer"] <= CER_MAX)
+    flags = [f"pass_{m}" for m in THRESHOLDS] + ["pass_cer"]
+    out["pass_all"] = out[flags].all(axis=1)
+    out["floor"] = False
+    if floor:
+        out["floor"] = accent_floor(df[~err], fraction).reindex(df.index, fill_value=False)
+    out["scoring_error"] = err
+    out["keep"] = (out["pass_all"] | out["floor"]) & ~err
+    return out
+
+
+def selection_report(table: pd.DataFrame) -> dict:
+    """Utterances and hours of one selection table, overall and per accent label."""
+
+    def block(t: pd.DataFrame) -> dict:
+        k = t[t["keep"]]
+        via = k[~k["pass_all"]]
+        return {
+            "rows": int(len(t)), "hours": float(t["duration_s"].sum() / 3600),
+            "scoring_errors_dropped": int(t["scoring_error"].sum()),
+            "kept": int(len(k)), "kept_hours": float(k["duration_s"].sum() / 3600),
+            "kept_fraction": float(len(k) / max(len(t), 1)),
+            "kept_by_thresholds": int(k["pass_all"].sum()), "kept_only_via_floor": int(len(via)),
+            "kept_only_via_floor_hours": float(via["duration_s"].sum() / 3600),
+        }  # fmt: skip
+
+    rep = block(table)
+    accents = sorted(a for a in table["accent"].unique() if a)
+    if len(accents) >= 2:
+        rep["per_accent"] = {a: block(table[table["accent"] == a]) for a in accents}
+    return rep
+
+
+def run_select(corpora: list[str], root: Path = ROOT, out: Path = SELECT_ROOT) -> dict:
+    out.mkdir(parents=True, exist_ok=True)
+    report = {"thresholds": {m: {"threshold": t, "higher_is_better": h} for m, (t, h) in THRESHOLDS.items()},
+              "cer_max": CER_MAX, "floor_fraction": FLOOR_FRACTION, "floor_corpora": list(FLOOR_CORPORA), "corpora": {}}  # fmt: skip
+    for name in corpora:
+        scores = load_scores(root / name)
+        if scores.empty:
+            raise FileNotFoundError(f"no scores under {root / name / 'scores'}")
+        if not scores["id"].is_unique:
+            raise ValueError(f"{name}: duplicate ids in the scores")
+        table = select_rows(scores, name in FLOOR_CORPORA)
+        tmp = out / f"{name}.parquet.tmp"
+        table.to_parquet(tmp, index=False)
+        os.replace(tmp, out / f"{name}.parquet")
+        report["corpora"][name] = selection_report(table)
+        r = report["corpora"][name]
+        logger.info("%s: kept %d of %d (%.1f h), %d via floor only, %d scoring errors", name, r["kept"], r["rows"],
+                    r["kept_hours"], r["kept_only_via_floor"], r["scoring_errors_dropped"])
+    (out / "report.json").write_text(json.dumps(report, indent=1))
+    lines = ["# Phase 5 selection", "", "| corpus | rows | kept | kept h | fraction | only via floor | scoring errors |", "|---|---|---|---|---|---|---|"]
+    for name, r in report["corpora"].items():
+        lines.append(f"| {name} | {r['rows']} | {r['kept']} | {r['kept_hours']:.1f} | {100 * r['kept_fraction']:.1f} % | "
+                     f"{r['kept_only_via_floor']} | {r['scoring_errors_dropped']} |")  # fmt: skip
+    for name, r in report["corpora"].items():
+        if "per_accent" in r:
+            lines += ["", f"## {name} per accent", "", "| accent | rows | kept | kept h | fraction | only via floor |", "|---|---|---|---|---|---|"]
+            for a, b in r["per_accent"].items():
+                lines.append(f"| {a} | {b['rows']} | {b['kept']} | {b['kept_hours']:.1f} | {100 * b['kept_fraction']:.1f} % | {b['kept_only_via_floor']} |")  # fmt: skip
+    (out / "report.md").write_text("\n".join(lines) + "\n")
+    return report
+
+
+# --------------------------------------------------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -689,6 +804,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-models", action="store_true", help="signal measures only")
     p = sub.add_parser("report")
     p.add_argument("--root", default=str(ROOT))
+    p = sub.add_parser("select", help="Phase 5 filter: thresholds plus the GLOBE per-accent floor")
+    p.add_argument("--corpus", nargs="+", default=list(SELECT_CORPORA))
+    p.add_argument("--root", default=str(ROOT))
+    p.add_argument("--out", default=str(SELECT_ROOT))
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     if args.cmd == "make-list":
@@ -702,6 +821,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "run":
         return run(args)
+    if args.cmd == "select":
+        run_select(args.corpus, Path(args.root), Path(args.out))
+        return 0
     root = Path(args.root)
     rep = build_report(root)
     (root / "report.json").write_text(json.dumps(rep, indent=1))

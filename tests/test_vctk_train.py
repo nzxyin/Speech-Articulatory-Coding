@@ -91,7 +91,7 @@ def test_prepare_writes_trimmed_24k_wavs_and_is_resumable(tmp_path):
         vt.run_prepare(out, 2, 2)
 
 
-def test_kept_table_removes_dropped_ids_and_hooks_are_disabled(tmp_path):
+def test_kept_table_removes_dropped_ids_and_selection_filters(tmp_path):
     root, eval_table = make_corpus(tmp_path)
     out = tmp_path / "out"
     vt.run_list(out, root, eval_table)
@@ -101,6 +101,7 @@ def test_kept_table_removes_dropped_ids_and_hooks_are_disabled(tmp_path):
     paths["leak"].mkdir()
     paths["dropped"].write_text("p227_001\n")
     assert sorted(vt.kept_table(out)["id"]) == ["p226_001", "p227_002"]
-    with pytest.raises(NotImplementedError):
-        vt.run_extract(out)
+    select = tmp_path / "select.parquet"
+    pd.DataFrame({"id": ["p226_001", "p227_002"], "keep": [False, True]}).to_parquet(select)
+    assert vt.selected_table(out, select)["id"].tolist() == ["p227_002"]
     assert json.loads(paths["report"].read_text())["kept"] == 3

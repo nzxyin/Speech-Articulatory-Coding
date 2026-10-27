@@ -1,8 +1,8 @@
 """VCTK training set for Phase 5: listing, trimmed 24 kHz audio and the ECAPA leak check against the evaluation pools.
 
 Phase 5 (``docs/speaker_embedding_plan.md``, "VCTK training set" and Amendment 1) trains on LibriTTS-R, GLOBE v3 and the
-VCTK speakers that are not in the Phase 4 VCTK evaluation pool. This module builds that VCTK list and audio; feature
-extraction and packing wait for the quality thresholds (``extract`` / ``pack`` are hooks, see below).
+VCTK speakers that are not in the Phase 4 VCTK evaluation pool. This module builds that VCTK list and audio, extracts features of the utterances the Phase 5 quality selection
+keeps and packs them.
 
 * ``list`` takes every ``wav48/p*`` speaker of the corpus (``mic2`` files skipped, as in ``clone_pools.list_vctk``) minus
   the speakers of ``phase4/pools/vctk/table.parquet`` (asserted disjoint), reads the native audio, finds the trim bounds
@@ -17,9 +17,11 @@ extraction and packing wait for the quality thresholds (``extract`` / ``pack`` a
   with the evaluation's ECAPA (``SpeakerEmbedder``, 16 kHz, soxr_hq), and drops every training utterance whose cosine to
   any pool utterance is >= ``--threshold`` (0.70, as ``globe_train``). Writes ``leak/dropped_ids.txt``, ``leak/max_cos.parquet``
   and ``leak/leak_report.json``; embeddings are cached under ``leak/emb`` (resumable).
-* ``extract`` / ``pack`` are hooks: they need the Phase 5 thresholds and are refused until ``--enable`` is passed.
-  :func:`kept_table` is the list without the dropped ids; the later extractor reuses
-  ``sparc.vocoders.features.globe_train``'s cache procedure over it and ``features.pack.write_packed``.
+* ``extract`` writes per-utterance cache files for the utterances of :func:`selected_table` (the list without the leak
+  drops, restricted to ``keep`` of ``phase5/select/vctk_train.parquet``) with the procedure of
+  ``globe_train.run_extract`` (same extractor, batch size 1, seed per utterance, meta check); resumable, exit 75 while
+  work is left. ``pack`` writes ``phase5/packed/vctk.train`` with ``features.pack.write_packed``; ``speaker`` is the
+  real VCTK id and ``chapter`` the speaker.
 
 Trimming. ``clone_pools`` resamples the VCTK pool to 24 kHz but does not trim it (no trimming code exists there), so
 the trimming here is new: ``librosa.effects.trim`` on the native audio (``top_db`` 30 under the peak, 2048/512 frames)
@@ -35,8 +37,11 @@ Usage (CPU)::
 import argparse
 import json
 import os
+import time
+import traceback
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -341,18 +346,205 @@ def run_leak(root: str | Path, threshold: float = THRESHOLD, device: str = "cpu"
     return report
 
 
-# ------------------------------------------------------------------------------------------------ hooks
+# ------------------------------------------------------------------------------------------------ extract and pack
+
+SELECT_FILE = "/data/user_data/xoy/spkemb/phase5/select/vctk_train.parquet"
+SPLIT = "vctk.train"
+PACKED_ROOT = "/data/user_data/xoy/spkemb/phase5/packed"
 
 
-def run_extract(root: str | Path, *args, **kwargs):
-    """Hook: feature extraction over :func:`kept_table` with the LibriTTS-R cache procedure of ``globe_train.run_extract``
-    (SparcFeatureExtractor, meta check, per-utterance seed); wired after the Phase 5 thresholds are fixed."""
-    raise NotImplementedError("extract waits for the Phase 5 quality thresholds")
+def selected_table(root: str | Path = OUT_ROOT, select_file: str | Path = SELECT_FILE) -> pd.DataFrame:
+    """:func:`kept_table` (leak check) restricted to the utterances the Phase 5 quality selection keeps."""
+    table = kept_table(root)
+    keep = pd.read_parquet(select_file, columns=["id", "keep"])
+    keep = set(keep.loc[keep["keep"], "id"].astype(str))
+    return table[table["id"].astype(str).isin(keep)].sort_values("id").reset_index(drop=True)
 
 
-def run_pack(root: str | Path, *args, **kwargs):
-    """Hook: ``features.pack.write_packed`` over the extracted cache (speaker = real VCTK id, chapter = speaker)."""
-    raise NotImplementedError("pack waits for the Phase 5 quality thresholds")
+def extract_paths(root: str | Path) -> dict[str, Path]:
+    root = Path(root)
+    return {"utt": root / "utt", "errors": root / "errors", "summaries": root / "summaries"}
+
+
+def run_extract(
+    root: str | Path,
+    shard_index: int = 0,
+    num_shards: int = 1,
+    max_minutes: float | None = None,
+    device: str = "auto",
+    limit: int | None = None,
+    select_file: str | Path = SELECT_FILE,
+    meta_path: str | Path | None = None,
+) -> int:
+    """Per-utterance cache files (``utt/<speaker>/<id>.npz``) of the selected utterances of speakers ``sorted[i::n]``.
+
+    Exactly the procedure of ``globe_train.run_extract`` and the LibriTTS-R cache: ``SparcFeatureExtractor`` built from
+    ``cache_config.yaml``, the prepared 24 kHz wav re-read as float64, batch size 1, seed ``utterance_seed(id)``, meta
+    check against the LibriTTS-R ``meta.json``. Resumable and stoppable (SIGUSR1 / SIGTERM / ``max_minutes``). Returns
+    0 when done, ``EXIT_STOPPED`` if stopped early, 1 if some utterances failed."""
+    import soundfile as sf
+    import torch
+
+    from sparc.vocoders.constants import feature_length
+    from sparc.vocoders.eval.clone_pools import cache_root_default
+    from sparc.vocoders.features.cache import (
+        build_meta, check_arrays, file_sha256, is_valid, meta_compat, utt_path, utterance_seed, write_utt,
+    )  # fmt: skip
+    from sparc.vocoders.features.extractor import SparcFeatureExtractor, fork_commit
+    from sparc.vocoders.features.globe_train import cache_config, read_not_encodable
+
+    stop = Stop(max_minutes)
+    paths = extract_paths(root)
+    table = selected_table(root, select_file)
+    mine = sorted(table["speaker"].unique())[shard_index::num_shards]
+    table = table[table["speaker"].isin(mine)].sort_values("id")
+    if limit is not None:
+        table = table.head(limit)
+    cfg = cache_config()
+    meta_path = Path(meta_path or cache_root_default() / "meta.json")
+    if device == "auto" and not torch.cuda.is_available():
+        raise RuntimeError("no CUDA device visible: refusing to extract on CPU (pass --device cpu to force it)")
+    dev = torch.device("cuda") if device == "auto" else torch.device(device)
+    extractor = SparcFeatureExtractor(cfg, dev)
+    stored = json.loads(meta_path.read_text())
+    if meta_compat(stored) != meta_compat(build_meta(extractor.describe(), fork_commit())):
+        raise RuntimeError(f"{meta_path} (LibriTTS-R cache) was written with different settings than this extractor")
+    meta_hash = file_sha256(meta_path)
+    min_frames = int(cfg.min_frames)
+
+    tag = f"{shard_index:05d}of{num_shards:05d}"
+    bad_path = paths["errors"] / f"not_encodable_{tag}.json"
+    bad = read_not_encodable(bad_path)
+    counts = {"written": 0, "skipped": 0, "not_encodable": 0, "errors": 0}
+    audio_seconds, extract_seconds, started, consecutive, stopped = 0.0, 0.0, time.perf_counter(), 0, False
+    for r in table.itertuples():
+        if stop:
+            stopped = True
+            break
+        wav_path = wav24_path(root, r.speaker, r.id)
+        cache_file = utt_path(paths["utt"], r.speaker, r.id)
+        if r.id in bad:
+            counts["not_encodable"] += 1
+            continue
+        try:
+            wav, rate = sf.read(str(wav_path), dtype="float64", always_2d=False)
+            if rate != SAMPLE_RATE or wav.ndim != 1:
+                raise ValueError(f"{wav_path}: expected mono {SAMPLE_RATE} Hz")
+            if is_valid(cache_file, feature_length(len(wav))):
+                counts["skipped"] += 1
+                continue
+            if feature_length(len(wav)) < min_frames:
+                bad[r.id] = f"too short: {len(wav)} samples"
+                counts["not_encodable"] += 1
+                continue
+            t0 = time.perf_counter()
+            out = extractor.extract(wav, utterance_seed(r.id))
+            if dev.type == "cuda":
+                torch.cuda.synchronize(dev)
+            extract_seconds += time.perf_counter() - t0
+            arrays = {**out, "spk_wsum": np.float64(out["spk_wsum"]), "spk_fallback": np.bool_(out["spk_fallback"]),
+                      "meta_hash": meta_hash, "gpu": extractor.device_name}  # fmt: skip
+            problem = check_arrays(arrays, int(out["T"]))
+            if problem is not None:
+                bad[r.id] = f"unusable: {problem}"
+                counts["not_encodable"] += 1
+                continue
+            write_utt(cache_file, arrays)
+        except Exception:
+            counts["errors"] += 1
+            consecutive += 1
+            paths["errors"].mkdir(parents=True, exist_ok=True)
+            with open(paths["errors"] / f"extract_{tag}.jsonl", "a") as f:
+                f.write(json.dumps({"id": r.id, "error": traceback.format_exc()}) + "\n")
+            if consecutive >= 20:
+                write_json_atomic(bad_path, bad)
+                raise RuntimeError(f"{consecutive} consecutive errors") from None
+            continue
+        consecutive = 0
+        counts["written"] += 1
+        audio_seconds += len(wav) / SAMPLE_RATE
+        if counts["written"] % 200 == 0:
+            print(f"[{tag}] {counts} audio {audio_seconds / 3600:.2f} h, wall {time.perf_counter() - started:.0f} s", flush=True)
+    write_json_atomic(bad_path, bad)
+    summary = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "shard": tag, **counts,
+               "audio_hours": audio_seconds / 3600.0, "extract_seconds": extract_seconds,
+               "wall_seconds": time.perf_counter() - started, "stopped": stopped, "gpu": extractor.device_name}  # fmt: skip
+    paths["summaries"].mkdir(parents=True, exist_ok=True)
+    with open(paths["summaries"] / f"extract_{tag}.jsonl", "a") as f:
+        f.write(json.dumps(summary) + "\n")
+    print(f"[{tag}] done: {json.dumps(summary)}", flush=True)
+    if stopped:
+        return EXIT_STOPPED
+    return 1 if counts["errors"] else 0
+
+
+def run_pack(
+    root: str | Path,
+    select_file: str | Path = SELECT_FILE,
+    packed_root: str | Path = PACKED_ROOT,
+    allow_missing: bool = False,
+    num_threads: int = 16,
+    chunk: int = 512,
+    meta_path: str | Path | None = None,
+) -> Path:
+    """Packs the cache files of :func:`selected_table` into ``<packed_root>/vctk.train`` (``features.pack.write_packed``).
+
+    ``speaker`` is the real VCTK speaker id and ``chapter`` is the speaker, so the reference sampler of the data module
+    draws other utterances of the same speaker, as for LibriTTS-R. Utterances listed as not encodable by ``extract``
+    are skipped; any other missing cache file is an error unless ``allow_missing``."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sparc.vocoders.constants import feature_length
+    from sparc.vocoders.eval.clone_pools import cache_root_default
+    from sparc.vocoders.features.cache import read_meta_hash, utt_path
+    from sparc.vocoders.features.globe_train import read_not_encodable
+    from sparc.vocoders.features.pack import write_packed
+
+    paths = extract_paths(root)
+    table = selected_table(root, select_file)
+    bad: dict[str, str] = {}
+    for f in sorted(paths["errors"].glob("not_encodable_*.json")):
+        bad.update(read_not_encodable(f))
+    files = [utt_path(paths["utt"], s, i) for s, i in zip(table["speaker"], table["id"])]
+    present = np.array([p.is_file() for p in files])
+    unencodable = table["id"].isin(bad).to_numpy() & ~present
+    missing = ~present & ~unencodable
+    paths["errors"].mkdir(parents=True, exist_ok=True)
+    (paths["errors"] / "pack_not_encodable.txt").write_text("".join(f"{i}\n" for i in table.loc[unencodable, "id"]))
+    if missing.any():
+        absent = table.loc[missing, "id"].tolist()
+        if not allow_missing:
+            raise FileNotFoundError(f"{len(absent)} cache files are missing, first: {absent[:5]}")
+        (paths["errors"] / "pack_missing.txt").write_text("".join(f"{i}\n" for i in absent))
+    keep = present.nonzero()[0]
+    if len(keep) == 0:
+        raise ValueError("nothing to pack")
+    table, files = table.iloc[keep].reset_index(drop=True), [files[i] for i in keep]
+
+    def sizes(path: Path) -> tuple[int, int]:
+        with np.load(path, allow_pickle=False) as z:
+            return int(z["n24"]), int(z["T"])
+
+    with ThreadPoolExecutor(num_threads) as pool:
+        n24, frames = zip(*pool.map(sizes, files))
+    n24 = np.asarray(n24, dtype=np.int64)
+    rows = pd.DataFrame(
+        {
+            "id": table["id"].astype(str),
+            "split": SPLIT,
+            "speaker": table["speaker"].astype(str),
+            "chapter": table["speaker"].astype(str),
+            "wav_path": [str(wav24_path(root, s, i)) for s, i in zip(table["speaker"], table["id"])],
+            "n24": n24,
+            "T": np.asarray(frames, dtype=np.int32),
+            "duration": (n24 / SAMPLE_RATE).astype(np.float32),
+        }
+    )
+    bad_len = [i for i, n, t in zip(rows["id"], n24, rows["T"]) if feature_length(int(n)) != int(t)]
+    if bad_len:
+        raise ValueError(f"{len(bad_len)} cache files have a frame count that differs from n24, first: {bad_len[:3]}")
+    meta_hash = read_meta_hash(meta_path or cache_root_default() / "meta.json")
+    return write_packed(rows, files, Path(packed_root) / SPLIT, meta_hash, num_threads, chunk)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -370,8 +562,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     s = sub.add_parser("leak", help="ECAPA cosine check against the three evaluation pools")
     s.add_argument("--threshold", type=float, default=THRESHOLD)
     s.add_argument("--device", default="cpu")
-    sub.add_parser("extract", help="hook (not enabled)")
-    sub.add_parser("pack", help="hook (not enabled)")
+    s = sub.add_parser("extract", help="per-utterance feature cache of the selected utterances (GPU, resumable)")
+    s.add_argument("--shard", type=int, default=0)
+    s.add_argument("--nshards", type=int, default=1)
+    s.add_argument("--max-minutes", type=float, default=None)
+    s.add_argument("--device", default="auto")
+    s.add_argument("--limit", type=int, default=None)
+    s.add_argument("--select-file", default=SELECT_FILE)
+    s = sub.add_parser("pack", help="pack the cache files into <packed-root>/vctk.train")
+    s.add_argument("--select-file", default=SELECT_FILE)
+    s.add_argument("--packed-root", default=PACKED_ROOT)
+    s.add_argument("--allow-missing", action="store_true")
     a = p.parse_args(argv)
     if a.cmd == "list":
         run_list(a.root, a.vctk_root, a.eval_table)
@@ -380,9 +581,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif a.cmd == "leak":
         run_leak(a.root, a.threshold, a.device)
     elif a.cmd == "extract":
-        run_extract(a.root)
+        return run_extract(a.root, a.shard, a.nshards, a.max_minutes, a.device, a.limit, a.select_file)
     else:
-        run_pack(a.root)
+        run_pack(a.root, a.select_file, a.packed_root, a.allow_missing)
     return 0
 
 

@@ -157,3 +157,43 @@ def test_retention_includes_wer_when_all_rows_have_it_and_samples_otherwise():
     r = q.retention(part, th, {"wada_snr": True}, 10)
     assert r["wer"]["n_scored"] == 50 and not r["joint"]["includes_wer"] and r["joint"]["kept"] == 90
     assert r["joint_with_wer_sample"]["n_scored"] == 50 and r["joint_with_wer_sample"]["kept"] == 40
+
+
+def _scores(n: int, accent: str, utmos, pesq, **over) -> pd.DataFrame:
+    base = {"id": [f"{accent}{i}" for i in range(n)], "corpus": "globe_train", "accent": accent, "speaker": "",
+            "duration_s": 3600.0 / n, "utmos": utmos, "squim_pesq": pesq, "squim_si_sdr": 20.0, "squim_stoi": 0.99,
+            "bw_floor_hz": 11000.0, "clip_frac": 0.0, "has_wer": False, "cer": np.nan, "error": ""}  # fmt: skip
+    base.update(over)
+    return pd.DataFrame(base)
+
+
+def test_select_thresholds_cer_and_scoring_errors():
+    d = _scores(6, "A", [3.5, 2.9, 3.5, 3.5, 3.5, 3.5], [3.0, 3.0, 2.4, 3.0, 3.0, 3.0],
+                squim_stoi=[0.99, 0.99, 0.99, 0.94, 0.99, 0.99], clip_frac=[0, 0, 0, 0, 2e-4, 0],
+                has_wer=[True, True, True, True, True, False], cer=[0.0, 0.0, 0.0, 0.0, 0.0, 0.5])
+    d.loc[5, "error"] = "boom"
+    d.loc[0, "cer"] = 0.11
+    out = q.select_rows(d, floor=False)
+    assert out["keep"].tolist() == [False] * 6  # row0 cer, row1 utmos, row2 pesq, row3 stoi, row4 clip, row5 error
+    assert out["scoring_error"].tolist() == [False] * 5 + [True]
+    d.loc[0, "cer"] = 0.10
+    assert q.select_rows(d, floor=False)["keep"].tolist()[0]
+
+
+def test_select_floor_is_per_accent_union_and_ignores_errors():
+    # accent A: 10 rows all failing utmos, the floor keeps the best ceil(0.4 * 10) = 4 by mean percentile rank
+    a = _scores(10, "A", np.linspace(1.0, 2.9, 10), np.linspace(1.0, 2.0, 10))
+    # accent B: 5 rows, 2 pass the thresholds; the floor adds ceil(0.4 * 5) = 2 of the best, which are the passers
+    b = _scores(5, "B", [3.5, 3.4, 2.0, 1.0, 1.5], [3.0, 3.0, 1.0, 1.0, 1.0])
+    # a scoring-error row with the best scores is never kept and does not take a floor slot
+    c = _scores(5, "C", [9.0, 1.0, 1.1, 1.2, 1.3], [9.0, 1.0, 1.1, 1.2, 1.3])
+    c.loc[0, "error"] = "x"
+    out = q.select_rows(pd.concat([a, b, c], ignore_index=True), floor=True)
+    by = {k: g for k, g in out.groupby("accent")}
+    assert by["A"]["floor"].sum() == 4 and by["A"]["keep"].sum() == 4 and by["A"]["pass_all"].sum() == 0
+    assert by["A"].loc[by["A"]["keep"], "id"].tolist() == ["A6", "A7", "A8", "A9"]
+    assert by["B"]["keep"].sum() == 2 and by["B"]["pass_all"].sum() == 2
+    assert not by["C"]["keep"].iloc[0] and by["C"]["floor"].sum() == 2  # ceil(0.4 * 4) of the four error-free rows
+    rep = q.selection_report(out)
+    assert rep["per_accent"]["A"]["kept_only_via_floor"] == 4 and rep["scoring_errors_dropped"] == 1
+    assert q.select_rows(pd.concat([a, b], ignore_index=True), floor=False)["keep"].sum() == 2  # no floor: B passers only

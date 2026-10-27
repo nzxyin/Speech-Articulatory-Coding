@@ -1,0 +1,32 @@
+# @package _global_
+# Speaker-embedding Phase 5, arm fv (filtered LibriTTS-R train + filtered GLOBE v3 + filtered VCTK training speakers (Phase 5 quality selection)).
+# The Phase 4 combination recipe of p4_mrg_main (1-8 references, speaker-relative F0, HiFi-GAN, 16 x 64-frame
+# crops, seed 0) at 100k generator steps as in p4_g; the three Phase 5 arms differ only in data.train_splits.
+# Normalization statistics stay the LibriTTS-R ones (stats_path unchanged).
+# Data: python -m sparc.vocoders.features.quality select | features.subset_pack libritts|globe | features.vctk_train extract|pack
+experiment_name: p5_fv
+seed: 0
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+  train_splits:
+    - /data/user_data/xoy/spkemb/phase5/packed/libritts_f/train.clean.100
+    - /data/user_data/xoy/spkemb/phase5/packed/libritts_f/train.clean.360
+    - /data/user_data/xoy/spkemb/phase5/packed/libritts_f/train.other.500
+    - /data/user_data/xoy/spkemb/phase5/packed/globe_f/globe.train
+    - /data/user_data/xoy/spkemb/phase5/packed/vctk.train
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  n_refs: [1, 8]
+  rel_f0:
+    enabled: true
+vocoder:
+  generator:
+    pitch_mode: log_relative

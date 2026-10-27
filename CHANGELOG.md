@@ -5,6 +5,15 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Phase 5 training data: `quality.py select` (thresholds UTMOS >= 3.0, Squim PESQ >= 2.5, Squim SI-SDR >= 15 dB, Squim
+  STOI >= 0.95, bandwidth floor >= 10.5 kHz, clipping <= 1e-4, CER <= 0.10 where transcribed; GLOBE per-accent floor
+  keeping at least the best 40 % of each accent by mean rank of UTMOS and PESQ; output `phase5/select/`),
+  `features/subset_pack.py` (copies kept rows of a packed split into a new packed split, offsets recomputed), the
+  `vctk_train.py` `extract` / `pack` hooks (GLOBE extractor and packer, real VCTK speaker ids), experiments `p5_r`
+  (unfiltered LibriTTS-R + GLOBE), `p5_f` (filtered LibriTTS-R + GLOBE) and `p5_fv` (+ filtered VCTK): the Phase 4
+  combination recipe at 100k steps, differing only in `data.train_splits`; config check
+  `scripts/spkemb/p5_validate_configs.py`; tests `tests/test_subset_pack.py`, updated `tests/test_quality.py`,
+  `tests/test_vctk_train.py`.
 - Speaker-encoder screen write-up (`docs/spkemb_encoder_screen_results.md`): plain-word results tables for all 14 hypotheses, review-adjusted ranking, ideas to drop, and the specification of the 100k-step vocoder-in-the-loop test (three-way voiced / unvoiced / silence pooling, two-way split, layer 1 plus layer 6, with a capacity control).
 - Speaker-encoder screen, multi-scale family (`spkscreen/variants/multiscale.py`, `spkscreen/multiref.py`, `scripts/spkscreen/submit_multiscale.sh`, tests `tests/test_spkscreen_multiscale.py`): layer 1 plus layer 6 means, learned layer weights, 0.5 s segment pooling, multi-layer aggregation before pooling, dilated-convolution and transformer frame networks, gradient reversal against content, F0 and both; plus an inference-only study of multi-reference fusion on the trained baseline encoders. 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_multiscale.md`.
 - Speaker-encoder screen, pooling-operator family (`spkscreen/variants/pooling_ops.py`, tests `tests/test_spkscreen_pooling.py`): attentive statistics (two), multi-head and multi-query attentive pooling, NetVLAD, GhostVLAD, fixed k-means codebook, mean+std, skewness, low-rank covariance, trimmed mean and quantiles; 3 seeds each, table in `/data/user_data/xoy/spkemb/encoder_screen/results_pooling.md`.
