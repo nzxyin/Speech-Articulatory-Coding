@@ -122,6 +122,24 @@ def build_manifests(root: Path = ROOT) -> None:
     print(json.dumps(summary, indent=1))
 
 
+GLOBE_TABLE = Path("/data/user_data/xoy/spkemb/phase4/pools/globe/table.parquet")
+
+
+def build_globe_manifest(root: Path = ROOT) -> None:
+    """Out-of-domain set of the precondition checks: the Phase 4 GLOBE pool (400 speakers, 3 utterances each)."""
+    import pandas as pd
+
+    t = pd.read_parquet(GLOBE_TABLE)
+    t = t[t["n24"] >= MIN_SAMPLES].copy()
+    g = pd.DataFrame({"id": "globe:" + t["id"].astype(str), "speaker": "globe:" + t["speaker"].astype(str),
+                      "wav_path": t["wav_path"].astype(str)})
+    g = g[g.groupby("speaker")["id"].transform("size") >= 2].reset_index(drop=True)
+    g["seed"] = [utterance_seed(i) for i in g["id"]]
+    (root / "globe").mkdir(parents=True, exist_ok=True)
+    g.to_parquet(root / "globe" / "manifest.parquet")
+    print(f"globe: {len(g)} utterances, {g['speaker'].nunique()} speakers")
+
+
 def load_manifest(set_name: str, root: Path = ROOT):
     import pandas as pd
 
@@ -320,8 +338,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("manifest")
+    sub.add_parser("globe-manifest")
     e = sub.add_parser("extract")
-    e.add_argument("--set", dest="set_name", choices=("train", "heldout"), required=True)
+    e.add_argument("--set", dest="set_name", choices=("train", "heldout", "globe"), required=True)
     e.add_argument("--worker", type=int, default=0)
     e.add_argument("--nworkers", type=int, default=1)
     e.add_argument("--limit-chunks", type=int, default=None)
@@ -330,6 +349,8 @@ def main() -> None:
     a = p.parse_args()
     if a.cmd == "manifest":
         build_manifests(a.root)
+    elif a.cmd == "globe-manifest":
+        build_globe_manifest(a.root)
     elif a.cmd == "extract":
         extract(a.set_name, a.worker, a.nworkers, a.root, a.limit_chunks)
     else:

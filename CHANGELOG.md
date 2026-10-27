@@ -5,6 +5,10 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Speaker-encoder screen precondition checks: `spkscreen/precond.py` (seed-paired speaker-level jackknife inference, Holm,
+  per-corpus and GLOBE statistics), `precond_report.py`, `globe_embed.py`, `cache.py globe-manifest` and the `globe` cache
+  set, capacity-matched control variants `cap_rep3` / `cap_rep2` (`variants/capacity.py`); results in
+  `docs/spkemb_encoder_screen_results.md` ("Precondition checks").
 - Phase 5 training data: `quality.py select` (thresholds UTMOS >= 3.0, Squim PESQ >= 2.5, Squim SI-SDR >= 15 dB, Squim
   STOI >= 0.95, bandwidth floor >= 10.5 kHz, clipping <= 1e-4, CER <= 0.10 where transcribed; GLOBE per-accent floor
   keeping at least the best 40 % of each accent by mean rank of UTMOS and PESQ; output `phase5/select/`),

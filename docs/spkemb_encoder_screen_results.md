@@ -137,3 +137,102 @@ segment-level and MFA pooling; dilated-convolution and transformer frame network
 gradient reversal against content or F0; learned layer weights. In each case the variant is worse than the baseline on
 M1 and EER, not merely unproven, and capacity-hungry in a setting where the encoder already memorises the training
 speakers. Multi-reference fusion is not dropped but is already part of Phase 4's inference.
+
+## Precondition checks (2026-10-26)
+
+Code: `src/sparc/vocoders/spkscreen/{precond,precond_report,globe_embed}.py`, `variants/capacity.py`. Numbers and full tables
+(all metrics, every comparison, per corpus): `/data/user_data/xoy/spkemb/encoder_screen/precond/{precond.json,tables.md}`.
+
+### Method
+
+- Saved `embeddings.npz` of the 3 seeds, no retraining for check 1. The ridge probe is fitted once per run exactly as in
+  `metrics.evaluate` and kept fixed; absolute values reproduce the table above (baseline M1 0.8589, EER 0.0739).
+- Paired difference per seed (same seed), averaged over the 3 seeds. For pooled statistics (M1, 1 s and 2 s M1, EER, M3,
+  F0 PCC) the SE is the leave-one-speaker-out jackknife of the seed-averaged difference over the 62 held-out speakers;
+  for 5-shot identification it is SD / sqrt(n) over speakers. 95 percent CI = estimate +- t(61) SE. "Improved" counts
+  speakers with a better seed-averaged per-speaker value (M1, 1 s, 2 s, EER of the speaker's utterances against all others).
+- Holm correction over the three shortlisted variants (M1 p-values from the t statistic). Trimmed mean and the log-mel
+  branch are outside that family; their p-values are raw.
+- Positive differences mean the variant is better (lower M1 / EER / M3 / 1 s / 2 s, higher ID / F0 PCC).
+
+### 1. Paired speaker-level inference against the baseline (62 speakers)
+
+| Variant | dM1 (SE) [95% CI] | Holm p | speakers improved | dEER | d1 s M1 | d2 s M1 | dM3 | dF0 PCC |
+|---|---|---|---|---|---|---|---|---|
+| Voiced / unvoiced / silence split | +0.0091 (0.0031) [+0.0029, +0.0153] | 0.009 | 40/62 | +0.0024 (0.0022) | +0.126 (0.027) | +0.022 (0.009) | +0.011 (0.009) | -0.004 (0.003) |
+| Voiced / non-voiced split | +0.0028 (0.0033) [-0.0038, +0.0094] | 0.405 | 35/62 | -0.0004 (0.0024) | +0.151 (0.024) | +0.022 (0.009) | +0.014 (0.011) | -0.001 (0.003) |
+| Layer 1 + layer 6 | +0.0147 (0.0030) [+0.0087, +0.0206] | <0.001 | 48/62 | -0.0009 (0.0031) | -0.017 (0.008) | +0.011 (0.005) | -0.043 (0.005) | -0.001 (0.003) |
+| Trimmed mean (raw p) | +0.0044 (0.0014) [+0.0015, +0.0073] | 0.003 raw | 37/62 | -0.0004 (0.0011) | +0.006 (0.003) | +0.002 (0.003) | -0.000 (0.004) | +0.002 (0.001) |
+| Two-way split + log-mel branch (raw p) | +0.0051 (0.0031) [-0.0011, +0.0113] | 0.106 raw | 39/62 | +0.0012 (0.0022) | +0.148 (0.023) | +0.024 (0.009) | -0.001 (0.010) | -0.007 (0.004) |
+
+dM3 is variant minus baseline sign-flipped like the others (negative = more content leakage in the variant).
+5-shot identification: no difference excludes zero except the log-mel branch (+0.0096, SE 0.0036); at most 25 of 60
+speakers improve, so identification does not move. EER: no difference excludes zero.
+
+### 2. Capacity-matched control
+
+Control: the baseline pooled layer 6 vector (same z-score) repeated k times into the head of the variant (`cap_rep3`,
+3072-d input, 3.2M parameters, matches the three-way split; `cap_rep2`, 2048-d, 2.2M, matches layer 1 + layer 6 and the
+two-way split). Repetition keeps the baseline's information and function class and gives the same weights, initialisation
+scale and weight decay; zero padding was rejected because the padded weights get no gradient (it would be the baseline).
+Same objective, 6000 steps, seeds 0-2 (`scripts/spkscreen/submit_train.sh cap_rep3`, `cap_rep2`).
+
+| Comparison | dM1 (SE) [95% CI] | d1 s M1 (SE) | speakers improved (M1) |
+|---|---|---|---|
+| Repeated x3 vs baseline | +0.0058 (0.0020) [+0.0019, +0.0098] | -0.070 (0.011), worse | 39/62 |
+| Repeated x2 vs baseline | -0.0013 (0.0020) [-0.0053, +0.0027] | -0.226 (0.023), worse | 25/62 |
+| Three-way split vs repeated x3 | +0.0033 (0.0025) [-0.0018, +0.0083] | +0.197 (0.034) | 35/62 |
+| Two-way split vs repeated x2 | +0.0041 (0.0032) [-0.0023, +0.0105] | +0.377 (0.044) | 40/62 |
+| Layer 1 + layer 6 vs repeated x2 | +0.0160 (0.0024) [+0.0112, +0.0208] | +0.210 (0.019) | 50/62 |
+
+About two thirds of the three-way split's full-length M1 gain (0.0058 of 0.0091) is reproduced by extra head width alone;
+what the split adds beyond width is not distinguishable from zero on M1. Its short-reference gain is real against both
+the baseline and the control, and wider repeated heads are worse than the baseline on 1 s references (width itself hurts
+short references). Layer 1 + layer 6 gains nothing from width (control -0.0013) and beats its control by +0.0160.
+
+### 3. Silence branch out of domain (per corpus)
+
+Held-out test speakers by corpus: 23 LibriTTS-R (13 dev-clean, 10 test-clean) and 39 VCTK. GLOBE is not in the held-out
+set; its Phase 4 pool (1240 utterances, 400 speakers, 3 each, about 2 h) was extracted with the same code (`cache
+extract --set globe`, about 10 GPU-minutes), embedded with the saved encoders (`globe_embed`) and scored with each run's
+own ridge probe (fitted on the held-out non-test rows). GLOBE has no 5-shot identification; only M1 (full, 1 s, 2 s) and EER.
+
+dM1 against the baseline (SE), seed-averaged, positive = better:
+
+| Variant | LibriTTS-R (23) | VCTK (39) | GLOBE (400) |
+|---|---|---|---|
+| Three-way split | +0.0020 (0.0042) | +0.0128 (0.0041) | +0.0082 (0.0028) |
+| Two-way split | -0.0112 (0.0046) | +0.0099 (0.0041) | -0.0153 (0.0034) |
+| Layer 1 + layer 6 | +0.0082 (0.0024) | +0.0179 (0.0042) | +0.0135 (0.0039) |
+| Three-way minus two-way (silence branch) | +0.0132 (0.0028) | +0.0028 (0.0027) | +0.0235 (0.0026) |
+
+d1 s M1 against the baseline:
+
+| Variant | LibriTTS-R | VCTK | GLOBE |
+|---|---|---|---|
+| Three-way split | -0.152 (0.022), 1/23 improved | +0.255 (0.014), 39/39 | +0.101 (0.008) |
+| Two-way split | -0.085 (0.013), 2/23 | +0.254 (0.017), 39/39 | +0.047 (0.009) |
+| Layer 1 + layer 6 | +0.010 (0.003) | -0.023 (0.011) | +0.045 (0.006) |
+
+EER differences are within about 1.5 SE everywhere except the two-way split on VCTK (+0.0059, SE 0.0027) and layer 1 +
+layer 6 on VCTK (+0.0089, SE 0.0031). The silence branch is not what produces the VCTK gain (three-way minus two-way
++0.0028, not different from zero on VCTK, and no 1 s difference on VCTK); its value is robustness: the two-way split
+loses M1 on LibriTTS-R and GLOBE while the three-way split does not. Both splits make 1 s references on LibriTTS-R much
+worse (baseline 1 s M1 0.838, splits 0.92-0.99), so the short-reference gain is a VCTK and GLOBE effect, not a general one.
+
+### Verdict per shortlisted variant
+
+| Variant | CI of dM1 excludes 0 after Holm | Beats capacity control | Silence branch / corpora |
+|---|---|---|---|
+| Three-way split | yes (p 0.009) | no on M1 (+0.0033, CI includes 0); yes on 1 s | holds against the baseline on VCTK and GLOBE; not different from the two-way split on VCTK; LibriTTS-R 1 s worse |
+| Two-way split | no (p 0.405) | no | worse than the baseline on M1 in LibriTTS-R and GLOBE |
+| Layer 1 + layer 6 | yes (p < 0.001) | yes (+0.0160) | better on all three corpora; M3 +0.043 (leakage), 1 s worse |
+
+### Recommendation for the 100k HiFi-GAN test
+
+Run the reference, arm C (layer 1 + layer 6: the only arm clearing the speaker-level CI, its capacity control and all
+three corpora; report own-utterance against other-utterance references because of the M3 rise), arm A (three-way split:
+the only arm whose short-reference gain survives the control, and the more robust of the two splits) and its control D
+(repeated x3, since most of A's M1 gain is width). Drop arm B (two-way split), the trimmed mean and the log-mel branch.
+Estimated cost 36-50 GPU-hours at one seed (the earlier estimate minus arm B). The proxy still does not predict the
+vocoder; the judgement rule is unchanged.
