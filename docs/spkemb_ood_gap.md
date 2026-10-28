@@ -123,3 +123,71 @@ Cells: similarity [95% speaker-bootstrap CI] (fraction of ground truth). Last co
   content features carry the original speaker's timbre (the "speaker" leaking through the content and F0 inputs), no code can fix that, which fits the result
   but was not isolated here.
 - Subset sizes are small (20 speakers per pool; GLOBE 40 single-item speakers); the intervals reflect that.
+
+## Follow-up: fitting the code to maximize speaker similarity through the frozen generator (2026-10-28)
+
+Code: `src/sparc/vocoders/eval/ood_svfit.py`. Outputs: `/data/user_data/xoy/spkemb/ood_gap/sv_fit/{choice.json,sweep_table.md,summary.md,summary.json}`.
+
+Why: the fit above used a reconstruction loss that is nearly flat in the code, so it could not show that no code renders the voice.
+Here the loss is speaker similarity itself, through the frozen `p5_fv` HiFi-GAN generator.
+
+**Method.** Own-speaker resynthesis of a held-out target utterance (content features and speaker-relative pitch as in the standard path).
+- (a) standard code from the speaker's reference utterances.
+- (e) the 64-d code (an offset on the standard code), or separately an offset on the speaker network's pooled input vectors (FFN input),
+  fitted with Adam to maximize the differentiable ECAPA cosine of 4 s crops of the synthesized target content to the mean ECAPA
+  embedding of the speaker's code-reference utterances (never the target utterance). Penalty: L2 toward the standard code (weight `lam`),
+  plus the training reconstruction loss on reference crops (weight `w_rec`) as a quality anchor.
+- (e, self) the same with the target utterance's own ECAPA embedding as the goal (an upper bound for the fitted judge only).
+- (f) the same content rendered with a random other speaker's standard code (the code's leverage).
+- Scoring: only models not in the fitting loss: CAM++ and the WeSpeaker ResNet34, cosine to the mean embedding of the speaker's reference
+  utterances that did not give the code (none for GLOBE: all references, which include the code references). ECAPA is shown as the
+  fitted objective, not as evidence. UTMOS and Whisper WER are the quality guard.
+
+**Selection on validation speakers only** (`docs/spkemb_validation_splits.json`): LibriTTS-R dev-clean (8 speakers, 8 items), VCTK
+validation half (10, 10), GLOBE real-speaker dev pool `globe_spk` (10, 10): 28 items. Grid per mode and goal: lr {0.01, 0.03}, `lam`
+{0, 0.3, 3}, `w_rec` {0, 0.1}, steps {25, 50, 100, 200} (48 settings x 4 snapshots, `sweep_table.md`). Rule: maximize the mean of CAM++ and
+WeSpeaker similarity (pools equally weighted) subject to a mean UTMOS drop <= 0.1 and a pooled WER increase <= 1 point against the
+standard code. Chosen: FFN input lr 0.03, `lam` 0, `w_rec` 0, 50 steps (validation held-out similarity 0.599 -> 0.681, UTMOS -0.097);
+64-d code lr 0.01, `lam` 0, `w_rec` 0, 200 steps (0.673, UTMOS -0.071). Both sit at an edge of the grid (largest step count for the code,
+largest lr for the FFN input), so a longer or faster fit was not examined.
+
+**Interpretation rule (fixed before any run).** Closure = (E - A) / (G - A) with A the standard code, E the fitted references-target
+condition, G ground truth, on held-out verifiers. Closure above 0.5 (interval excluding 0) at acceptable quality: the code space can express
+the voice and the encoder or inference is the bottleneck. E near A (closure below 0.2) even for the self-target fit at acceptable
+quality: the generator or its other inputs are the limit. In between: partial.
+
+**Test items (run once).** LibriTTS-R test-clean (36 items, 20 speakers), VCTK test half (34 items, 18 speakers), GLOBE: the real-speaker test
+pool has one reference and no own-speaker items, so the GLOBE row uses the ECAPA-clustered pseudo-speakers' test half (30 speakers;
+8 own-speaker items, 2 to 7 references, scored against all references; small and noisy). Mean of CAM++ and WeSpeaker similarity, fraction of
+ground truth (95% speaker-bootstrap interval), closure of the standard-to-ground-truth gap:
+
+| pool | (a) standard | (e) FFN input, refs | (e) 64-d code, refs | (e) FFN, self goal | (f) other speaker's code | ground truth (similarity) |
+|---|---|---|---|---|---|---|
+| LibriTTS-R | 0.953 [0.922, 0.988] | 1.001 [0.975, 1.034] | 0.999 [0.967, 1.040] | 0.958 | 0.411 | 0.782 |
+| VCTK | 0.663 [0.623, 0.707] | 0.809 [0.781, 0.839] | 0.784 [0.756, 0.812] | 0.761 | 0.213 | 0.826 |
+| GLOBE (pseudo, 8 items) | 0.754 [0.692, 0.831] | 0.913 [0.856, 0.987] | 0.894 [0.841, 0.970] | 0.817 | 0.262 | 0.781 |
+
+Closure: VCTK 0.44 [0.38, 0.49] (FFN input) and 0.36 [0.32, 0.40] (code); GLOBE 0.64 [0.52, 0.93] and 0.57 [0.47, 0.83]; LibriTTS-R has no gap to close
+(standard is already 0.95). CAM++ and WeSpeaker agree (VCTK closure 0.47 / 0.40 FFN input, 0.39 / 0.33 code; GLOBE 0.62 / 0.67 and 0.55 / 0.59).
+The fitted ECAPA similarity rises far more (VCTK 0.555 -> 0.748 against ground truth 0.768; GLOBE 0.595 -> 0.806), which is what a fit on
+that judge would give and is not evidence.
+
+Quality guard (UTMOS / WER %), standard -> FFN input / 64-d code: LibriTTS-R 3.82 / 2.3 -> 3.70 / 2.2 and 3.78 / 2.3; VCTK 3.56 / 3.7 -> 3.46 / 3.0
+and 3.48 / 3.3; GLOBE 3.36 / 3.9 -> 3.19 / 3.9 and 3.18 / 2.6. WER does not rise. UTMOS drops are within 0.1 in the validation pool mean,
+but on the test pools the FFN-input fit exceeds 0.1 on LibriTTS-R (0.12) and GLOBE (0.17), and the 64-d code on GLOBE (0.18); VCTK is at 0.08 to 0.10.
+
+**Self goal and leverage.** Fitting toward the target utterance's own embedding is a poorer code than fitting toward the other utterances' mean
+on the held-out verifiers (VCTK closure 0.27 to 0.29, GLOBE 0.25 to 0.28, LibriTTS-R ~0.1 to 0.25): the target utterance's embedding carries its
+session and content, so as a goal it is not an upper bound for held-out judges, only for the fitted ECAPA. The leverage check (f) shows the
+generator is strongly code-sensitive: another speaker's standard code lowers held-out similarity to the target by 0.37 to 0.44 (to 0.2 to 0.4 of
+ground truth) and raises it toward the code's speaker (donor similarity 0.41 to 0.73).
+
+**Reading.** Raising the fitted ECAPA similarity also raises the two independent verifiers, by +0.10 to +0.12 on VCTK and +0.11 to +0.12 on GLOBE
+(mean of CAM++ and WeSpeaker, intervals exclude 0), so the code space can move the output well toward the voice: the earlier "no code helps" was a
+property of the reconstruction loss. By the pre-registered rule: GLOBE closes more than half of the gap (0.57 to 0.64, interval above 0.46) but at a
+UTMOS cost above 0.1 on the test pool; VCTK closes 0.36 to 0.44 (interval upper ends 0.40 and 0.49, below 0.5), i.e. partial. A large part of the
+gap, 56 to 64% on VCTK, remains after a fit that uses the verifier directly with unrestricted code freedom. Caveats: the three verifiers are all
+VoxCeleb-trained speaker models, so part of the transfer could be shared sensitivity rather than voice (adversarial-style transfer), which the
+quality drop is consistent with; the settings sit at grid edges; GLOBE is 8 items; UTMOS and WER are the only guard. Conclusion: the code space
+carries substantial headroom (the encoder and its inference are a bottleneck, not only the generator), but a code fitted per speaker with the
+verifier in the loop does not reach ground truth on VCTK, so the generator or its other inputs still limit part of the gap there.
