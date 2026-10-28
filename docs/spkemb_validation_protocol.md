@@ -128,3 +128,25 @@ selection optimism and needs a fresh confirmation on test pools after selection 
   confirmatory comparison, no selection). It is additionally reported per split, `--split val` (LibriTTS dev-clean if
   synthesized, VCTK validation half, `globe_spk`) and `--split test` (LibriTTS test-clean, VCTK test half), without
   changing its decision.
+
+## Validation-split results of the two reference runs (2026-10-28)
+
+Outputs `/data/user_data/xoy/spkemb/validation/eval/{p5_fv,b0_s0}` (synthesized on `libritts_dev,vctk,globe_spk`, scored with ECAPA,
+WavLM-SV and the held-out CAM++; `summary_val.*`, `summary_test.*` from `summarize-split`). Variant `k5_f0_loud`, swap similarity to
+the target, 400 swaps per pool (VCTK 200 per half); acceptance and top-1 use each split's own calibration and speakers. `p5_fv` =
+filtered LibriTTS-R + GLOBE + VCTK, up to 8 references, speaker-relative F0, 100k; `b0_s0` = the existing speaker network at 100k.
+
+| split | pool | run | ECAPA [95% CI] | WavLM-SV | CAM++ | accept | top-1 | UTMOS | WER |
+|---|---|---|---|---|---|---|---|---|---|
+| val | LibriTTS-R dev-clean (36) | p5_fv | 0.685 [0.667, 0.701] | 0.939 | 0.704 | 0.846 | 0.965 | 3.73 | 2.6 % |
+| val | | b0_s0 | 0.636 [0.619, 0.653] | 0.926 | 0.653 | 0.726 | 0.893 | 3.73 | 2.8 % |
+| val | VCTK validation half (20) | p5_fv | 0.455 [0.420, 0.495] | 0.871 | 0.449 | 0.138 | 0.760 | 3.61 | 4.2 % |
+| val | | b0_s0 | 0.378 [0.343, 0.417] | 0.860 | 0.383 | 0.042 | 0.670 | 3.53 | 6.8 % |
+| val | GLOBE real speakers (340 targets) | p5_fv | 0.386 [0.373, 0.397] | 0.846 | 0.402 | 0.591 | 0.459 | 2.80 | 9.2 % |
+| val | | b0_s0 | 0.299 [0.288, 0.310] | 0.837 | 0.306 | 0.281 | 0.284 | 3.09 | 20.5 % |
+| test | VCTK test half (20) | p5_fv | 0.474 [0.435, 0.511] | 0.868 | 0.459 | 0.120 | 0.842 | 3.59 | 4.9 % |
+| test | | b0_s0 | 0.383 [0.356, 0.409] | 0.861 | 0.383 | 0.000 | 0.778 | 3.49 | 6.9 % |
+
+Test rows exist only for the VCTK half because `libritts`, `globe_spk_test` and `globe` were not synthesized for these runs. p5_fv's
+gain over the existing network is positive on every validation pool; the GLOBE UTMOS is 0.29 lower. Descriptive only (single seeds,
+not a decision).
