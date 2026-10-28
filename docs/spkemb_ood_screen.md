@@ -86,3 +86,56 @@ A variant is **promising** if all three hold:
 
 The OOD EER difference, per-corpus M1 and EER, LibriTTS-R values and the number of speakers improved are reported but do
 not enter the rule. With three seeds and one speaker pool per corpus, "promising" means worth a vocoder run.
+
+## Amendment 1 (2026-10-28): selection on validation speakers only
+
+Written before any score of this screen was computed (no `ood_report` run exists; the trained variants and embeddings were
+produced under the pre-registration above and are not changed). Reason: user rule of 2026-10-28, every choice among
+variants is made on validation speakers (`docs/spkemb_validation_protocol.md`). This amendment replaces the evaluation
+sets' "primary" use and the place where the selection rule is applied; the rule itself (three conditions, Holm over the six
+variants, 95% intervals, M3 limit 0.05) is unchanged.
+
+* **Selection split.** The selection rule is computed on the VALIDATION speakers of the screen (`ood_report --split val`):
+  LibriTTS-R dev-clean (13), VCTK validation half (19), GLOBE real speakers (400, all validation: no GLOBE test contributor
+  has three utterances), GLOBE pseudo-speakers (370). The ridge probes of M1 and M3 are fitted exactly as before on the
+  126 non-test held-out speakers (the split restricts what is scored, not the probe's fitting rows). M3 and the other
+  pooled statistics are restricted to validation speakers. SE and degrees of freedom follow the same formulas with the
+  validation speaker counts (smaller corpus: VCTK, 19 speakers).
+* **Test speakers** (LibriTTS-R test-clean 10, VCTK test half 19, GLOBE pseudo-speakers 30; no GLOBE real-speaker test
+  set exists) are used only to report (a) the baseline and (b) the variants selected on validation, with the same
+  statistics. Because GLOBE real speakers are absent from the test split, the test out-of-domain statistic is VCTK alone
+  (the test table says so). A selected variant's test row is descriptive, not a second selection step; a variant that is
+  not selected is not promoted by test numbers.
+* **Transparency table.** A separate table, labelled "all variants on test speakers, not used for selection", reports every
+  variant on the test split. It does not enter any decision.
+* The all-speaker report (`ood.md`, no `--split`) is not produced as a decision table.
+* The caveat above stands: a promising variant is a candidate for a vocoder run only.
+
+## Results (2026-10-28; selection on validation speakers per Amendment 1)
+
+Full tables: `/data/user_data/xoy/spkemb/encoder_screen/ood/summary.md` (`ood_val.*`, `ood_test.*`; `python -m
+sparc.vocoders.spkscreen.ood_report --out <dir> --split val|test`). All 3 seeds of every variant; nothing retrained for this
+scoring (the `ood_sv_l6` GLOBE embeddings were produced from its finished encoders).
+
+Validation speakers (LibriTTS-R 13, VCTK 19, GLOBE real 400, GLOBE pseudo 370). OOD M1 gain over the baseline (positive =
+better), 95% interval, Holm p; gain over the control; M3 change:
+
+| variant | OOD M1 gain [95% CI] | p (Holm) | gain vs control [95% CI] | M3 change | promising |
+|---|---|---|---|---|---|
+| BiGRU + conv head, mean pooling | -0.031 [-0.038, -0.024] | 0.000 | -0.016 | -0.085 | no |
+| BiGRU + conv head, attentive pooling | -0.030 [-0.037, -0.023] | 0.000 | -0.016 | -0.108 | no |
+| frozen speaker-verification embedding alone | -0.068 [-0.089, -0.048] | 0.000 | - | -0.186 | no |
+| layer-6 mean + verification embedding | +0.004 [-0.001, +0.008] | 0.087 | +0.002 [-0.005, +0.008] | -0.007 | no |
+| per-corpus centering | -0.045 [-0.058, -0.032] | 0.000 | - | +0.001 | no |
+| channel augmentation | +0.006 [+0.001, +0.011] | 0.035 | - | +0.017 | **yes** |
+
+Selected on validation: channel augmentation only. Test speakers (LibriTTS-R 10, VCTK 19, GLOBE pseudo 30; no real-speaker
+GLOBE test set exists, so the test OOD statistic is VCTK alone): baseline VCTK M1 0.911, augmentation 0.911; the
+confirmation difference is +0.0003 [-0.013, +0.014] (not confirmed); GLOBE pseudo M1 1.501 vs 1.479 (descriptive,
+30 speakers). Transparency table of all variants on test is in `summary.md` (not used for selection).
+
+Caveats: the augmentation gain on validation comes from GLOBE real speakers (M1 1.182 -> 1.167) while VCTK validation M1 is
+slightly worse (0.868 -> 0.871); its interval is narrow only because 400 GLOBE speakers carry the OOD mean. Selection never
+sees a pool beyond VCTK's 19 speakers in the second corpus, so the test check has little power. Hypothesis, not tested:
+the speaker-verification inputs trade away content leakage (M3 falls 0.19) and in-domain M1 for EER, which M1 does not reward.
+The proxy caveat above stands: this is at most a candidate for a vocoder run.

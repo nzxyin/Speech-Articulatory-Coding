@@ -5,6 +5,10 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Out-of-domain encoder screen re-scored with selection on validation speakers (`docs/spkemb_ood_screen.md`, Amendment 1
+  and Results): all six variants scored with `ood_report --split val|test`; only channel augmentation passes the rule on
+  validation, and it is not confirmed on test (VCTK). `ood_embed` accepts `<run>:<architecture>`; tests in
+  `tests/test_spkscreen_ood.py`.
 - Validation / test protocol for speaker-embedding selection (`docs/spkemb_validation_protocol.md`, splits in
   `docs/spkemb_validation_splits.json`): `eval/splits.py` (split builder, `restrict_items`, `screen_masks`),
   `clone summarize-split` and `clone compare --split val|test` re-score stored cloning outputs on a speaker subset without

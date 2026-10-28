@@ -68,9 +68,12 @@ def main() -> None:
     p.add_argument("--root", type=Path, default=C.ROOT)
     a = p.parse_args()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    jobs = [(v, v, False) for v in a.variants] + ([("baseline", "ood_center", True)] if a.center else [])
-    for src, dst, center in jobs:
-        enc = build(src)
+    # "<run>:<architecture>" embeds the run directory <run> with another variant's architecture (ood_aug:baseline)
+    jobs = [(v.partition(":")[2] or v.partition(":")[0], v.partition(":")[0], False) for v in a.variants]
+    jobs += [("baseline", "ood_center", True)] if a.center else []
+    for arch, dst, center in jobs:
+        src = dst if not center else "baseline"
+        enc = build(arch)
         enc.to(dev)
         for st in a.sets:
             if st == "heldout" and not center:
