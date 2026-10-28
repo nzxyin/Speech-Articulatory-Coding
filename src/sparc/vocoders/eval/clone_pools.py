@@ -64,7 +64,7 @@ class PoolSpec:
     """Static description of a pool. ``min_refs``: minimum number of >= 3 s utterances for an eligible speaker."""
 
     name: str
-    kind: str  # "packed" | "vctk" | "globe"
+    kind: str  # "packed" | "vctk" | "globe" | "globe_spk"
     split: str | None = None
     min_refs: int = 10
     n_speakers: int = 0
@@ -76,6 +76,8 @@ POOL_SPECS = {
     "libritts_dev": PoolSpec("libritts_dev", "packed", "dev.clean", 10),
     "vctk": PoolSpec("vctk", "vctk", None, 10, n_speakers=40, per_speaker=80),
     "globe": PoolSpec("globe", "globe", None, 2, n_speakers=400, per_speaker=10),
+    # Phase 7: the same GLOBE dev + test audio grouped by the real Common Voice contributor (same size rules as ``globe``)
+    "globe_spk": PoolSpec("globe_spk", "globe_spk", None, 2, n_speakers=400, per_speaker=10),
 }
 
 
@@ -308,6 +310,52 @@ def list_globe(
     return table[table["speaker"].isin(keep)].sort_values("id").reset_index(drop=True)
 
 
+def list_globe_spk(
+    user_root: str | Path = GLOBE_USER, spec: PoolSpec = POOL_SPECS["globe_spk"], seed: int = 0, raw_root: str | Path = GLOBE_RAW
+) -> pd.DataFrame:
+    """Like :func:`list_globe`, but speakers are the real Common Voice contributors of GLOBE dev + test
+    (:mod:`sparc.vocoders.features.globe_speakers`, label ``gcv<index>``). Same rules: speakers with at least
+    ``min_refs + 1`` utterances of which ``min_refs`` last >= 3 s, gender by majority of ``predicted_gender``, 400 speakers
+    stratified by gender and accent, the first ``per_speaker`` utterances by stem. A speaker's accent is the most common
+    accent label of its utterances (ties: alphabetical)."""
+    import pyarrow.parquet as pq
+    import soundfile as sf
+
+    from sparc.vocoders.features.globe_speakers import globe_manifest, join_speakers, read_cv_clients
+
+    user_root, raw_root = Path(user_root), Path(raw_root)
+    joined = join_speakers(globe_manifest(user_root), read_cv_clients())
+    ps = joined[joined["split"].isin(["dev", "test"])].copy()
+    counts = ps.groupby("speaker")["stem"].transform("size")
+    ps = ps[counts >= spec.min_refs + 1].copy()
+    ps["dur"] = [sf.info(str(user_root / "wavs" / f"{s}.wav")).duration for s in ps["stem"]]
+    ps["shard"] = ps["stem"].str.rsplit("-", n=1).str[0]
+    ps["row"] = ps["stem"].str.rsplit("-", n=1).str[1].astype(int)
+    gender_of = {}
+    for shard, g in ps.groupby("shard"):
+        col = pq.read_table(str(raw_root / f"{shard}.parquet"), columns=["predicted_gender"]).column(0).to_pylist()
+        for stem, row in zip(g["stem"], g["row"]):
+            gender_of[stem] = col[int(row)]
+    ps["g"] = ps["stem"].map(gender_of)
+    man = pd.read_csv(user_root / "manifest.tsv", sep="\t").set_index("stem")
+    rows = []
+    for spk, g in ps.groupby("speaker"):
+        gender = majority_gender(g["g"])
+        if gender is None or (g["dur"] >= 3.0).sum() < spec.min_refs:
+            continue
+        accents = g["accent"].value_counts()
+        accent = sorted(accents[accents == accents.max()].index)[0]
+        for _, r in g.sort_values("stem").head(spec.per_speaker).iterrows():
+            rows.append(
+                {"id": r["stem"], "speaker": spk, "gender": gender, "accent": str(accent),
+                 "n24": int(round(r["dur"] * SAMPLE_RATE)), "text": str(man.loc[r["stem"], "transcript"]),
+                 "src": f"{raw_root / (r['shard'] + '.parquet')}#{int(r['row'])}"}
+            )
+    table = pd.DataFrame(rows)
+    keep = stratified_speakers(table.drop_duplicates("speaker")[["speaker", "gender", "accent"]], spec.n_speakers, seed)
+    return table[table["speaker"].isin(keep)].sort_values("id").reset_index(drop=True)
+
+
 def _globe_audio(src: str) -> np.ndarray:
     """24 kHz mono float32 of one GLOBE parquet row (``<shard.parquet>#<row>``)."""
     import pyarrow.parquet as pq
@@ -495,6 +543,8 @@ def prepare_table(spec: PoolSpec, root: str | Path, seed: int = 0) -> pd.DataFra
         table = list_vctk(spec=spec, seed=seed)
     elif spec.kind == "globe":
         table = list_globe(spec=spec, seed=seed)
+    elif spec.kind == "globe_spk":
+        table = list_globe_spk(spec=spec, seed=seed)
     else:
         raise ValueError(f"{spec.name} is a packed pool; nothing to prepare")
     d = pool_dir(root, spec.name)

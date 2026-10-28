@@ -5,6 +5,14 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Phase 7 real GLOBE speaker labels (pre-registration `docs/spkemb_phase7_globe_speakers.md`):
+  `features/globe_speakers.py` joins the GLOBE manifest with the Common Voice 21 transcript tables
+  (`/data/user_data/xoy/common_voice_21_en_meta/`, CC0; `client_id` kept as an opaque hash, integer index
+  `client_idx`, label `gcv<index>`) and writes `phase7/globe_train/{speakers,list_spk}.parquet` and the packed split
+  `phase7/packed/globe_f_spk/globe.train` (same rows and linked features as the Phase 5 filtered split, only `speaker`
+  changed); `report` / `pool-checks` give speaker statistics and the exact-overlap and ECAPA leak checks.
+  `clone_pools` has a new pool `globe_spk` (GLOBE dev + test grouped by real contributor, `globe`'s size rules).
+  Experiment `p7_gspk` (= `p5_fv` with the real-speaker GLOBE split) and `scripts/spkemb/p7_validate_configs.py`.
 - Phase 6 speaker-encoder arms (code only; no vocoder run is started until the Phase 5 winner is known):
   `speaker.layer` accepts `l1l6` (periodicity-weighted means of WavLM Large layers 1 and 6, 2048-d), `vus3_l6` (the
   screen's voiced / unvoiced speech / silence layer 6 means, 3072-d) and `l6_rep3` (layer 6 mean repeated three times,
