@@ -177,6 +177,7 @@ def verify_split(src: str | Path, final: str | Path) -> dict:
 
 def pool_checks(
     pool_table="/data/user_data/xoy/spkemb/phase4/pools/globe_spk/table.parquet",
+    other_pool_tables=(),
     old_pool_table="/data/user_data/xoy/spkemb/phase4/pools/globe/table.parquet",
     train_list=TRAIN_LIST,
     filtered=FILTERED_SPLIT,
@@ -205,6 +206,10 @@ def pool_checks(
     rep["speaker_overlap_all_globe_train_rows"] = len(pool_spk & all_train)
     old = pd.read_parquet(old_pool_table)
     rep["utterances_also_in_old_pool"] = int(pool["id"].isin(old["id"]).sum())
+    for t in other_pool_tables:  # e.g. the dev real-speaker pool when checking the test one: speakers must be disjoint
+        other = pd.read_parquet(t)
+        rep[f"speaker_overlap_{Path(t).parent.name}"] = len(pool_spk & set(other["speaker"]))
+        rep[f"utterance_overlap_{Path(t).parent.name}"] = int(pool["id"].isin(other["id"]).sum())
     ecapa = load_ecapa(Path(globe_root) / "ecapa", set(pool["id"]) | set(full["stem"]))
     pool_emb = ecapa.loc[pool["id"]].to_numpy()
     for name, stems in (("full_training_list", full["stem"]), ("filtered_split", filt["stem"])):
@@ -219,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("cmd", choices=("report", "ids", "pack", "pool-checks"))
     p.add_argument("--out-root", default=OUT_ROOT)
+    p.add_argument("--pool", default="globe_spk", help="pool-checks: real-speaker pool to check (globe_spk or globe_spk_test)")
     a = p.parse_args(argv)
     if a.cmd == "report":
         result = report()
@@ -226,8 +232,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(result, indent=1))
     elif a.cmd == "pool-checks":
-        result = pool_checks()
-        path = Path(a.out_root) / "globe_train" / "pool_checks.json"
+        base = "/data/user_data/xoy/spkemb/phase4/pools"
+        if a.pool == "globe_spk":
+            result = pool_checks()
+            path = Path(a.out_root) / "globe_train" / "pool_checks.json"
+        else:
+            result = pool_checks(pool_table=f"{base}/{a.pool}/table.parquet", other_pool_tables=(f"{base}/globe_spk/table.parquet",))
+            path = Path(a.out_root) / "globe_train" / f"pool_checks_{a.pool}.json"
         path.write_text(json.dumps(result, indent=1))
     elif a.cmd == "ids":
         result = write_ids(a.out_root)

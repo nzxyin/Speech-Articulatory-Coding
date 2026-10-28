@@ -69,6 +69,8 @@ class PoolSpec:
     min_refs: int = 10
     n_speakers: int = 0
     per_speaker: int = 0
+    splits: tuple[str, ...] = ("dev", "test")  # GLOBE splits the contributors come from (``globe_spk`` kind)
+    min_long: int | None = None  # utterances of >= 3 s a speaker needs (default ``min_refs``)
 
 
 POOL_SPECS = {
@@ -78,6 +80,9 @@ POOL_SPECS = {
     "globe": PoolSpec("globe", "globe", None, 2, n_speakers=400, per_speaker=10),
     # Phase 7: the same GLOBE dev + test audio grouped by the real Common Voice contributor (same size rules as ``globe``)
     "globe_spk": PoolSpec("globe_spk", "globe_spk", None, 2, n_speakers=400, per_speaker=10),
+    # Validation protocol: real GLOBE test contributors (no test contributor has 3 utterances). Relaxed rule: exactly 2
+    # utterances of >= 3 s, one reference and one content utterance per speaker; swap plan only (no own-speaker items).
+    "globe_spk_test": PoolSpec("globe_spk_test", "globe_spk", None, 1, n_speakers=400, per_speaker=2, splits=("test",), min_long=2),
 }
 
 
@@ -325,7 +330,7 @@ def list_globe_spk(
 
     user_root, raw_root = Path(user_root), Path(raw_root)
     joined = join_speakers(globe_manifest(user_root), read_cv_clients())
-    ps = joined[joined["split"].isin(["dev", "test"])].copy()
+    ps = joined[joined["split"].isin(list(spec.splits))].copy()
     counts = ps.groupby("speaker")["stem"].transform("size")
     ps = ps[counts >= spec.min_refs + 1].copy()
     ps["dur"] = [sf.info(str(user_root / "wavs" / f"{s}.wav")).duration for s in ps["stem"]]
@@ -341,7 +346,7 @@ def list_globe_spk(
     rows = []
     for spk, g in ps.groupby("speaker"):
         gender = majority_gender(g["g"])
-        if gender is None or (g["dur"] >= 3.0).sum() < spec.min_refs:
+        if gender is None or (g["dur"] >= 3.0).sum() < (spec.min_long or spec.min_refs):
             continue
         accents = g["accent"].value_counts()
         accent = sorted(accents[accents == accents.max()].index)[0]

@@ -794,3 +794,91 @@ def test_compare_excludes_models_trained_against(tmp_path, monkeypatch):
     (tmp_path / "base" / "meta.json").write_text(__import__("json").dumps({"plan_hashes": {**h, "vctk": "0" * 64}}))
     with pytest.raises(ValueError, match="different plans"):
         clone.run_compare(args)
+
+
+# ------------------------------------------------------------------------------------------------------ split rescoring
+
+
+def _split_fixture(seed: int = 0):
+    rng = np.random.default_rng(seed)
+    plan = clone.build_plan(fake_table(n_speakers=10, per_speaker=24), "fake", n_swap=40, n_own=0, n_curve=1, n_refs=6, min_refs=6)
+    spk = plan["speakers"]
+    dim = 10
+    centers = {s: rng.standard_normal(dim) * 2 for s in spk}  # overlapping speakers: top-1 and acceptance are not trivial
+    ref_utt = {u: centers[s] + 1.0 * rng.standard_normal(dim) for s, r in plan["refs"].items() for u in r}
+    cids = {s["content_id"]: s["source"] for s in plan["swaps"]}
+    gt_utt = {u: centers[s] + 1.0 * rng.standard_normal(dim) for u, s in cids.items()}
+    items = clone.build_items(plan, clone.all_variants(5), ["base", "k5"])
+    manifest = pd.DataFrame([{"key": i.key, "kind": i.kind, "pool": i.pool, "pair_id": i.pair_id, "variant": i.variant, "content_id": i.content_id,
+                              "source": i.source, "target": i.target, "same_gender": i.same_gender, "dur_bin": i.dur_bin, "dur_s": i.dur_s,
+                              "code_ids": i.code_ids, "match_ids": i.match_ids} for i in items])
+    emb = np.stack([centers[i.code_speaker] + 1.0 * rng.standard_normal(dim) for i in items])
+    ref_ids = sorted(ref_utt)
+    cids_sorted = sorted(gt_utt)
+    gt = {"fake": {"ref_ids": np.array(ref_ids), "ref/ecapa": np.stack([ref_utt[u] for u in ref_ids]),
+                   "content_ids": np.array(cids_sorted), "content/ecapa": np.stack([gt_utt[u] for u in cids_sorted])}}
+    ref_means = {"fake": {"ecapa": {s: clone.mean_unit(np.stack([ref_utt[u] for u in r])) for s, r in plan["refs"].items()}}}
+    thr = {"fake": {"ecapa": 0.0}}
+    full = clone.item_table(manifest, {"ecapa": emb}, np.arange(len(manifest), dtype=float), [(1, 10)] * len(manifest), ref_means,
+                            {"fake": {"ecapa": ref_utt}}, {"fake": {"ecapa": gt_utt}}, thr, {"fake": plan})
+    return plan, manifest, full, emb, gt, ref_utt
+
+
+def _unit_rows(x):
+    x = np.asarray(x, dtype=float)
+    return x / np.linalg.norm(x, axis=-1, keepdims=True)
+
+
+@pytest.mark.parametrize("which", [0, 1])
+def test_rescore_split_matches_direct_recomputation(which):
+    plan, manifest, full, emb, gt, ref_utt = _split_fixture()
+    spk = plan["speakers"]
+    halves = [set(spk[: len(spk) // 2]), set(spk[len(spk) // 2 :])]
+    mem = halves[which]
+    table, cal, info = clone.rescore_split(manifest, full, {"ecapa": emb}, gt, {"fake": plan}, {"fake": mem}, ["ecapa"])
+    assert set(table["target"]) <= mem and len(table) == int(manifest["target"].isin(mem).sum())
+    assert table["utmos"].tolist() == full[full["target"].isin(mem)]["utmos"].tolist()
+    # direct recomputation, written independently of the library's vectorized code
+    refs = {s: np.stack([ref_utt[u] for u in plan["refs"][s]]) for s in spk}
+    mean_of = lambda a: _unit_rows(a).mean(0)  # noqa: E731
+    same, diff = [], []
+    for s in sorted(mem):
+        for j in range(len(refs[s])):
+            e = _unit_rows(refs[s][j])
+            same.append(float(e @ _unit_rows(mean_of(np.delete(refs[s], j, 0)))))
+            diff += [float(e @ _unit_rows(mean_of(refs[o]))) for o in sorted(mem) if o != s]
+    thr, eer = clone.eer_threshold(same, diff)
+    assert cal["fake"]["ecapa"]["eer_threshold"] == pytest.approx(thr) and cal["fake"]["ecapa"]["eer"] == pytest.approx(eer)
+    assert cal["fake"]["ecapa"]["n_same"] == len(same) < clone.calibration_stats(refs)["n_same"]  # only the split's own trials
+    ranked = [s for s in spk if s in mem]
+    key_row = {k: i for i, k in enumerate(manifest["key"])}
+    for _, row in table.iterrows():
+        e = _unit_rows(emb[key_row[row["key"]]])
+        cos = {s: float(e @ _unit_rows(mean_of(refs[s]))) for s in spk}
+        assert row["ecapa/top1"] == float(max(ranked, key=cos.get) == row["target"])
+        assert row["ecapa/sim_target"] == pytest.approx(cos[row["target"]])
+        assert row["ecapa/sim_source"] == pytest.approx(cos[row["source"]])
+        assert row["ecapa/accept"] == float(cos[row["target"]] >= thr)
+    sw = table[table["kind"] == "swap"]
+    n_cross = int((~sw["source"].isin(mem)).sum())
+    assert info["n_cross_split_source_rows"] == n_cross and n_cross <= info["n_swap_rows"]
+    # subset CIs: speaker-level bootstrap over the split's targets only, centred on a direct per-speaker mean
+    summ = clone.summarize_items(table, cal, ["ecapa"], n_boot=200)["fake"]
+    k5 = summ["variants"]["k5"]["all"]
+    d = sw[sw["variant"] == "k5"]
+    per = d.groupby("target")["ecapa/sim_target"].mean()
+    assert k5["n_speakers"] == len(per) and k5["n_items"] == len(d) and k5["metrics"]["ecapa/sim_target"]["mean"] == pytest.approx(per.mean())
+    assert clone.stratum_counts({"fake": summ})["fake"]["k5"]["all"] == {"n_items": len(d), "n_speakers": len(per)}
+
+
+def test_rescore_split_all_speakers_reproduces_full_table_and_require_source():
+    plan, manifest, full, emb, gt, ref_utt = _split_fixture()
+    spk = plan["speakers"]
+    table, cal, info = clone.rescore_split(manifest, full, {"ecapa": emb}, gt, {"fake": plan}, {"fake": set(spk)}, ["ecapa"])
+    full_thr = clone.calibration_stats({s: np.stack([ref_utt[u] for u in plan["refs"][s]]) for s in spk})["eer_threshold"]
+    assert cal["fake"]["ecapa"]["eer_threshold"] == pytest.approx(full_thr) and info["n_cross_split_source_rows"] == 0
+    for c in ("ecapa/top1", "ecapa/sim_target", "ecapa/gt_same", "ecapa/gt_diff"):
+        assert np.allclose(table[c].to_numpy(), full[c].to_numpy(), equal_nan=True)
+    mem = set(spk[:5])
+    t2, _, i2 = clone.rescore_split(manifest, full, {"ecapa": emb}, gt, {"fake": plan}, {"fake": mem}, ["ecapa"], require_source=True)
+    assert set(t2["source"]) <= mem and i2["n_cross_split_source_rows"] == 0

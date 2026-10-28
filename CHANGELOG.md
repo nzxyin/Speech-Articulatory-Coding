@@ -5,6 +5,15 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Cloning split scoring from the split's own speakers (`clone.rescore_split`, `split_table`): `summarize-split` and
+  `compare --split` rebuild the per-output table from stored embeddings, with the acceptance threshold and ground-truth
+  calibration from the split's speakers, top-1 ranked among the split's speakers, only swaps whose target is in the split
+  (cross-split source counts reported) and per-split stratum counts; `item_table(rank_speakers=...)`; tests against a direct
+  recomputation for both halves.
+- Real-speaker GLOBE test pool `globe_spk_test` (relaxed rule: test contributors with 2 utterances of >= 3 s, 1 reference +
+  1 content utterance, 400 speakers, swap plan only), `PoolSpec.splits` / `min_long`, `pool-checks --pool`; split file
+  `cloning.test.globe_spk_test`. Protocol doc: VCTK screen speakers, valid selection metrics, Amendment history, Phase 4
+  inference-variant selection.
 - Out-of-domain screen, clean validation scoring (`docs/spkemb_ood_screen.md`, Amendment 2): probes fitted only on held-out
   speakers in neither split (`splits.screen_scored`, `splits.probe_fit_mask`), VCTK scored speakers are the 40 cloning
   speakers, `ood_center` means taken per (corpus, fit / validation / test) group (`ood_embed.center_groups`); all variants

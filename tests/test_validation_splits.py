@@ -80,3 +80,13 @@ def test_checked_in_splits_are_disjoint_and_cover_the_pools():
     assert len(c["val"]["vctk"]) == len(c["test"]["vctk"]) == 20
     assert len(c["val"]["libritts_dev"]) == 36 and len(c["test"]["libritts"]) == 36
     assert len(c["val"]["globe_spk"]) == 400 and len(c["test"]["globe_spk"]) == 0
+    assert len(c["test"]["globe_spk_test"]) == 400 and len(c["val"]["globe_spk_test"]) == 0
+    assert not set(c["val"]["globe_spk"]) & set(c["test"]["globe_spk_test"])  # real-speaker pools: disjoint contributors
+
+
+def test_globe_spk_test_pool_spec():
+    from sparc.vocoders.eval.clone_pools import POOL_SPECS
+
+    sp = POOL_SPECS["globe_spk_test"]
+    assert sp.splits == ("test",) and sp.min_refs == 1 and sp.min_long == 2 and sp.per_speaker == 2
+    assert POOL_SPECS["globe_spk"].splits == ("dev", "test") and POOL_SPECS["globe_spk"].min_long is None

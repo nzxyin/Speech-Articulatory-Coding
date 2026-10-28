@@ -675,8 +675,13 @@ def item_table(
     gt_content: dict[str, dict[str, dict[str, np.ndarray]]],
     thresholds: dict[str, dict[str, float]],
     plans: dict[str, dict[str, Any]],
+    rank_speakers: dict[str, set[str]] | None = None,
 ) -> pd.DataFrame:
     """Per-output metric table (one row per manifest row).
+
+    ``rank_speakers[pool]``, when given, restricts the speakers top-1 identification ranks over (a split's speakers); the
+    similarities themselves still use every speaker's reference mean (a source outside the split keeps its ``sim_source``).
+    ``top1_source`` is NaN when the source is not among the ranked speakers.
 
     ``ref_means[pool][model][speaker]`` is the reference-mean embedding, ``ref_emb_by_utt[pool][model][utt]`` the embedding
     of each reference, ``gt_content[pool][model][utt]`` the ground-truth embedding of each content utterance,
@@ -698,12 +703,15 @@ def item_table(
             spk = plans[pool]["speakers"]
             pos = {s: i for i, s in enumerate(spk)}
             means = np.stack([ref_means[pool][m][s] for s in spk])
-            top = top1_ids(e[idx], means)
+            rank = np.arange(len(spk)) if rank_speakers is None else np.array([i for i, s in enumerate(spk) if s in rank_speakers[pool]], dtype=np.int64)
+            top = top1_ids(e[idx], means[rank])
+            top = np.where(top >= 0, rank[np.maximum(top, 0)], -1)
+            ranked = set(rank.tolist())
             cos = en[idx] @ _unit(means).T
             for j, (r, t) in enumerate(zip(idx, top)):
                 tgt, src = tgt_col[r], src_col[r]
                 cols["top1"][r] = float(t == pos[tgt]) if t >= 0 else np.nan
-                cols["top1_source"][r] = float(t == pos[src]) if t >= 0 else np.nan
+                cols["top1_source"][r] = float(t == pos[src]) if t >= 0 and pos[src] in ranked else np.nan
                 cols["sim_target"][r], cols["sim_source"][r] = cos[j, pos[tgt]], cos[j, pos[src]]
                 if kind_col[r] == "swap":  # references that neither gave the code nor the matching statistics
                     rest = [u for u in holdout_refs(plans[pool]["refs"][tgt], [*ids_col[r], *mids_col[r]]) if u in ref_emb_by_utt[pool][m]]
@@ -1356,6 +1364,94 @@ def run_score(args: argparse.Namespace) -> dict[str, Any] | None:
     return result
 
 
+def stratum_counts(summary: dict[str, Any]) -> dict[str, Any]:
+    """``{pool: {variant: {stratum: {n_items, n_speakers}}}}`` of a summary (swap variants only)."""
+    return {pool: {v: {st: {"n_items": e["n_items"], "n_speakers": e["n_speakers"]} for st, e in strata_.items()}
+                   for v, strata_ in res["variants"].items()} for pool, res in summary.items()}
+
+
+def split_members(splits: dict[str, Any], split: str, plans: dict[str, Any]) -> dict[str, set[str]]:
+    """Split speakers per pool present in ``plans`` (pools the split does not define are absent)."""
+    return {p: set(v) & set(plans[p]["speakers"]) for p, v in splits["cloning"][split].items() if p in plans}
+
+
+def rescore_split(
+    manifest: pd.DataFrame, items: pd.DataFrame, emb: dict[str, np.ndarray], gt: dict[str, dict[str, Any]], plans: dict[str, dict[str, Any]],
+    members: dict[str, set[str]], models: Sequence[str], require_source: bool = False,
+) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+    """Per-output table of a split with everything that depends on the pool recomputed from the split's own speakers.
+
+    Rows kept: target in the split (and the source too with ``require_source``). Sources may come from either split; their
+    number is reported. Acceptance threshold and ground-truth calibration come from the split speakers' own references
+    (:func:`calibration_stats` on them), top-1 identification ranks only the split speakers. ``manifest`` / ``items`` / ``emb[m]``
+    are row-aligned (``items`` supplies UTMOS and WER counts); ``gt[pool]`` holds ``ref_ids``, ``ref/<m>``, ``content_ids``,
+    ``content/<m>``. Returns ``(table, calibration[pool][model], info)``.
+    """
+    keep = np.zeros(len(manifest), dtype=bool)
+    for pool, spk in members.items():
+        k = (manifest["pool"] == pool).to_numpy() & manifest["target"].isin(spk).to_numpy()
+        if require_source:
+            k &= manifest["source"].isin(spk).to_numpy()
+        keep |= k
+    idx = np.flatnonzero(keep)
+    pools_kept = set(manifest["pool"].to_numpy()[idx])
+    plans = {p: plans[p] for p in members if p in pools_kept}
+    ref_means: dict = {}
+    ref_by: dict = {}
+    gt_c: dict = {}
+    thr: dict = {}
+    cal: dict = {}
+    for pool, plan in plans.items():
+        ref_means[pool], ref_by[pool], gt_c[pool], thr[pool], cal[pool] = {}, {}, {}, {}, {}
+        for m in models:
+            e = dict(zip(gt[pool]["ref_ids"], gt[pool][f"ref/{m}"]))
+            ref_by[pool][m] = e
+            ref_means[pool][m] = {s: mean_unit(np.stack([e[u] for u in r])) for s, r in plan["refs"].items()}
+            gt_c[pool][m] = dict(zip(gt[pool]["content_ids"], gt[pool][f"content/{m}"]))
+            c = calibration_stats({s: np.stack([e[u] for u in plan["refs"][s]]) for s in plan["speakers"] if s in members[pool]})
+            cal[pool][m], thr[pool][m] = c, c["eer_threshold"]
+    sub = manifest.iloc[idx].reset_index(drop=True)
+    it = items.iloc[idx]
+    table = item_table(sub, {m: emb[m][idx] for m in models}, it["utmos"].to_numpy(), list(zip(it["wer_err"], it["wer_len"])), ref_means, ref_by, gt_c, thr,
+                       plans, rank_speakers={p: members[p] for p in plans})
+    if "text" in it:
+        table["text"] = it["text"].to_numpy()
+    sw = table[table["kind"] == "swap"]
+    outside = np.array([r not in members[p] for p, r in zip(sw["pool"], sw["source"])], dtype=bool)
+    info = {"n_swap_rows": int(len(sw)), "n_cross_split_source_rows": int(outside.sum()),
+            "n_cross_split_sources": int(sw["source"][outside].nunique()),
+            "n_split_speakers": {p: len(members[p]) for p in plans}, "calibration_scope": "split speakers"}
+    return table, cal, info
+
+
+def load_split_inputs(out: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, np.ndarray], dict[str, dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """``(manifest, items, emb, gt, plans, meta)`` of a scored output directory, from its stored chunks (no scoring models)."""
+    from sparc.vocoders.eval.io import read_json
+
+    out = Path(out)
+    meta = read_json(out / "meta.json")
+    manifest = pd.read_parquet(out / "manifest.parquet")
+    items = pd.read_parquet(out / "items.parquet")
+    with np.load(out / "scores" / "chunk_0000.npz") as z:  # the chunk size is not recorded: the first chunk is full unless it is the only one
+        chunk_size = len(z["keys"])
+    cat = read_chunks(out, manifest, chunk_size)
+    models = [m for m in ("ecapa", "wavlm_sv", "holdout") if f"emb_{m}" in cat]
+    plans = {p: read_json(out / "plans" / f"{p}.json") for p in meta["pools"]}
+    gt = {}
+    for p in plans:
+        with np.load(out / "scores" / f"gt_{p}.npz") as z:
+            gt[p] = {k: z[k] for k in z.files}
+    return manifest, items, {m: cat[f"emb_{m}"] for m in models}, gt, plans, meta
+
+
+def split_table(out: str | Path, splits: dict[str, Any], split: str, require_source: bool = False) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any], list[str]]:
+    """Rescored per-output table of a scored directory restricted to ``split`` (see :func:`rescore_split`)."""
+    manifest, items, emb, gt, plans, meta = load_split_inputs(out)
+    models = list(emb)
+    table, cal, info = rescore_split(manifest, items, emb, gt, plans, split_members(splits, split, plans), models, require_source)
+    return table, cal, info, models
+
+
 def render_summary(result: dict[str, Any]) -> str:
     """Markdown headline table: per pool and variant, primary model ``sim_target``, top-1, accept, UTMOS, WER."""
     f = lambda c: "n/a" if not c or c.get("mean") is None or not np.isfinite(c["mean"]) else f"{c['mean']:.3f} [{c['lo']:.3f}, {c['hi']:.3f}]"  # noqa: E731
@@ -1372,6 +1468,15 @@ def render_summary(result: dict[str, Any]) -> str:
             a = strata_["all"]["metrics"]
             lines.append(f"| {v} | {f(a.get('ecapa/sim_target'))} | {f(a.get('wavlm_sv/sim_target'))} | {f(a.get('ecapa/top1'))} | {f(a.get('ecapa/accept'))} | "
                          f"{f(a.get('ecapa/sim_source'))} | {f(a.get('utmos'))} | {f(strata_['all']['wer']['corpus'])} |")
+        lines.append("")
+    info = result["meta"].get("split_info") or {}
+    if info:
+        lines += [f"Split `{result['meta'].get('split')}`: {info['n_swap_rows']} swap rows, {info['n_cross_split_source_rows']} with a source from the other split "
+                  f"({info['n_cross_split_sources']} such sources); calibration from the split's own speakers {info['n_split_speakers']}.", ""]
+    for pool, vs in (result.get("stratum_counts") or {}).items():
+        lines += [f"Strata of `{pool}` (items / speakers), per variant:", ""]
+        for v, st in vs.items():
+            lines.append(f"- {v}: " + ", ".join(f"{k} {e['n_items']}/{e['n_speakers']}" for k, e in st.items()))
         lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -1406,7 +1511,7 @@ def run_compare(args: argparse.Namespace) -> dict[str, Any]:
     split = getattr(args, "split", "all")
     if split != "all":  # validation / test speakers only (docs/spkemb_validation_protocol.md); items unchanged
         sp = S.load(args.splits_file)
-        a, b = (S.restrict_items(x, sp, split, args.require_source) for x in (a, b))
+        a, b = (split_table(d, sp, split, args.require_source)[0] for d in (args.a, args.b))
         if args.primary_pool is None:
             args.primary_pool = sp["primary_pool"][split]
         logger.info("split %s: pools %s, %d / %d outputs", split, sorted(set(a["pool"])), len(a), len(b))
@@ -1429,24 +1534,30 @@ def run_compare(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_summarize_split(args: argparse.Namespace) -> dict[str, Any]:
-    """``summarize-split``: re-score a scored output directory (``items.parquet``) on the validation / test speakers of
-    ``docs/spkemb_validation_protocol.md`` without re-synthesis. Writes ``summary_<split>.json`` / ``.md`` next to the
-    original (which is not touched). ``--split all`` reproduces ``summary.json``. Calibration (EER threshold, ground-truth
-    distributions) is carried over from the full-pool summary; top-1 and acceptance in ``items.parquet`` are likewise
-    full-pool quantities."""
+    """``summarize-split``: re-score a scored output directory on the validation / test speakers of
+    ``docs/spkemb_validation_protocol.md`` without re-synthesis (from the stored chunk embeddings). Writes
+    ``summary_<split>.json`` / ``.md`` next to the original (which is not touched). Only swap pairs whose target is in the split
+    are used (sources may come from either split; their number is reported); the acceptance threshold and ground-truth
+    calibration come from the split's own speakers and top-1 ranks only the split's speakers. ``--split all`` reproduces
+    ``summary.json`` from the stored table."""
     from sparc.vocoders.eval import splits as S
     from sparc.vocoders.eval.io import read_json, write_json, write_text
 
     out = Path(args.out)
-    items = pd.read_parquet(out / "items.parquet")
     summ = read_json(out / "summary.json")
     meta = summ["meta"]
     models = meta["models"]
-    sub = S.restrict_items(items, S.load(args.splits_file), args.split, args.require_source)
-    cal = {p: v.get("calibration", {}) for p, v in summ["pools"].items()}
-    result = {"meta": {**meta, "split": args.split, "require_source": bool(args.require_source),
-                       "calibration_scope": "full pool", "bootstrap": {"n_boot": args.n_boot, "seed": args.seed}},
-              "pools": summarize_items(sub, cal, models, n_boot=args.n_boot, seed=args.seed)}
+    info: dict[str, Any] = {}
+    if args.split == "all":
+        sub = pd.read_parquet(out / "items.parquet")
+        cal = {p: v.get("calibration", {}) for p, v in summ["pools"].items()}
+    else:
+        sub, cal, info, models = split_table(out, S.load(args.splits_file), args.split, args.require_source)
+    pools = summarize_items(sub, cal, models, n_boot=args.n_boot, seed=args.seed)
+    result = {"meta": {**meta, "split": args.split, "require_source": bool(args.require_source), "models": models, "split_info": info,
+                       "calibration_scope": "split speakers" if args.split != "all" else "full pool",
+                       "bootstrap": {"n_boot": args.n_boot, "seed": args.seed}},
+              "pools": pools, "stratum_counts": stratum_counts(pools)}
     result = sanitize(result)
     tag = "" if args.split == "all" else f"_{args.split}"
     write_json(out / f"summary_{args.split}.json" if args.split != "all" else Path(args.json or out / "summary_all_rescored.json"), result)
