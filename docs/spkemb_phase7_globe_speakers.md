@@ -72,3 +72,12 @@ not changed.
 - No further arms are added in this phase.
 
 Outputs: `/data/user_data/xoy/spkemb/phase7/{globe_train,packed,eval}`.
+
+## Pool as built (2026-10-28, before any Phase 7 evaluation number)
+
+`globe_spk`: 400 contributors, 1,200 utterances (exactly 3 each; 263 male, 137 female because the female quota ran out;
+13 accent labels, 164 American, 87 South Asian, 69 English), 2 references per contributor in 380+ cases as in the old pool.
+Plan: 400 swaps (3 s bins: 57 / 201 / 137 / 5), 100 own-speaker items. Checks: contributor overlap with the full training
+list, the filtered split and all GLOBE train rows 0; ECAPA cosine >= 0.70 to a pool utterance for 188 of the 228,391
+listed training utterances and 79 of the 114,609 filtered ones (0.07 %, max cosine 0.82; reported only); 755 of the 1,200
+pool utterances are also in the old pseudo-speaker pool.
