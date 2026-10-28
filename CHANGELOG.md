@@ -5,6 +5,12 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Validation / test protocol for speaker-embedding selection (`docs/spkemb_validation_protocol.md`, splits in
+  `docs/spkemb_validation_splits.json`): `eval/splits.py` (split builder, `restrict_items`, `screen_masks`),
+  `clone summarize-split` and `clone compare --split val|test` re-score stored cloning outputs on a speaker subset without
+  re-synthesis (whole-pool re-score reproduces `summary.json` exactly), `ood_report --split` and
+  `precond.heldout_stats(pooled=...)` for the encoder screen. No GLOBE test contributor has 3 utterances, so `globe_spk`
+  is validation-only. Tests in `tests/test_validation_splits.py`.
 - Phase 7 real GLOBE speaker labels (pre-registration `docs/spkemb_phase7_globe_speakers.md`):
   `features/globe_speakers.py` joins the GLOBE manifest with the Common Voice 21 transcript tables
   (`/data/user_data/xoy/common_voice_21_en_meta/`, CC0; `client_id` kept as an opaque hash, integer index

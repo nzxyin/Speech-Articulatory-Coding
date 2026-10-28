@@ -56,11 +56,13 @@ class Pairs:
         return float((1 - tp[k] + fp[k]) / 2)
 
 
-def heldout_stats(X, X1, X2, H, rows=None):
+def heldout_stats(X, X1, X2, H, rows=None, pooled=None):
     """Full value, leave-one-speaker-out replicates and per-speaker values of every metric for one run.
 
     ``H`` holds the Phase 1 arrays; ``rows`` optionally restricts the test rows to a corpus (the ridge probes stay
-    fitted on all non-test rows, as in the harness).
+    fitted on all non-test rows, as in the harness). ``pooled`` (default: ``rows is None``) also computes the whole-set
+    statistics (5-shot identification, M3, F0 PCC); with ``rows`` it restricts them to the selected speakers, which is how a
+    validation / test split of the speakers is scored (``eval/splits.py``).
     """
     Y, logf0, spk, is_te = H["targets"].astype(np.float64), H["logf0"], H["spk"], H["is_te"]
     te = np.where(is_te)[0]
@@ -74,7 +76,8 @@ def heldout_stats(X, X1, X2, H, rows=None):
     Xn = X[te] / (np.linalg.norm(X[te], axis=1, keepdims=True) + 1e-9)
     sp = spk[te]
     sub = np.ones(len(te), bool) if rows is None else rows[te]
-    full_domain = rows is None
+    full_domain = rows is None if pooled is None else bool(pooled)
+    keep_all = np.ones(len(spk), bool) if rows is None else np.asarray(rows, bool)
     E, E1, E2, Xn, sp = E[sub], E1[sub], E2[sub], Xn[sub], sp[sub]
     names = sorted(set(sp))
     si = np.array([names.index(s) for s in sp])
@@ -100,19 +103,20 @@ def heldout_stats(X, X1, X2, H, rows=None):
         Xd = X - np.stack([spk_mean_X[s] for s in spk])
         Yd = Y - np.stack([spk_mean_Y[s] for s in spk])
         g = M.ridge_fit(Xd[~is_te], Yd[~is_te])
-        Pd, Ydt = g(Xd[is_te]), Yd[is_te]
+        Pd, Ydt = g(Xd[is_te])[sub], Yd[is_te][sub]
         ysd_d = Yd[~is_te].std(0) + 1e-9
 
         def m3(keep):
             return M.score(Pd[keep], Ydt[keep], ysd_d)[1]
 
-        s_te = spk[is_te]
+        s_te = spk[is_te][sub]
         mk = lambda s: s_te != names[s]  # noqa: E731
         out["m3"] = (m3(np.ones(len(Pd), bool)), np.array([m3(mk(s)) for s in range(S)]), None)
         # F0 PCC
         ok = np.isfinite(logf0)
         h = M.ridge_fit(X[~is_te & ok], logf0[~is_te & ok, None])
-        ph, th, sf = h(X[is_te & ok])[:, 0], logf0[is_te & ok], spk[is_te & ok]
+        use = is_te & ok & keep_all
+        ph, th, sf = h(X[use])[:, 0], logf0[use], spk[use]
         out["f0"] = (float(np.corrcoef(ph, th)[0, 1]),
                      np.array([np.corrcoef(ph[sf != s], th[sf != s])[0, 1] for s in names]), None)
     return out

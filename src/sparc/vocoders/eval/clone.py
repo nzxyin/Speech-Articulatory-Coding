@@ -1397,10 +1397,21 @@ def run_compare(args: argparse.Namespace) -> dict[str, Any]:
 
     SV models the arm (or the baseline) was trained against (``meta.json`` ``trained_against``) are dropped from the
     decision automatically, in addition to ``--exclude-sv``."""
+    from sparc.vocoders.eval import splits as S
+
     a, meta_a = _load_scored(args.a)
     b, meta_b = _load_scored(args.b)
     pools = sorted(set(a["pool"]) & set(b["pool"]))
     check_same_plans(meta_a, meta_b, pools)
+    split = getattr(args, "split", "all")
+    if split != "all":  # validation / test speakers only (docs/spkemb_validation_protocol.md); items unchanged
+        sp = S.load(args.splits_file)
+        a, b = (S.restrict_items(x, sp, split, args.require_source) for x in (a, b))
+        if args.primary_pool is None:
+            args.primary_pool = sp["primary_pool"][split]
+        logger.info("split %s: pools %s, %d / %d outputs", split, sorted(set(a["pool"])), len(a), len(b))
+    if args.primary_pool is None:
+        args.primary_pool = "libritts"
     models = [m for m in ("ecapa", "wavlm_sv", "holdout") if f"{m}/sim_target" in a and f"{m}/sim_target" in b]
     exclude = sorted({*(args.exclude_sv or ()), *meta_a.get("trained_against", []), *meta_b.get("trained_against", [])})
     if exclude:
@@ -1415,6 +1426,32 @@ def run_compare(args: argparse.Namespace) -> dict[str, Any]:
         Path(args.json).write_text(json.dumps(sanitize(d), indent=2))
     print(text)
     return d
+
+
+def run_summarize_split(args: argparse.Namespace) -> dict[str, Any]:
+    """``summarize-split``: re-score a scored output directory (``items.parquet``) on the validation / test speakers of
+    ``docs/spkemb_validation_protocol.md`` without re-synthesis. Writes ``summary_<split>.json`` / ``.md`` next to the
+    original (which is not touched). ``--split all`` reproduces ``summary.json``. Calibration (EER threshold, ground-truth
+    distributions) is carried over from the full-pool summary; top-1 and acceptance in ``items.parquet`` are likewise
+    full-pool quantities."""
+    from sparc.vocoders.eval import splits as S
+    from sparc.vocoders.eval.io import read_json, write_json, write_text
+
+    out = Path(args.out)
+    items = pd.read_parquet(out / "items.parquet")
+    summ = read_json(out / "summary.json")
+    meta = summ["meta"]
+    models = meta["models"]
+    sub = S.restrict_items(items, S.load(args.splits_file), args.split, args.require_source)
+    cal = {p: v.get("calibration", {}) for p, v in summ["pools"].items()}
+    result = {"meta": {**meta, "split": args.split, "require_source": bool(args.require_source),
+                       "calibration_scope": "full pool", "bootstrap": {"n_boot": args.n_boot, "seed": args.seed}},
+              "pools": summarize_items(sub, cal, models, n_boot=args.n_boot, seed=args.seed)}
+    result = sanitize(result)
+    tag = "" if args.split == "all" else f"_{args.split}"
+    write_json(out / f"summary_{args.split}.json" if args.split != "all" else Path(args.json or out / "summary_all_rescored.json"), result)
+    write_text(out / f"summary{tag or '_all_rescored'}.md", render_summary(result))
+    return result
 
 
 def noise_floor(a: pd.DataFrame, b: pd.DataFrame, pool: str, model: str, variant: str | None, floor: float = 0.02, n_boot: int = 10000, seed: int = 0) -> dict[str, Any]:
@@ -1525,7 +1562,10 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--variant-a", default=None)
     m.add_argument("--variant-b", default=None)
     m.add_argument("--margin", type=float, default=0.02)
-    m.add_argument("--primary-pool", default="libritts")
+    m.add_argument("--primary-pool", default=None, help="default: libritts, or the split's primary pool (libritts_dev for val)")
+    m.add_argument("--split", choices=("all", "val", "test"), default="all", help="restrict both outputs to the validation / test target speakers")
+    m.add_argument("--splits-file", default=None)
+    m.add_argument("--require-source", action="store_true", help="with --split: content speaker must also be in the split")
     m.add_argument("--exclude-sv", nargs="*", default=None, help="extra SV models to leave out (arms trained against wavlm_sv are excluded automatically)")
     m.add_argument("--allow-missing-holdout", action="store_true", help="run without the held-out SV model (loud warning, advance forced False)")
     m.add_argument("--n-boot", type=int, default=10000)
@@ -1541,6 +1581,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--n-boot", type=int, default=10000)
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--json", default=None)
+    ss = sub.add_parser("summarize-split", help="re-score stored outputs on the validation / test speakers (no synthesis)")
+    ss.add_argument("--out", required=True, help="scored output directory (items.parquet, summary.json)")
+    ss.add_argument("--split", choices=("all", "val", "test"), required=True)
+    ss.add_argument("--splits-file", default=None)
+    ss.add_argument("--require-source", action="store_true")
+    ss.add_argument("--n-boot", type=int, default=10000)
+    ss.add_argument("--seed", type=int, default=0)
+    ss.add_argument("--json", default=None, help="with --split all: where to write the re-scored summary (default <out>/summary_all_rescored.json)")
     sb = sub.add_parser("select-baseline", help="best inference variant on the dev pool (held-out-reference sim_target)")
     sb.add_argument("--out", required=True, help="scored B0 output on libritts_dev")
     sb.add_argument("--pool", default="libritts_dev")
@@ -1552,7 +1600,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
     {"plan": run_plan, "synth": run_synth, "score": run_score, "compare": run_compare, "margin": run_margin,
-     "select-baseline": run_select_baseline}[args.cmd](args)
+     "select-baseline": run_select_baseline, "summarize-split": run_summarize_split}[args.cmd](args)
 
 
 if __name__ == "__main__":
