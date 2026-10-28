@@ -122,22 +122,34 @@ def build_manifests(root: Path = ROOT) -> None:
     print(json.dumps(summary, indent=1))
 
 
-GLOBE_TABLE = Path("/data/user_data/xoy/spkemb/phase4/pools/globe/table.parquet")
+POOLS = Path("/data/user_data/xoy/spkemb/phase4/pools")
+GLOBE_TABLE = POOLS / "globe" / "table.parquet"
 
 
-def build_globe_manifest(root: Path = ROOT) -> None:
-    """Out-of-domain set of the precondition checks: the Phase 4 GLOBE pool (400 speakers, 3 utterances each)."""
+def build_globe_manifest(root: Path = ROOT, pool: str = "globe") -> None:
+    """Out-of-domain sets: the Phase 4 GLOBE pool of ECAPA-clustered pseudo-speakers (``globe``) and the Phase 7 pool
+    of real Common Voice contributors (``globe_spk``), 400 speakers with 3 utterances each (set name = pool name)."""
     import pandas as pd
 
-    t = pd.read_parquet(GLOBE_TABLE)
+    t = pd.read_parquet(POOLS / pool / "table.parquet")
     t = t[t["n24"] >= MIN_SAMPLES].copy()
-    g = pd.DataFrame({"id": "globe:" + t["id"].astype(str), "speaker": "globe:" + t["speaker"].astype(str),
+    g = pd.DataFrame({"id": f"{pool}:" + t["id"].astype(str), "speaker": f"{pool}:" + t["speaker"].astype(str),
                       "wav_path": t["wav_path"].astype(str)})
     g = g[g.groupby("speaker")["id"].transform("size") >= 2].reset_index(drop=True)
     g["seed"] = [utterance_seed(i) for i in g["id"]]
-    (root / "globe").mkdir(parents=True, exist_ok=True)
-    g.to_parquet(root / "globe" / "manifest.parquet")
-    print(f"globe: {len(g)} utterances, {g['speaker'].nunique()} speakers")
+    (root / pool).mkdir(parents=True, exist_ok=True)
+    g.to_parquet(root / pool / "manifest.parquet")
+    print(f"{pool}: {len(g)} utterances, {g['speaker'].nunique()} speakers")
+
+
+def build_aug_manifest(root: Path = ROOT) -> None:
+    """``train_aug``: the training utterances again (same order), each with one channel augmentation drawn from its seed."""
+    tr = load_manifest("train", root).copy()
+    tr["id"] = "aug:" + tr["id"].astype(str)
+    tr["seed"] = [utterance_seed(i) for i in tr["id"]]
+    (root / "train_aug").mkdir(parents=True, exist_ok=True)
+    tr.to_parquet(root / "train_aug" / "manifest.parquet")
+    print(f"train_aug: {len(tr)} utterances")
 
 
 def load_manifest(set_name: str, root: Path = ROOT):
@@ -271,7 +283,12 @@ def extract(set_name: str, worker: int, nworkers: int, root: Path = ROOT, limit_
         worst = {"periodicity_maxdiff": 0.0, "l6_cosine_min": 1.0, "padded_utts": 0}
         for r in rows:
             row = man.iloc[r]
-            enc = fx.encode(read_wav24(row["wav_path"]), int(row["seed"]))
+            wav = read_wav24(row["wav_path"])
+            if set_name == "train_aug":
+                from sparc.vocoders.spkscreen.augment import augment
+
+                wav = augment(wav, int(row["seed"]))
+            enc = fx.encode(wav, int(row["seed"]))
             for j, k in enumerate(LAYERS):
                 hid[k].append(enc["hidden"][j])
             aux.append(enc["aux"])
@@ -338,9 +355,11 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("manifest")
-    sub.add_parser("globe-manifest")
+    gm = sub.add_parser("globe-manifest")
+    gm.add_argument("--pool", default="globe", choices=("globe", "globe_spk"))
+    sub.add_parser("aug-manifest")
     e = sub.add_parser("extract")
-    e.add_argument("--set", dest="set_name", choices=("train", "heldout", "globe"), required=True)
+    e.add_argument("--set", dest="set_name", choices=("train", "heldout", "globe", "globe_spk", "train_aug"), required=True)
     e.add_argument("--worker", type=int, default=0)
     e.add_argument("--nworkers", type=int, default=1)
     e.add_argument("--limit-chunks", type=int, default=None)
@@ -350,7 +369,9 @@ def main() -> None:
     if a.cmd == "manifest":
         build_manifests(a.root)
     elif a.cmd == "globe-manifest":
-        build_globe_manifest(a.root)
+        build_globe_manifest(a.root, a.pool)
+    elif a.cmd == "aug-manifest":
+        build_aug_manifest(a.root)
     elif a.cmd == "extract":
         extract(a.set_name, a.worker, a.nworkers, a.root, a.limit_chunks)
     else:

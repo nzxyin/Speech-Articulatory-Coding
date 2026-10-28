@@ -26,6 +26,11 @@ class FrameBatch:
     f0: torch.Tensor
     mel: torch.Tensor | None
     mask: torch.Tensor
+    # provenance of the crops (set by ``FrameSet.batch``): lets a module read the waveform of the same crop
+    set_name: str = ""
+    utt: np.ndarray | None = None
+    start: np.ndarray | None = None
+    length: np.ndarray | None = None
 
     @property
     def lengths(self) -> torch.Tensor:
@@ -43,6 +48,7 @@ class FrameSet:
         self.speakers = np.asarray(speakers).astype(str)
         self.targets, self.logf0 = np.asarray(targets, np.float32), np.asarray(logf0, np.float64)
         self.ids = ids if ids is not None else [str(i) for i in range(len(lens))]
+        self.name = ""
         self.device = aux.device
         self.n = len(self.lens)
         total = int(self.lens.sum())
@@ -80,7 +86,8 @@ class FrameSet:
             if self.mel is None:
                 raise ValueError("mel frames were not loaded")
             mel = self.mel[idx].float() * mask[..., None]
-        return FrameBatch(hid, aux[..., 0], aux[..., 1], aux[..., 2], aux[..., 3], mel, mask)
+        return FrameBatch(hid, aux[..., 0], aux[..., 1], aux[..., 2], aux[..., 3], mel, mask, self.name, np.asarray(utt),
+                          np.asarray(start), np.asarray(length))
 
     def full(self, utt: np.ndarray, layers: tuple[int, ...], need_mel: bool = False, max_frames: int | None = None) -> FrameBatch:
         """Whole utterances (optionally only the first ``max_frames`` frames)."""
@@ -108,11 +115,29 @@ def load_set(set_name: str, layers: tuple[int, ...], mel: bool = False, device: 
     if set_name == "heldout":
         p1 = np.load(root / "heldout" / "phase1.npz")
         targets, logf0 = p1["targets"], p1["logf0"]  # Phase 1 definition, read from its files
+    elif set_name == "train_aug":  # augmented copies of the training utterances keep the clean utterances' targets
+        clean = [C.chunk_dir(root, "train", c) for c in range(C.n_chunks(len(man)))]
+        targets = np.concatenate([np.load(d / "targets.npy") for d in clean])
+        logf0 = np.concatenate([np.load(d / "logf0.npy") for d in clean])
     else:
         targets, logf0 = cat("targets.npy"), cat("logf0.npy")
     fs = FrameSet(hidden, aux, melt, lens, man["speaker"].values, targets, logf0, list(man["id"]))
+    fs.name = set_name
     if set_name == "heldout":
         fs.is_test = man["is_test"].values.astype(bool)
         fs.en_plus = np.load(root / "heldout" / "phase1.npz")["en_plus"]
         fs.own_targets = cat("targets.npy")
+    return fs
+
+
+def concat_sets(a: FrameSet, b: FrameSet) -> FrameSet:
+    """Utterances of ``a`` followed by those of ``b`` (same layers, same device); speaker names are shared."""
+    if a.layers != b.layers or (a.mel is None) != (b.mel is None):
+        raise ValueError("sets differ in loaded layers or mel")
+    hidden = {k: torch.cat([a.hidden[k], b.hidden[k]]) for k in a.layers}
+    mel = None if a.mel is None else torch.cat([a.mel, b.mel])
+    fs = FrameSet(hidden, torch.cat([a.aux, b.aux]), mel, np.concatenate([a.lens, b.lens]),
+                  np.concatenate([a.speakers, b.speakers]), np.concatenate([a.targets, b.targets]),
+                  np.concatenate([a.logf0, b.logf0]), a.ids + b.ids)
+    fs.name = f"{a.name}+{b.name}"
     return fs

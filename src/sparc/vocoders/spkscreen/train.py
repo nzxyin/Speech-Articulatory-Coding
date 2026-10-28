@@ -181,12 +181,21 @@ def main() -> None:
     p.add_argument("--steps", type=int, default=None, help="override the registered 6000 steps (smoke tests only)")
     p.add_argument("--kwargs", default="{}", help="JSON of constructor arguments of the variant")
     p.add_argument("--tag", default=None, help="run directory name (default: the variant name)")
+    p.add_argument("--train-aug", action="store_true", help="train on the clean utterances plus their augmented copies")
     a = p.parse_args()
     if a.variant == "en_plus":
         reference_en_plus(a.root)
         return
     cfg = {"steps": a.steps} if a.steps else None
-    train_variant(a.variant, a.seed, a.root, cfg=cfg, variant_kwargs=json.loads(a.kwargs), tag=a.tag)
+    train = None
+    if a.train_aug:
+        from sparc.vocoders.spkscreen.data import concat_sets
+
+        enc = build(a.variant, **json.loads(a.kwargs))
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        train = concat_sets(load_set("train", enc.layers, enc.needs_mel, dev, a.root),
+                            load_set("train_aug", enc.layers, enc.needs_mel, dev, a.root))
+    train_variant(a.variant, a.seed, a.root, cfg=cfg, variant_kwargs=json.loads(a.kwargs), tag=a.tag, train=train)
 
 
 if __name__ == "__main__":
