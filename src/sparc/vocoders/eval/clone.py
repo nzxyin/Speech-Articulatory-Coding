@@ -936,7 +936,11 @@ class RefConditions:
         enc = self.encoder()
         if cond.startswith("len"):
             seconds = float(cond[3:])
-            clip = np.concatenate([self._audio(u) for u in ids])[: int(seconds * SAMPLE_RATE)]
+            cat = np.concatenate([self._audio(u) for u in ids])
+            clip = cat[: int(seconds * SAMPLE_RATE)]
+            if not np.any(clip):  # GLOBE clips can open with > 1 s of digital silence: start at the first non-zero sample instead
+                nz = np.flatnonzero(cat)
+                clip = cat[int(nz[0]) :][: int(seconds * SAMPLE_RATE)] if len(nz) else clip
             return [enc.encode(clip, utterance_seed(f"{ids[0]}|{cond}"))]
         if cond == "noisy":
             encs = []

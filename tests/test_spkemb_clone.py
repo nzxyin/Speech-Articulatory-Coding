@@ -882,3 +882,23 @@ def test_rescore_split_all_speakers_reproduces_full_table_and_require_source():
     mem = set(spk[:5])
     t2, _, i2 = clone.rescore_split(manifest, full, {"ecapa": emb}, gt, {"fake": plan}, {"fake": mem}, ["ecapa"], require_source=True)
     assert set(t2["source"]) <= mem and i2["n_cross_split_source_rows"] == 0
+
+
+def test_length_condition_skips_leading_digital_silence():
+    rc = clone.RefConditions.__new__(clone.RefConditions)
+    audio = {"a": np.concatenate([np.zeros(30000), np.full(40000, 0.5)]).astype(np.float32), "b": np.full(10000, 0.25, dtype=np.float32)}
+    seen = []
+
+    class Enc:
+        def encode(self, clip, seed):
+            seen.append(clip)
+            return {}
+
+    rc._audio = lambda u: audio[u]
+    rc._enc = Enc()
+    rc.encoder = lambda: rc._enc
+    rc._encode("len1", ["a", "b"])  # first second is all zeros: the clip starts at the first non-zero sample
+    assert len(seen[-1]) == SAMPLE_RATE and np.abs(seen[-1]).max() == 0.5
+    audio["a"] = np.concatenate([np.full(100, 0.5), np.zeros(40000)]).astype(np.float32)
+    rc._encode("len1", ["a", "b"])  # normal case unchanged: the first second as before
+    assert np.array_equal(seen[-1], np.concatenate([audio["a"], audio["b"]])[:SAMPLE_RATE])
