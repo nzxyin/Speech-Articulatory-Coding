@@ -7,9 +7,9 @@ Usage::
 
 Writes ``<run>/seed<s>/<set>_embeddings.npz`` (``full``, ``s1``, ``s2``; ``heldout`` writes the trainer's own
 ``embeddings.npz`` name only for the centered runs). Centering (variant 5): the pooled layer-6 vector of every utterance
-has its evaluation corpus's mean (over all utterances of that corpus in the cache set, no labels) subtracted and the
-training-set mean added back before the baseline FFN; the corpora are LibriTTS-R (dev + test), VCTK, ``globe``,
-``globe_spk``. The 1 s and 2 s embeddings use the same full-utterance corpus mean.
+has its group's mean (no labels) subtracted and the training-set mean added back before the baseline FFN. Groups are
+(corpus, probe-fit / validation / test) so a mean never mixes splits (Amendment 2 of docs/spkemb_ood_screen.md); the
+corpora are LibriTTS-R (dev + test), VCTK, ``globe``, ``globe_spk``. The 1 s and 2 s embeddings use the same full-utterance corpus mean.
 """
 
 import argparse
@@ -45,8 +45,25 @@ def ffn_all(enc, V: np.ndarray, dev) -> np.ndarray:
     return enc.ffn(torch.as_tensor(V, device=dev)).float().cpu().numpy()
 
 
-def centered_embeddings(enc, fs, dev) -> dict:
-    corp = corpus_of(fs.speakers)
+def center_groups(speakers: np.ndarray, splits: dict, set_name: str) -> np.ndarray:
+    """Centering group per utterance: ``<corpus>/<fit|val|test>``. The mean is never shared across splits (Amendment 2).
+
+    Held-out rows: scored LibriTTS-R and VCTK (cloning) speakers are ``val`` / ``test``, every other speaker is the probe-fit
+    group. GLOBE sets: the validation / test lists of ``splits['screen']`` (any speaker in neither: ``fit``)."""
+    from sparc.vocoders.eval import splits as SP
+
+    corp = corpus_of(speakers)
+    if set_name == "heldout":
+        m = SP.screen_scored(speakers, splits)
+        grp = np.where(m["val"], "val", np.where(m["test"], "test", "fit"))
+    else:
+        grp = np.where(SP.screen_masks(speakers, splits, "val", set_name), "val",
+                       np.where(SP.screen_masks(speakers, splits, "test", set_name), "test", "fit"))
+    return np.array([f"{c}/{g}" for c, g in zip(corp, grp)])
+
+
+def centered_embeddings(enc, fs, dev, splits: dict, set_name: str) -> dict:
+    corp = center_groups(fs.speakers, splits, set_name)
     full = pooled_all(enc, fs)
     out = {}
     for key, mf in (("full", None), ("s1", 50), ("s2", 100)):
@@ -67,6 +84,9 @@ def main() -> None:
     p.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     p.add_argument("--root", type=Path, default=C.ROOT)
     a = p.parse_args()
+    from sparc.vocoders.eval import splits as SP
+
+    splits = SP.load(None)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # "<run>:<architecture>" embeds the run directory <run> with another variant's architecture (ood_aug:baseline)
     jobs = [(v.partition(":")[2] or v.partition(":")[0], v.partition(":")[0], False) for v in a.variants]
@@ -84,7 +104,7 @@ def main() -> None:
                 d = a.root / "runs" / dst / f"seed{s}"
                 d.mkdir(parents=True, exist_ok=True)
                 if center:
-                    emb = centered_embeddings(enc, fs, dev)
+                    emb = centered_embeddings(enc, fs, dev, splits, st)
                 else:
                     emb = {"full": embed_all(enc, fs), "s1": embed_all(enc, fs, 50), "s2": embed_all(enc, fs, 100)}
                 name = "embeddings.npz" if (st == "heldout") else f"{st}_embeddings.npz"

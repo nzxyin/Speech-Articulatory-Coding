@@ -2,7 +2,8 @@
 
 Usage: ``python -m sparc.vocoders.spkscreen.ood_report --out <dir> [--split val|test]`` writes ``ood.json`` and ``ood.md``
 there (``ood_val.*`` / ``ood_test.*`` with ``--split``). ``--split`` restricts every statistic to the validation or test
-speakers of ``docs/spkemb_validation_protocol.md`` (``eval/splits.py``; probes stay fitted on the same non-test rows). A
+speakers of ``docs/spkemb_validation_protocol.md`` (``eval/splits.py``; Amendment 2: probes are fitted on the held-out speakers in neither split, VCTK scored speakers are the
+40 cloning speakers). A
 corpus without speakers in the split (GLOBE real speakers have no test split) is skipped and the out-of-domain statistic
 then uses the remaining corpus alone. Variants are selected on ``--split val`` only; ``test`` reports the chosen one.
 
@@ -64,13 +65,17 @@ def main() -> None:
     a = p.parse_args()
     root = a.root
     H = P.load_heldout(root)
+    sp = SP.load(a.splits_file)
+    scored = SP.screen_scored(H["spk"], sp)
+    # Amendment 2: probes are fitted on the speakers in neither split; "is_te" marks the scored (validation + test) rows
+    H = {**H, "is_te": scored["val"] | scored["test"]}
+    assert not (SP.probe_fit_mask(H["spk"], sp) & H["is_te"]).any()
     corp = np.array([s.split(":")[0].replace("libri_dev", "libri").replace("libri_test", "libri") for s in H["spk"]])
     rows = {"all": None, "libri": corp == "libri", "vctk": corp == "vctk"}
     pools = {n: load_pool(root, n) for n in ("globe_spk", "globe")}
     pool_masks = {n: None for n in pools}
     if a.split != "all":
-        sp = SP.load(a.splits_file)
-        sm = SP.screen_masks(H["spk"], sp, a.split, "heldout")
+        sm = scored[a.split]
         rows = {dn: (sm if r is None else r & sm) for dn, r in rows.items()}
         pool_masks = {n: SP.screen_masks(G["spk"], sp, a.split, n) for n, G in pools.items()}
         rows = {dn: r for dn, r in rows.items() if r.sum()}

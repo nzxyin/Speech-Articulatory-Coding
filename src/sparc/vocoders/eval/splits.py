@@ -66,7 +66,7 @@ def build(phase4: str | Path = PHASE4, screen_root: str | Path | None = None, se
     from sparc.vocoders.spkscreen import cache as C
 
     phase4, screen_root = Path(phase4), Path(screen_root or C.ROOT)
-    plans = {p: json.loads((phase4 / "plans" / f"{p}.json").read_text()) for p in ("libritts", "libritts_dev", "vctk", "globe", "globe_spk")}
+    plans = {p: json.loads((phase4 / "plans" / f"{p}.json").read_text()) for p in ("libritts", "libritts_dev", "vctk", "globe", "globe_spk", "globe_spk_test")}
     info = parse_vctk_speaker_info(Path(vctk_info).read_text())
     clone_vctk = sorted(plans["vctk"]["speakers"])
     vctk_assign = halve({g: [s for s in clone_vctk if info[s][0] == g] for g in ("F", "M")}, seed)
@@ -79,7 +79,7 @@ def build(phase4: str | Path = PHASE4, screen_root: str | Path | None = None, se
     vctk_assign.update(halve({g: [s for s in rest if info[s][0] == g] for g in ("F", "M")}, seed))
 
     globe_assign = {}
-    for pool in ("globe", "globe_spk"):
+    for pool in ("globe", "globe_spk", "globe_spk_test"):
         tab = pd.read_parquet(phase4 / "pools" / pool / "table.parquet")
         globe_assign[pool] = globe_speaker_splits(tab)
     cloning: dict[str, dict] = {s: {} for s in SPLIT_NAMES}
@@ -87,7 +87,7 @@ def build(phase4: str | Path = PHASE4, screen_root: str | Path | None = None, se
     cloning["test"]["libritts"] = sorted(plans["libritts"]["speakers"])
     for s in SPLIT_NAMES:
         cloning[s]["vctk"] = sorted(x for x in clone_vctk if vctk_assign[x] == s)
-        for pool in ("globe", "globe_spk"):
+        for pool in ("globe", "globe_spk", "globe_spk_test"):
             cloning[s][pool] = sorted(x for x in plans[pool]["speakers"] if globe_assign[pool][x] == s)
     screen: dict[str, dict] = {s: {"heldout": [], "globe": [], "globe_spk": []} for s in SPLIT_NAMES}
     te = set(man.loc[man["is_test"].astype(bool), "speaker"])
@@ -105,10 +105,9 @@ def build(phase4: str | Path = PHASE4, screen_root: str | Path | None = None, se
         "version": 1, "seed": seed, "rule": __doc__.split("\n\n")[1].strip(),
         "primary_pool": {"val": "libritts_dev", "test": "libritts"},
         "cloning": cloning, "screen": screen,
-        "notes": {"globe_spk_test": "unavailable: no GLOBE test contributor has 3 utterances (max 2; 1318 have exactly 2, 1092 of "
-                  "them with both >= 3 s), so the Phase 7 pool rules (>= 3 utterances, 2 references) select only dev contributors "
-                  "(738 eligible; the 400 pool speakers are all dev). A test real-speaker pool needs a relaxed rule (1 reference, "
-                  "swap items only) and is not built.",
+        "notes": {"globe_spk_test": "real GLOBE test contributors with exactly 2 utterances of >= 3 s each (no test contributor has 3): relaxed "
+                  "rule, 1 reference + 1 content utterance per speaker, swap items only (no own-speaker items), 400 speakers stratified by "
+                  "gender and accent; the real-speaker GLOBE test pool of the cloning protocol (pool `globe_spk_test`, not part of the screen)",
                   "globe_test_fallback": "the pseudo-speaker pool `globe` has 30 test speakers (ECAPA-clustered, descriptive only)"},
         "vctk_all": {k: v for k, v in sorted(vctk_assign.items())}, "vctk_unassigned": unassigned,
     }
@@ -140,6 +139,27 @@ def restrict_items(items: pd.DataFrame, splits: dict, split: str, require_source
 def screen_masks(speakers: np.ndarray, splits: dict, split: str, key: str) -> np.ndarray:
     """Boolean mask over an array of screen speaker names (``key``: ``heldout`` / ``globe`` / ``globe_spk``)."""
     return np.isin(np.asarray(speakers).astype(str), splits["screen"][split][key])
+
+
+def screen_scored(speakers: np.ndarray, splits: dict) -> dict[str, np.ndarray]:
+    """Scored held-out speakers of the encoder screen per split (OOD screen, Amendment 2).
+
+    LibriTTS-R: the screen lists (``libri_dev:*`` validation, ``libri_test:*`` test). VCTK: the 40 cloning-evaluation speakers
+    (``cloning.vctk``, 20 per split), not the screen's own VCTK lists (half of those are in the vocoder's training data).
+    Returns boolean masks over ``speakers`` for ``val`` and ``test``; the probe-fit rows are the complement of both."""
+    sp = np.asarray(speakers).astype(str)
+    out = {}
+    for s in SPLIT_NAMES:
+        names = {n for n in splits["screen"][s]["heldout"] if n.startswith("libri")}
+        names |= {f"vctk:{x}" for x in splits["cloning"][s]["vctk"]}
+        out[s] = np.isin(sp, sorted(names))
+    return out
+
+
+def probe_fit_mask(speakers: np.ndarray, splits: dict) -> np.ndarray:
+    """Held-out rows whose speaker is in neither the validation nor the test split (the only rows probes are fitted on)."""
+    m = screen_scored(speakers, splits)
+    return ~(m["val"] | m["test"])
 
 
 def counts(splits: dict) -> dict:

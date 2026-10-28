@@ -111,34 +111,11 @@ variants, 95% intervals, M3 limit 0.05) is unchanged.
 * The all-speaker report (`ood.md`, no `--split`) is not produced as a decision table.
 * The caveat above stands: a promising variant is a candidate for a vocoder run only.
 
-## Results (2026-10-28; selection on validation speakers per Amendment 1)
+## Results of the Amendment 1 scoring (superseded)
 
-Full tables: `/data/user_data/xoy/spkemb/encoder_screen/ood/summary.md` (`ood_val.*`, `ood_test.*`; `python -m
-sparc.vocoders.spkscreen.ood_report --out <dir> --split val|test`). All 3 seeds of every variant; nothing retrained for this
-scoring (the `ood_sv_l6` GLOBE embeddings were produced from its finished encoders).
-
-Validation speakers (LibriTTS-R 13, VCTK 19, GLOBE real 400, GLOBE pseudo 370). OOD M1 gain over the baseline (positive =
-better), 95% interval, Holm p; gain over the control; M3 change:
-
-| variant | OOD M1 gain [95% CI] | p (Holm) | gain vs control [95% CI] | M3 change | promising |
-|---|---|---|---|---|---|
-| BiGRU + conv head, mean pooling | -0.031 [-0.038, -0.024] | 0.000 | -0.016 | -0.085 | no |
-| BiGRU + conv head, attentive pooling | -0.030 [-0.037, -0.023] | 0.000 | -0.016 | -0.108 | no |
-| frozen speaker-verification embedding alone | -0.068 [-0.089, -0.048] | 0.000 | - | -0.186 | no |
-| layer-6 mean + verification embedding | +0.004 [-0.001, +0.008] | 0.087 | +0.002 [-0.005, +0.008] | -0.007 | no |
-| per-corpus centering | -0.045 [-0.058, -0.032] | 0.000 | - | +0.001 | no |
-| channel augmentation | +0.006 [+0.001, +0.011] | 0.035 | - | +0.017 | **yes** |
-
-Selected on validation: channel augmentation only. Test speakers (LibriTTS-R 10, VCTK 19, GLOBE pseudo 30; no real-speaker
-GLOBE test set exists, so the test OOD statistic is VCTK alone): baseline VCTK M1 0.911, augmentation 0.911; the
-confirmation difference is +0.0003 [-0.013, +0.014] (not confirmed); GLOBE pseudo M1 1.501 vs 1.479 (descriptive,
-30 speakers). Transparency table of all variants on test is in `summary.md` (not used for selection).
-
-Caveats: the augmentation gain on validation comes from GLOBE real speakers (M1 1.182 -> 1.167) while VCTK validation M1 is
-slightly worse (0.868 -> 0.871); its interval is narrow only because 400 GLOBE speakers carry the OOD mean. Selection never
-sees a pool beyond VCTK's 19 speakers in the second corpus, so the test check has little power. Hypothesis, not tested:
-the speaker-verification inputs trade away content leakage (M3 falls 0.19) and in-domain M1 for EER, which M1 does not reward.
-The proxy caveat above stands: this is at most a candidate for a vocoder run.
+The first validation scoring (probes fitted on every non-test held-out row, centering means over the whole corpus, 19 + 19
+screen VCTK speakers) selected channel augmentation only (OOD M1 gain +0.006, Holm p 0.035). It is superseded by the clean
+re-scoring below; its tables are kept in `/data/user_data/xoy/spkemb/encoder_screen/ood/summary.md`.
 
 ## Amendment 2 (2026-10-28): clean validation scoring (probe-fit speakers, centering statistics, VCTK speakers)
 
@@ -173,3 +150,47 @@ limit 0.05) is unchanged.
 
 Selection on validation (`ood_report --split val`) and the baseline plus selected variants on test (`--split test`) follow
 Amendment 1. The all-variants test table is labelled "not used for selection".
+
+
+## Results of the clean re-scoring (Amendment 2; scored after commit 44abf5e, 2026-10-28 16:48)
+
+Outputs `/data/user_data/xoy/spkemb/encoder_screen/ood_clean/ood_{val,test}.{md,json}` (written 16:51-16:53, after the
+amendment commit). `ood_center` re-embedded with split-wise centering means; no encoder retrained.
+
+Validation speakers (LibriTTS-R dev-clean 13, VCTK cloning-validation 20, GLOBE real 400, GLOBE pseudo 370). OOD M1 gain
+over the baseline (positive = better), Holm over six variants, gain over the control, M3 change:
+
+| variant | OOD M1 gain [95% CI] | p (Holm) | gain vs control [95% CI] | M3 change | promising |
+|---|---|---|---|---|---|
+| BiGRU + conv head, mean pooling | -0.0277 [-0.0346, -0.0208] | 0.000 | -0.0132 [-0.0178, -0.0086] | -0.090 | no |
+| BiGRU + conv head, attentive pooling | -0.0276 [-0.0342, -0.0210] | 0.000 | -0.0131 [-0.0201, -0.0062] | -0.107 | no |
+| frozen speaker-verification embedding alone | -0.0699 [-0.0862, -0.0535] | 0.000 | (baseline) | -0.181 | no |
+| layer-6 mean + verification embedding | -0.0004 [-0.0053, +0.0044] | 0.860 | -0.0058 [-0.0119, +0.0004] | -0.015 | no |
+| per-corpus centering | -0.0328 [-0.0432, -0.0225] | 0.000 | (baseline) | +0.004 | no |
+| channel augmentation | +0.0061 [+0.0019, +0.0104] | 0.014 | (baseline) | +0.016 | **yes** |
+
+Selected on validation: channel augmentation only (same conclusion as Amendment 1, now with clean fitting and statistics).
+
+Test speakers (LibriTTS-R test-clean 10, VCTK cloning-test 20, GLOBE pseudo 30; no GLOBE real-speaker test set, so the test
+OOD statistic is VCTK alone). Baseline and the selected variant:
+
+| system | LibriTTS-R M1 | VCTK M1 | GLOBE pseudo M1 (descriptive) | VCTK EER % | M3 |
+|---|---|---|---|---|---|
+| baseline | 0.877 | 0.909 | 1.515 | 4.8 | 0.381 |
+| channel augmentation | 0.876 | 0.904 | 1.494 | 4.6 | 0.396 |
+
+Confirmation of augmentation on test VCTK: +0.0044 [-0.0052, +0.0140], not confirmed.
+
+All variants on test speakers, **not used for selection** (VCTK M1 / GLOBE pseudo M1 / M3; OOD gain = VCTK gain, 95% CI):
+
+| variant | VCTK M1 | GLOBE pseudo M1 | M3 | OOD M1 gain [95% CI] |
+|---|---|---|---|---|
+| BiGRU + conv head, mean pooling | 0.951 | 1.540 | 0.285 | -0.0424 [-0.0587, -0.0261] |
+| BiGRU + conv head, attentive pooling | 0.944 | 1.526 | 0.263 | -0.0356 [-0.0486, -0.0225] |
+| frozen speaker-verification embedding alone | 0.950 | 1.557 | 0.188 | -0.0415 [-0.0672, -0.0157] |
+| layer-6 mean + verification embedding | 0.911 | 1.507 | 0.364 | -0.0024 [-0.0097, +0.0049] |
+| per-corpus centering | 0.966 | 1.521 | 0.383 | -0.0571 [-0.0829, -0.0314] |
+| channel augmentation | 0.904 | 1.494 | 0.396 | +0.0044 [-0.0052, +0.0140] |
+
+Change from Amendment 1: the augmentation gain on validation is +0.0061 (before +0.0060); per-corpus centering is worse
+(-0.033, was -0.045) with split-wise means. The proxy caveat stands: at most a candidate for a vocoder run.

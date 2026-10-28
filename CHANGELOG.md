@@ -5,6 +5,10 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Out-of-domain screen, clean validation scoring (`docs/spkemb_ood_screen.md`, Amendment 2): probes fitted only on held-out
+  speakers in neither split (`splits.screen_scored`, `splits.probe_fit_mask`), VCTK scored speakers are the 40 cloning
+  speakers, `ood_center` means taken per (corpus, fit / validation / test) group (`ood_embed.center_groups`); all variants
+  re-scored, tests in `tests/test_spkscreen_ood_clean_scoring.py`.
 - Out-of-domain encoder screen re-scored with selection on validation speakers (`docs/spkemb_ood_screen.md`, Amendment 1
   and Results): all six variants scored with `ood_report --split val|test`; only channel augmentation passes the rule on
   validation, and it is not confirmed on test (VCTK). `ood_embed` accepts `<run>:<architecture>`; tests in
