@@ -358,7 +358,7 @@ def select_choice(rows: pd.DataFrame) -> tuple[dict[str, Any], pd.DataFrame]:
 
 def run_select(args: argparse.Namespace) -> None:
     out = Path(args.out)
-    rows = pd.concat([pd.read_parquet(p) for p in sorted((out / "sweep").glob("rows_shard*.parquet"))], ignore_index=True)
+    rows = pd.concat([pd.read_parquet(p) for p in sorted((out / "sweep").glob("rows_*_shard*.parquet"))], ignore_index=True)
     choice, tab = select_choice(rows)
     choice["n_items"] = {p: int(g["own_id"].nunique()) for p, g in rows.groupby("pool")}
     (out / "choice.json").write_text(json.dumps(choice, indent=2))
