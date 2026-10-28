@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Out-of-domain gap diagnosis (`vocoders/eval/ood_gap.py`, `docs/spkemb_ood_gap.md`): own-speaker resynthesis with the standard code, an oracle code, and test-time code fitting on the references or on the target utterance (steps and learning rate tuned on a LibriTTS-R dev set), against ground truth, on LibriTTS-R, VCTK and GLOBE subsets; speaker-level bootstrap summaries.
 - Cloning split scoring from the split's own speakers (`clone.rescore_split`, `split_table`): `summarize-split` and
   `compare --split` rebuild the per-output table from stored embeddings, with the acceptance threshold and ground-truth
   calibration from the split's speakers, top-1 ranked among the split's speakers, only swaps whose target is in the split
