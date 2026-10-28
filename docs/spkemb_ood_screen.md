@@ -139,3 +139,37 @@ slightly worse (0.868 -> 0.871); its interval is narrow only because 400 GLOBE s
 sees a pool beyond VCTK's 19 speakers in the second corpus, so the test check has little power. Hypothesis, not tested:
 the speaker-verification inputs trade away content leakage (M3 falls 0.19) and in-domain M1 for EER, which M1 does not reward.
 The proxy caveat above stands: this is at most a candidate for a vocoder run.
+
+## Amendment 2 (2026-10-28): clean validation scoring (probe-fit speakers, centering statistics, VCTK speakers)
+
+Written and committed before any new scoring job. A review of the Amendment 1 scoring found three places where validation
+selection was not clean; the numbers in "Results" above are superseded by the re-scoring below and must not be used for
+selection. Nothing is retrained: the trained encoders are unchanged; only `ood_center` is re-embedded (it needs new centering
+statistics) and every variant is re-scored. The selection rule (three conditions, Holm over six variants, 95% intervals, M3
+limit 0.05) is unchanged.
+
+1. **Probe-fit speakers are disjoint from scored speakers.** The ridge probes of M1, M3 and F0 were fitted on every held-out
+   row that was not a Phase 1 test speaker, and that set contained VCTK validation speakers that are then scored. Now the
+   screen defines its scored speakers as the validation and test speakers (item 3) and fits every probe on the held-out
+   speakers in **neither** split (LibriTTS-R dev/test-clean speakers outside the 13 + 10 scored ones, and VCTK speakers
+   outside the 40 cloning speakers, including p280). The probe's target scale (per-channel std) comes from the same fit
+   rows. GLOBE: no GLOBE speaker has cached screen features other than the scored pools (`globe_spk`, `globe`), the screen's
+   training speakers are LibriTTS-R train-clean-100 only and their embeddings are not stored (re-embedding them would also
+   give a probe fitted on the encoder's own training speakers). GLOBE sets are therefore scored with the same probe, fitted on
+   the held-out LibriTTS-R / VCTK fit speakers, which contains no GLOBE speaker; the probe is never fitted on a scored speaker.
+   A unit test checks that the fit set is disjoint from the validation and the test speakers.
+2. **Centering statistics (`ood_center`) never mix splits.** The per-corpus mean used to be taken over every utterance of the
+   corpus in the cache set, test speakers included. Now it is taken per (corpus, group) with group in {probe-fit, validation,
+   test}: validation speakers are centered with the mean over validation utterances of that corpus only, test speakers with
+   the mean over test utterances only, probe-fit speakers with the mean over fit utterances. The design still needs the
+   target corpus's own mean (unlabeled audio of the evaluation split); it never crosses splits. GLOBE real speakers are all
+   validation; `globe` pseudo-speakers are split by the validation/test lists.
+3. **VCTK scored speakers are the 40 cloning-evaluation speakers** (20 validation / 20 test, the cloning protocol's
+   gender-balanced split in `docs/spkemb_validation_splits.json`). The previous screen split used 19 + 19 VCTK speakers, 19
+   of which are in the vocoder's VCTK training data. The 21 cloning speakers that were Phase 1 probe-fit speakers now move
+   into the scored sets and the 20 non-cloning Phase 1 test speakers become probe-fit speakers. Split-file contents are
+   unchanged (`screen_scored` in `eval/splits.py` derives the screen's scored speakers from `cloning.vctk` and the
+   LibriTTS-R screen lists). Validation SE and degrees of freedom use 20 VCTK speakers (df 19).
+
+Selection on validation (`ood_report --split val`) and the baseline plus selected variants on test (`--split test`) follow
+Amendment 1. The all-variants test table is labelled "not used for selection".
