@@ -1,0 +1,39 @@
+# @package _global_
+# Speaker-embedding Phase 9, arm 2 (docs/spkemb_phase9_k12_inverter.md): the p5_fv recipe (filtered LibriTTS-R + GLOBE v3 + VCTK,
+# 1-8 references, speaker-relative F0, HiFi-GAN, seed 0, 100k generator steps) with the 12 articulatory input channels from
+# the multi-speaker WavLM k12 + BiGRU -> conv 9 inverter (per-speaker z units) and a speaker-code-driven, zero-initialized
+# per-channel scale and offset on those channels (vocoder.generator.ema_denorm). Differs from p5_fv only in data.train_splits,
+# data.val_split, stats_path, inverter.name and vocoder.generator.ema_denorm (and the experiment name).
+# Features: python -m sparc.vocoders.features.inverter_pack extract|merge --inverter all7; statistics: ... inverter_pack stats
+# (LibriTTS-R training splits only).
+experiment_name: p9_all7
+seed: 0
+stats_path: /data/user_data/xoy/spkemb/phase9/packed/stats_all7.json
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+  val_split: /data/user_data/xoy/spkemb/phase9/packed/all7/dev.clean
+  train_splits:
+    - /data/user_data/xoy/spkemb/phase9/packed/all7/train.clean.100
+    - /data/user_data/xoy/spkemb/phase9/packed/all7/train.clean.360
+    - /data/user_data/xoy/spkemb/phase9/packed/all7/train.other.500
+    - /data/user_data/xoy/spkemb/phase9/packed/all7/globe.train
+    - /data/user_data/xoy/spkemb/phase9/packed/all7/vctk.train
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  n_refs: [1, 8]
+  rel_f0:
+    enabled: true
+inverter:
+  name: all7
+vocoder:
+  generator:
+    pitch_mode: log_relative
+    ema_denorm: true
