@@ -65,6 +65,11 @@ speaker:
   rel_f0:
     enabled: false        # F0 input as a ratio to the utterance median; the reference's median F0 enters the code
                           # (needs vocoder.generator.pitch_mode=log_relative)
+  # Phase 8 conditioning study: utterance-level statistics added to the speaker code (docs/spkemb_conditioning_screen.md)
+  cond_stats:
+    f0_range: false       # ln-F0 std of the code's references enters the code
+    loudness: off         # source utterance's loudness level: off | added (code only) | moved (code; the frame loudness
+                          # input becomes relative to the utterance level)
 
 predict:           # `sparc-predict`: the split and conditions come from data.predict_split / data.predict_conditions
   ckpt: null       # null: newest loadable checkpoint of the run

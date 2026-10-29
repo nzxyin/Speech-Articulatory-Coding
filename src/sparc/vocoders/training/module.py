@@ -18,17 +18,20 @@ from torch.nn.utils import clip_grad_norm_
 from sparc.vocoders.constants import HOP, SAMPLE_RATE
 from sparc.vocoders.losses.losses import ADVERSARIAL_LOSSES, feature_matching_loss, mr_stft_distance
 from sparc.vocoders.models.frontend import load_stats
-from sparc.vocoders.models.speaker import PitchCode, gaussian_kl, total_correlation
+from sparc.vocoders.models.speaker import PitchCode, StatsCode, gaussian_kl, total_correlation
 from sparc.vocoders.training.callbacks import EVAL_SEED, capture_rng_state, fixed_torch_rng, restore_rng_state
 from sparc.vocoders.training.schedules import WarmupCosine
 from sparc.vocoders.training.speaker_terms import (
     CropSpeakerStats,
     CropSpeakerVerifier,
     build_speaker,
+    cond_stat_vector,
+    cond_stats_config,
     frozen_code,
     identity_loss,
     mix_codes,
     relative_f0_features,
+    relative_loudness_features,
     select_fmaps,
     swap_batch,
 )
@@ -79,6 +82,13 @@ class VocoderGANModule(pl.LightningModule):
         )
         self.pitch_code = PitchCode(stats["logf0_mean"], stats["logf0_std"]) if self.rel_f0 else None
         self.f0_fallback_hz = float(np.exp(stats["logf0_mean"]))
+        # Phase 8 conditioning study: utterance-level statistics added to the speaker code (off by default)
+        self.cond_f0_range, self.cond_loudness = cond_stats_config(spk)
+        self.loud_log_mean, self.loud_log_std = float(stats["loud_log_mean"]), float(stats["loud_log_std"])
+        n_stats = int(self.cond_f0_range) + int(self.cond_loudness != "off")
+        self.stats_code = StatsCode(n_stats) if n_stats else None
+        if n_stats and (self.swap_p > 0 or self.mix_p > 0):
+            raise ValueError("speaker.cond_stats cannot be combined with swap-in-training or code mixing")
         if self.rel_f0 and cfg.vocoder.generator.get("pitch_mode") != "log_relative":
             raise ValueError("speaker.rel_f0.enabled needs vocoder.generator.pitch_mode=log_relative")
         self._tc_pool: torch.Tensor | None = None
@@ -108,6 +118,8 @@ class VocoderGANModule(pl.LightningModule):
     @property
     def generator_parameters(self) -> list[nn.Parameter]:
         extra = [] if self.pitch_code is None else list(self.pitch_code.parameters())
+        if self.stats_code is not None:
+            extra += list(self.stats_code.parameters())
         return list(chain(self.generator.parameters(), self.speaker.parameters(), extra))
 
     def configure_optimizers(self) -> list[torch.optim.Optimizer]:
@@ -127,7 +139,33 @@ class VocoderGANModule(pl.LightningModule):
         z, info = self.speaker.embed(batch["spk_raw"], batch.get("ref_mask"), sample=sample)
         if self.pitch_code is not None:
             z = z + self.pitch_code(batch["ref_f0"].to(z.device))
+        if self.stats_code is not None:
+            self._require_cond_stats(batch)
+            vec = cond_stat_vector(
+                batch, self.cond_f0_range, self.cond_loudness, self.loud_log_mean, self.loud_log_std, z.device
+            )
+            z = z + self.stats_code(vec).to(z.dtype)
         return z, info
+
+    def stats_term(self, ref_f0_std: float, utt_loud: float) -> torch.Tensor:
+        """``[64]`` conditioning-statistics term of the code for one utterance (the code the training batch would get
+        is ``encoder(refs) + pitch term + stats_term``); NaN statistics count as the training mean."""
+        device = next(self.stats_code.parameters()).device
+        batch = {"ref_f0_std": torch.tensor([ref_f0_std]), "utt_loud": torch.tensor([utt_loud])}
+        vec = cond_stat_vector(
+            batch, self.cond_f0_range, self.cond_loudness, self.loud_log_mean, self.loud_log_std, device
+        )
+        return self.stats_code(vec)[0]
+
+    def _require_cond_stats(self, batch: dict[str, Any]) -> None:
+        need = (["ref_f0_std"] if self.cond_f0_range else []) + (["utt_loud"] if self.cond_loudness != "off" else [])
+        missing = [k for k in need if k not in batch]
+        if missing:
+            raise KeyError(
+                f"conditioning-statistics checkpoint: the batch needs {missing} (ref_f0_std: ln-F0 std of the code's "
+                "references, utt_loud: mean ln(loudness + eps) over the source utterance's voiced frames); see "
+                "data.dataset.voiced_logf0_std / voiced_log_loudness"
+            )
 
     def synthesize(
         self, batch: dict[str, Any], z: torch.Tensor | None = None, features: torch.Tensor | None = None
@@ -149,6 +187,9 @@ class VocoderGANModule(pl.LightningModule):
                     "module.speaker_code(batch), not module.speaker.embed (which drops the pitch term)"
                 )
             feats = relative_f0_features(feats, batch["utt_f0"].to(feats.device), self.f0_fallback_hz)
+        if self.cond_loudness == "moved":
+            self._require_cond_stats(batch)
+            feats = relative_loudness_features(feats, batch["utt_loud"].to(feats.device), self.loud_log_mean)
         wav = self.generator(feats, spk)
         expected = (batch["features"].shape[0], 1, batch["features"].shape[-1] * HOP)
         if tuple(wav.shape) != expected:

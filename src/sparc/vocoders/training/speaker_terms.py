@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.func import functional_call
 
-from sparc.vocoders.constants import F0_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.constants import F0_CHANNEL, LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
 from sparc.vocoders.features.spk_phase6 import INPUT_DIMS, P6_LAYERS, input_stats
 from sparc.vocoders.models.speaker import LayerPoolSpeakerEncoder, SpeakerFFN
 
@@ -222,6 +222,55 @@ def relative_f0_features(features: torch.Tensor, utt_f0: torch.Tensor, fallback_
     out = features.clone()
     median = torch.where(torch.isfinite(utt_f0) & (utt_f0 > 0), utt_f0.float(), torch.full_like(utt_f0, fallback_hz))
     out[:, F0_CHANNEL] = features[:, F0_CHANNEL] / median.to(features)[:, None]
+    return out
+
+
+LOUDNESS_MODES = ("off", "added", "moved")
+# ln(f0 std of an utterance / REL_F0_RANGE) is the pitch-range statistic; 0.19 is the pooled std of ln(f0 / utterance
+# median) of the Phase 4 speaker-relative F0 input (models.frontend.REL_LOGF0_STD), so a typical speaker maps near 0.
+REL_F0_RANGE = 0.19
+
+
+def cond_stats_config(speaker) -> tuple[bool, str]:
+    """``(f0_range, loudness)`` of ``speaker.cond_stats``: pitch range of the references added to the code (bool) and the
+    source utterance's loudness level: ``"off"``, ``"added"`` (code only; the frame input keeps absolute loudness) or
+    ``"moved"`` (code, and the frame loudness input becomes relative to the utterance level)."""
+    cfg = speaker.get("cond_stats", {}) or {}
+    f0_range = bool(cfg.get("f0_range", False))
+    loudness = str(cfg.get("loudness", "off")) if cfg.get("loudness", "off") is not False else "off"
+    if loudness not in LOUDNESS_MODES:
+        raise ValueError(f"speaker.cond_stats.loudness must be one of {LOUDNESS_MODES}, got {loudness!r}")
+    return f0_range, loudness
+
+
+def cond_stats_enabled(speaker) -> bool:
+    f0_range, loudness = cond_stats_config(speaker)
+    return f0_range or loudness != "off"
+
+
+def cond_stat_vector(
+    batch: dict, f0_range: bool, loudness: str, loud_log_mean: float, loud_log_std: float, device
+) -> torch.Tensor:
+    """``[B, k]`` normalized statistics for :class:`StatsCode`: ``ln(ref_f0_std / 0.19)`` and
+    ``(utt_loud - loud_log_mean) / loud_log_std``; NaN (no voiced frames) maps to 0, the training mean."""
+    cols = []
+    if f0_range:
+        r = batch["ref_f0_std"].to(device).float()
+        cols.append(torch.where(r > 0, torch.log(r.clamp_min(1e-4) / REL_F0_RANGE), torch.zeros_like(r)))
+    if loudness != "off":
+        level = batch["utt_loud"].to(device).float()
+        cols.append(torch.where(torch.isfinite(level), (level - loud_log_mean) / loud_log_std, torch.zeros_like(level)))
+    return torch.stack(cols, dim=1)
+
+
+def relative_loudness_features(features: torch.Tensor, utt_loud: torch.Tensor, loud_log_mean: float) -> torch.Tensor:
+    """Copy of ``features [B, 15, T]`` whose loudness channel is scaled by ``exp(loud_log_mean - utt_loud)`` so that the
+    frontend's ``(ln(loudness + eps) - loud_log_mean) / std`` becomes ``(ln loudness - utt_loud) / std`` (up to the
+    additive ``eps``): the utterance's loudness level leaves the frame input and travels through the conditioning
+    path. ``utt_loud [B]`` is the mean ``ln(loudness + eps)`` over the utterance's voiced frames (NaN: unchanged)."""
+    out = features.clone()
+    shift = torch.where(torch.isfinite(utt_loud), loud_log_mean - utt_loud.float(), torch.zeros_like(utt_loud).float())
+    out[:, LOUDNESS_CHANNEL] = features[:, LOUDNESS_CHANNEL] * torch.exp(shift).to(features)[:, None]
     return out
 
 

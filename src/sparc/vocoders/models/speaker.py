@@ -189,3 +189,21 @@ class PitchCode(nn.Module):
 
     def forward(self, ref_f0_hz: torch.Tensor) -> torch.Tensor:
         return self.proj(self.normalize(ref_f0_hz))
+
+
+class StatsCode(nn.Module):
+    """Phase 8 conditioning study: additive speaker-code term from utterance-level statistics (like :class:`PitchCode`).
+
+    Maps ``k`` normalized scalars (pitch range of the references, loudness level of the source utterance) through a
+    zero-initialized linear layer to ``out_dim``; the training module adds the result to the encoder's code, so the
+    statistics reach the generator only through its modulation layers (FiLM or AdaLN-zero).
+    """
+
+    def __init__(self, n_stats: int, out_dim: int = SPEAKER_DIM):
+        super().__init__()
+        self.proj = nn.Linear(n_stats, out_dim)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, stats: torch.Tensor) -> torch.Tensor:
+        return self.proj(stats)

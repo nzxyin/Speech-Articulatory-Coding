@@ -19,8 +19,11 @@ from torch.nn.utils import parametrizations, parametrize
 
 from sparc.vocoders.constants import N_FEATURES, SPEAKER_DIM
 from sparc.vocoders.models.base import Vocoder
-from sparc.vocoders.models.film import FiLM
+from sparc.vocoders.models.film import COND_TYPES, AdaLNZero, AdaLNZeroSite, FiLM
 from sparc.vocoders.models.frontend import FeatureFrontend
+
+
+COND_SITES = ("residual", "all")
 
 
 def _weight_norm(conv: nn.Module) -> nn.Module:
@@ -31,6 +34,9 @@ class ResidualFiLMBlock(nn.Module):
     """HiFi-GAN residual block (one kernel size, several dilations) with a speaker FiLM on every residual unit.
 
     Each unit is ``x + FiLM(conv2(lrelu(conv1(lrelu(x)))))`` with ``conv1`` dilated and ``conv2`` undilated.
+    With ``cond_type="adaln_zero"`` (Phase 8 conditioning study) the unit is instead
+    ``x + gate * conv2(lrelu(conv1(lrelu(LN(x) * (1 + scale) + shift))))`` with ``scale, shift, gate`` from the speaker
+    code (:class:`AdaLNZero`, zero-initialized, so every unit starts as the identity).
     """
 
     def __init__(
@@ -40,13 +46,18 @@ class ResidualFiLMBlock(nn.Module):
         dilations: Sequence[int],
         spk_dim: int,
         negative_slope: float,
+        cond_type: str = "film",
     ):
         super().__init__()
+        if cond_type not in COND_TYPES:
+            raise ValueError(f"cond_type must be one of {COND_TYPES}, got {cond_type!r}")
+        self.cond_type = cond_type
         if kernel_size % 2 != 1:
             raise ValueError(f"kernel size must be odd, got {kernel_size}")
         self.convs1 = nn.ModuleList()
         self.convs2 = nn.ModuleList()
-        self.films = nn.ModuleList()
+        self.films = nn.ModuleList()  # empty (no parameters) with adaln_zero
+        self.adas = nn.ModuleList()  # empty with film, so the film state-dict keys are unchanged
         for dilation in dilations:
             self.convs1.append(
                 nn.Sequential(
@@ -68,9 +79,17 @@ class ResidualFiLMBlock(nn.Module):
                     _weight_norm(nn.Conv1d(channels, channels, kernel_size, padding=(kernel_size - 1) // 2)),
                 )
             )
-            self.films.append(FiLM(spk_dim, channels))
+            if cond_type == "film":
+                self.films.append(FiLM(spk_dim, channels))
+            else:
+                self.adas.append(AdaLNZero(spk_dim, channels))
 
     def forward(self, x: torch.Tensor, spk: torch.Tensor) -> torch.Tensor:
+        if self.cond_type == "adaln_zero":
+            for conv1, conv2, ada in zip(self.convs1, self.convs2, self.adas):
+                h, gate = ada(x, spk)
+                x = x + gate * conv2(conv1(h))
+            return x
         for conv1, conv2, film in zip(self.convs1, self.convs2, self.films):
             x = x + film(conv2(conv1(x)), spk)
         return x
@@ -104,8 +123,15 @@ class HiFiGANVocoder(Vocoder):
         kernel_size: int = 7,
         negative_slope: float = 0.1,
         output_negative_slope: float = 0.01,
+        cond_type: str = "film",
+        cond_sites: str = "residual",
     ):
         super().__init__()
+        if cond_type not in COND_TYPES:
+            raise ValueError(f"cond_type must be one of {COND_TYPES}, got {cond_type!r}")
+        if cond_sites not in COND_SITES:
+            raise ValueError(f"cond_sites must be one of {COND_SITES}, got {cond_sites!r}")
+        self.cond_type, self.cond_sites = cond_type, cond_sites
         scales = tuple(int(s) for s in upsample_scales)
         kernels = tuple(int(k) for k in upsample_kernel_sizes)
         block_kernels = tuple(int(k) for k in resblock_kernel_sizes)
@@ -149,17 +175,26 @@ class HiFiGANVocoder(Vocoder):
                 )
             )
             for block_kernel, block_dilations in zip(block_kernels, dilations):
-                self.blocks.append(ResidualFiLMBlock(c_out, block_kernel, block_dilations, spk_dim, negative_slope))
+                self.blocks.append(ResidualFiLMBlock(c_out, block_kernel, block_dilations, spk_dim, negative_slope, cond_type)
+                )
         self.output_conv = nn.Sequential(
             nn.LeakyReLU(output_negative_slope),
             _weight_norm(nn.Conv1d(c_out, 1, kernel_size, padding=(kernel_size - 1) // 2)),
             nn.Tanh(),
         )
+        if cond_sites == "all":  # created last: the other modules' initialization is unchanged
+            site = AdaLNZeroSite if cond_type == "adaln_zero" else FiLM
+            self.site_in = site(spk_dim, channels)
+            self.site_up = nn.ModuleList(site(spk_dim, channels // 2 ** (i + 1)) for i in range(len(scales)))
 
     def forward(self, features: torch.Tensor, spk: torch.Tensor) -> torch.Tensor:
         x = self.input_conv(self.frontend(features).x)
+        if self.cond_sites == "all":
+            x = self.site_in(x, spk)
         for i, upsample in enumerate(self.upsamples):
             x = upsample(x)
+            if self.cond_sites == "all":
+                x = self.site_up[i](x, spk)
             blocks = self.blocks[i * self.num_blocks : (i + 1) * self.num_blocks]
             out = blocks[0](x, spk)
             for block in blocks[1:]:

@@ -14,3 +14,5 @@ generator:
   kernel_size: 7
   negative_slope: 0.1
   output_negative_slope: 0.01
+  cond_type: film          # film | adaln_zero (Phase 8 conditioning study; film is the original behaviour)
+  cond_sites: residual     # residual | all (all adds a zero-initialized modulation after the input conv and every upsampling stage)

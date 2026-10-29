@@ -985,6 +985,25 @@ class RefConditions:
         return out
 
 
+def reference_f0_std(feats_list: Sequence[np.ndarray]) -> float:
+    """``ref_f0_std`` of the conditioning-statistics checkpoints: mean over the references of the std of ln F0 over the
+    voiced frames (as ``CropDataset(cond_stats=True)``); NaN if no reference has 2 voiced frames."""
+    stds = []
+    for f in feats_list:
+        v = f[F0_CHANNEL][voiced(f)]
+        if len(v) > 1:
+            stds.append(float(np.log(v.astype(np.float64)).std()))
+    return float(np.mean(stds)) if stds else math.nan
+
+
+def utterance_log_loudness(feats: np.ndarray) -> float:
+    """``utt_loud``: mean ``ln(loudness + eps)`` over the voiced frames of features ``[15, T]`` (NaN if none)."""
+    m = voiced(feats)
+    if not m.any():
+        return math.nan
+    return float(np.log(np.clip(feats[LOUDNESS_CHANNEL][m].astype(np.float64), 0.0, None) + LOUDNESS_EPS).mean())
+
+
 def code_from_vectors(module, vectors: Sequence[np.ndarray], device, ref_f0: float | None = None) -> np.ndarray:
     """Speaker code ``[64]`` of reference vectors through the module's own multi-reference ``embed``; with a
     speaker-relative-F0 module (``module.pitch_code``) the reference pitch level ``ref_f0`` (Hz) is added, as in
@@ -1049,6 +1068,12 @@ class ItemRenderer:
                 self.stats_cache[sk] = Matching.from_features(match_feats if match_feats is not None else rc.clean_features(it.match_ids))
             feats = apply_matching(feats, self.stats_cache[sk], it.f0, it.loud, it.ema, f0_relative=self.rel_f0)
         batch = {"features": torch.from_numpy(np.ascontiguousarray(feats))[None].to(self.device)}
+        if getattr(self.module, "stats_code", None) is not None:  # Phase 8: utterance-level statistics in the code
+            ref_feats = match_feats if match_feats is not None else rc.clean_features(it.code_ids)
+            utt_loud = utterance_log_loudness(feats)
+            batch["utt_loud"] = torch.tensor([utt_loud], dtype=torch.float32, device=self.device)
+            with torch.inference_mode():
+                z = z + self.module.stats_term(reference_f0_std(ref_feats), utt_loud).float().cpu().numpy()
         if self.rel_f0:  # synthesize divides the F0 channel by the source utterance's median voiced F0
             batch["utt_f0"] = torch.tensor([median_f0_hz(feats)], dtype=torch.float32, device=self.device)
         with torch.inference_mode(), fixed_torch_rng(self.device, EVAL_SEED):

@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 from sparc.vocoders.constants import SAMPLE_RATE
 from sparc.vocoders.data.dataset import CropDataset, FullUtteranceDataset
 from sparc.vocoders.data.sampler import ResumableSampler
+from sparc.vocoders.training.speaker_terms import cond_stats_enabled
 
 LOGGING_STREAM = 0
 VAL_FILL_STREAM = 1
@@ -182,6 +183,8 @@ class VocoderDataModule(L.LightningDataModule):
             kwargs["f0_stats"] = speaker.swap.f0_stats
         if bool(speaker.get("rel_f0", {}).get("enabled", False)):
             kwargs["f0_conditioning"] = True
+        if cond_stats_enabled(speaker):
+            kwargs["cond_stats"] = True
         return kwargs
 
     def train_dataset(self) -> CropDataset:

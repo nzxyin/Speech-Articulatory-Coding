@@ -19,7 +19,14 @@ import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
-from sparc.vocoders.constants import F0_CHANNEL, HOP, LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.constants import (
+    F0_CHANNEL,
+    HOP,
+    LOUDNESS_CHANNEL,
+    LOUDNESS_EPS,
+    PERIODICITY_CHANNEL,
+    SAMPLE_RATE,
+)
 from sparc.vocoders.data.gain import DEFAULT_GAIN_DB_RANGE, apply_gain, gain_factor, sample_gain_db
 from sparc.vocoders.data.sampler import SampleKey
 from sparc.vocoders.features.spk_phase6 import NEEDS_SIDE, P6_LAYERS, P6_ROOT, SideIndex, compose_input
@@ -45,6 +52,22 @@ def median_voiced_f0(feats: np.ndarray) -> float:
     """Median F0 (Hz) over the voiced frames of ``feats [T, 15]``; NaN when there is none."""
     values = voiced_f0(feats)
     return float(np.median(values)) if len(values) else float("nan")
+
+
+def voiced_logf0_std(feats: np.ndarray) -> float:
+    """Standard deviation of ln F0 over the voiced frames of ``feats [T, 15]`` (the utterance's pitch range); NaN if
+    fewer than 2 voiced frames."""
+    values = voiced_f0(feats)
+    return float(np.log(values).std()) if len(values) > 1 else float("nan")
+
+
+def voiced_log_loudness(feats: np.ndarray, loudness: np.ndarray) -> float:
+    """Mean of ``ln(loudness + LOUDNESS_EPS)`` over the voiced frames (the frontend's loudness transform; ``loudness``
+    is the gained loudness ``[T]`` of the same frames as ``feats [T, 15]``); NaN when there is no voiced frame."""
+    voiced = (feats[:, PERIODICITY_CHANNEL] > 0.0) & (feats[:, F0_CHANNEL] > 0.0)
+    if not voiced.any():
+        return float("nan")
+    return float(np.log(np.clip(np.asarray(loudness, dtype=np.float64)[voiced], 0.0, None) + LOUDNESS_EPS).mean())
 
 
 def geometric_mean_f0(values: Sequence[float]) -> float:
@@ -195,6 +218,15 @@ class PackedStore:
     def median_f0(self, utt: int) -> float:
         """Median voiced F0 (Hz) of the whole utterance ``utt``; NaN when it has no voiced frame."""
         return median_voiced_f0(self.frames(utt, 0, int(self.T[utt]))[0])
+
+    def f0_range(self, utt: int) -> float:
+        """Std of ln F0 over the voiced frames of the whole utterance ``utt`` (NaN if there are fewer than 2)."""
+        return voiced_logf0_std(self.frames(utt, 0, int(self.T[utt]))[0])
+
+    def log_loudness(self, utt: int, gain: float) -> float:
+        """Mean ``ln(loudness + eps)`` over the voiced frames of the whole utterance after the linear gain ``gain``."""
+        feats, loud = self.frames(utt, 0, int(self.T[utt]))
+        return voiced_log_loudness(feats, apply_gain(loud, gain))
 
     def speaker_vector(self, utt: int) -> np.ndarray:
         """Pooled speaker vector of ``utt``, float32 (``[2, 25, 1024]`` for ``speaker_layer="layers"``)."""
@@ -392,7 +424,9 @@ class CropDataset(Dataset):
         layer_stats_root: str | Path | None = None,
         f0_stats: str | Path | None = None,
         f0_conditioning: bool = False,
+        cond_stats: bool = False,
     ):
+        self.cond_stats = bool(cond_stats)
         self.store = PackedStore(packed_dirs, speaker_layer, layer_stats_root)
         self.speaker_f0 = None if f0_stats is None else load_speaker_f0(f0_stats, self.store.speakers)
         if self.speaker_f0 is not None:
@@ -479,6 +513,11 @@ class CropDataset(Dataset):
             medians.update({r: store.median_f0(r) for r in refs if r not in medians})
             sample["utt_f0"] = torch.tensor(medians[utt], dtype=torch.float32)
             sample["ref_f0"] = torch.tensor(geometric_mean_f0([medians[r] for r in refs]), dtype=torch.float32)
+        if self.cond_stats:  # Phase 8: utterance-level statistics for the conditioning path (full utterances)
+            ranges = [store.f0_range(r) for r in refs]
+            ranges = [x for x in ranges if np.isfinite(x)]
+            sample["ref_f0_std"] = torch.tensor(float(np.mean(ranges)) if ranges else float("nan"), dtype=torch.float32)
+            sample["utt_loud"] = torch.tensor(store.log_loudness(utt, g), dtype=torch.float32)
         return sample
 
 
@@ -512,12 +551,14 @@ class FullUtteranceDataset(Dataset):
         multi_ref: bool = False,
         layer_stats_root: str | Path | None = None,
         f0_conditioning: bool = False,
+        cond_stats: bool = False,
     ):
         if condition not in CONDITIONS:
             raise ValueError(f"condition must be one of {CONDITIONS}, got {condition!r}")
         self.store = PackedStore([packed_dir], speaker_layer, layer_stats_root)
         self.multi_ref = bool(multi_ref)
         self.f0_conditioning = bool(f0_conditioning)
+        self.cond_stats = bool(cond_stats)
         self.gain_db = float(gain_db)
         self.condition = condition
         chosen = range(len(self.store)) if ids is None else [self.store.index_of(str(i)) for i in ids]
@@ -584,6 +625,12 @@ class FullUtteranceDataset(Dataset):
             ref_medians = [own if int(r) == utt else store.median_f0(int(r)) for r in refs]
             extra["utt_f0"] = torch.tensor(own, dtype=torch.float32)
             extra["ref_f0"] = torch.tensor(geometric_mean_f0(ref_medians), dtype=torch.float32)
+        if self.cond_stats:
+            refs = self.pools[i] if self.condition == "T3" else [ref]
+            ranges = [voiced_logf0_std(feats) if int(r) == utt else store.f0_range(int(r)) for r in refs]
+            ranges = [x for x in ranges if np.isfinite(x)]
+            extra["ref_f0_std"] = torch.tensor(float(np.mean(ranges)) if ranges else float("nan"), dtype=torch.float32)
+            extra["utt_loud"] = torch.tensor(voiced_log_loudness(feats, features[LOUDNESS_CHANNEL]), dtype=torch.float32)
         return {
             **extra,
             "features": torch.from_numpy(features),
