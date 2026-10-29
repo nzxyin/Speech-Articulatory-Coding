@@ -19,11 +19,16 @@ from torch.nn.utils import parametrizations, parametrize
 
 from sparc.vocoders.constants import N_FEATURES, SPEAKER_DIM
 from sparc.vocoders.models.base import Vocoder
-from sparc.vocoders.models.film import COND_TYPES, AdaLNZero, AdaLNZeroSite, FiLM
+from sparc.vocoders.models.film import COND_TYPES, AdaLNZero, AdaLNZeroSite, FiLM, GatedFiLM
 from sparc.vocoders.models.frontend import FeatureFrontend
 
 
 COND_SITES = ("residual", "all")
+# Frame-level contour conditioning (Phase 8): the pitch and loudness channels of the frontend output (smoothed, resampled to
+# each stage's rate) drive a time-varying scale and shift in every residual unit, in addition to ("added") or instead of
+# ("only", the two channels are zeroed in the input convolution's input) their place in the input.
+COND_CONTOURS = ("none", "added", "only")
+CONTOUR_CHANNELS = (12, 13)  # frontend output: ln f0 ratio (pitch) and loudness
 
 
 def _weight_norm(conv: nn.Module) -> nn.Module:
@@ -47,10 +52,13 @@ class ResidualFiLMBlock(nn.Module):
         spk_dim: int,
         negative_slope: float,
         cond_type: str = "film",
+        contour_channels: int = 0,
     ):
         super().__init__()
         if cond_type not in COND_TYPES:
             raise ValueError(f"cond_type must be one of {COND_TYPES}, got {cond_type!r}")
+        if contour_channels and cond_type != "film":
+            raise ValueError("contour conditioning is implemented for cond_type='film' only")
         self.cond_type = cond_type
         if kernel_size % 2 != 1:
             raise ValueError(f"kernel size must be odd, got {kernel_size}")
@@ -58,6 +66,7 @@ class ResidualFiLMBlock(nn.Module):
         self.convs2 = nn.ModuleList()
         self.films = nn.ModuleList()  # empty (no parameters) with adaln_zero
         self.adas = nn.ModuleList()  # empty with film, so the film state-dict keys are unchanged
+        self.contours = nn.ModuleList()  # empty without contour conditioning (no parameters, no state-dict keys)
         for dilation in dilations:
             self.convs1.append(
                 nn.Sequential(
@@ -79,16 +88,32 @@ class ResidualFiLMBlock(nn.Module):
                     _weight_norm(nn.Conv1d(channels, channels, kernel_size, padding=(kernel_size - 1) // 2)),
                 )
             )
-            if cond_type == "film":
-                self.films.append(FiLM(spk_dim, channels))
+            if cond_type in ("film", "film_gate"):
+                self.films.append((FiLM if cond_type == "film" else GatedFiLM)(spk_dim, channels))
             else:
                 self.adas.append(AdaLNZero(spk_dim, channels))
+            if contour_channels:
+                conv = nn.Conv1d(contour_channels, 2 * channels, 1)
+                nn.init.zeros_(conv.weight)
+                nn.init.zeros_(conv.bias)
+                self.contours.append(conv)
 
-    def forward(self, x: torch.Tensor, spk: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, spk: torch.Tensor, contour: torch.Tensor | None = None) -> torch.Tensor:
+        if self.cond_type == "film_gate":
+            for conv1, conv2, film in zip(self.convs1, self.convs2, self.films):
+                h, gate = film(conv2(conv1(x)), spk)
+                x = x + gate * h
+            return x
         if self.cond_type == "adaln_zero":
             for conv1, conv2, ada in zip(self.convs1, self.convs2, self.adas):
                 h, gate = ada(x, spk)
                 x = x + gate * conv2(conv1(h))
+            return x
+        if len(self.contours):
+            for conv1, conv2, film, cont in zip(self.convs1, self.convs2, self.films, self.contours):
+                h = film(conv2(conv1(x)), spk)
+                gamma, beta = cont(contour.to(h.dtype)).chunk(2, dim=1)  # [B, C, T] each, time-varying
+                x = x + h * (1 + gamma) + beta
             return x
         for conv1, conv2, film in zip(self.convs1, self.convs2, self.films):
             x = x + film(conv2(conv1(x)), spk)
@@ -125,8 +150,17 @@ class HiFiGANVocoder(Vocoder):
         output_negative_slope: float = 0.01,
         cond_type: str = "film",
         cond_sites: str = "residual",
+        cond_contour: str = "none",
+        contour_smooth: int = 5,
     ):
         super().__init__()
+        if cond_contour not in COND_CONTOURS:
+            raise ValueError(f"cond_contour must be one of {COND_CONTOURS}, got {cond_contour!r}")
+        if cond_contour != "none" and cond_type != "film":
+            raise ValueError("cond_contour needs cond_type='film'")
+        if contour_smooth < 1 or contour_smooth % 2 != 1:
+            raise ValueError(f"contour_smooth must be a positive odd number of frames, got {contour_smooth}")
+        self.cond_contour, self.contour_smooth = cond_contour, int(contour_smooth)
         if cond_type not in COND_TYPES:
             raise ValueError(f"cond_type must be one of {COND_TYPES}, got {cond_type!r}")
         if cond_sites not in COND_SITES:
@@ -175,7 +209,10 @@ class HiFiGANVocoder(Vocoder):
                 )
             )
             for block_kernel, block_dilations in zip(block_kernels, dilations):
-                self.blocks.append(ResidualFiLMBlock(c_out, block_kernel, block_dilations, spk_dim, negative_slope, cond_type)
+                self.blocks.append(ResidualFiLMBlock(
+                        c_out, block_kernel, block_dilations, spk_dim, negative_slope, cond_type,
+                        len(CONTOUR_CHANNELS) if cond_contour != "none" else 0,
+                    )
                 )
         self.output_conv = nn.Sequential(
             nn.LeakyReLU(output_negative_slope),
@@ -188,7 +225,17 @@ class HiFiGANVocoder(Vocoder):
             self.site_up = nn.ModuleList(site(spk_dim, channels // 2 ** (i + 1)) for i in range(len(scales)))
 
     def forward(self, features: torch.Tensor, spk: torch.Tensor) -> torch.Tensor:
-        x = self.input_conv(self.frontend(features).x)
+        x_in = self.frontend(features).x
+        contour = None
+        if self.cond_contour != "none":
+            contour = x_in[:, list(CONTOUR_CHANNELS)]
+            pad = self.contour_smooth // 2  # moving average over the frames (replicate padding), still at 50 Hz
+            if pad:
+                contour = nn.functional.avg_pool1d(nn.functional.pad(contour, (pad, pad), mode="replicate"), self.contour_smooth, 1)
+            if self.cond_contour == "only":
+                x_in = x_in.clone()
+                x_in[:, list(CONTOUR_CHANNELS)] = 0.0
+        x = self.input_conv(x_in)
         if self.cond_sites == "all":
             x = self.site_in(x, spk)
         for i, upsample in enumerate(self.upsamples):
@@ -196,9 +243,12 @@ class HiFiGANVocoder(Vocoder):
             if self.cond_sites == "all":
                 x = self.site_up[i](x, spk)
             blocks = self.blocks[i * self.num_blocks : (i + 1) * self.num_blocks]
-            out = blocks[0](x, spk)
+            stage_contour = None
+            if contour is not None:  # linear resampling to this stage's frame rate
+                stage_contour = nn.functional.interpolate(contour, size=x.shape[-1], mode="linear", align_corners=False)
+            out = blocks[0](x, spk, stage_contour)
             for block in blocks[1:]:
-                out = out + block(x, spk)
+                out = out + block(x, spk, stage_contour)
             x = out / self.num_blocks
         with torch.autocast(device_type=x.device.type, enabled=False):
             wav = self.output_conv(x.to(torch.promote_types(x.dtype, torch.float32)))

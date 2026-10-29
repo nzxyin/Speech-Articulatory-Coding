@@ -171,5 +171,87 @@ def test_relative_loudness_moves_the_level_out_of_the_frontend_input():
     assert not torch.equal(feats[:, LOUDNESS_CHANNEL], rel[:, LOUDNESS_CHANNEL])
 
 
+def test_film_gate_is_identity_at_init_and_trains_the_gate():
+    from sparc.vocoders.models.film import GatedFiLM
+
+    model = build(cond_type="film_gate")
+    assert any(isinstance(m, GatedFiLM) for m in model.modules()) and not any(".adas." in k for k in model.state_dict())
+    feats = make_features()
+    g = torch.Generator().manual_seed(3)
+    with torch.no_grad():
+        a = model(feats, torch.randn(2, 64, generator=g))
+        b = model(feats, torch.randn(2, 64, generator=g))
+    assert torch.equal(a, b)  # every unit is the identity at initialization, whatever the code is
+    spk = torch.randn(2, 64, generator=g)
+    model.train()
+    model(feats, spk).square().mean().backward()
+    gates = [m.proj.weight.grad for m in model.modules() if isinstance(m, GatedFiLM)]
+    assert all(gr is not None and gr.abs().sum() > 0 for gr in gates)  # gate gradient is nonzero at step 0
+    # same modulation position and form as FiLM: with gate fixed to 1 the unit is the FiLM unit
+    gf = GatedFiLM(64, 8)
+    f = FiLM(64, 8)
+    with torch.no_grad():
+        gf.proj.weight.normal_(std=0.1)
+        f.proj.weight.copy_(gf.proj.weight[:16])
+        f.proj.bias.zero_()
+        gf.proj.weight[16:] = 0.0
+        gf.proj.bias[16:] = 1.0
+    x, c = torch.randn(2, 8, 5), torch.randn(2, 64)
+    h, gate = gf(x, c)
+    assert torch.allclose(gate, torch.ones_like(gate)) and torch.allclose(h, f(x, c), atol=1e-6)
+
+
+def test_contour_conditioning():
+    plain = build()
+    feats = make_features()
+    spk = torch.randn(2, 64, generator=torch.Generator().manual_seed(2))
+    for mode in ("added", "only"):
+        model = build(cond_contour=mode)
+        assert any(k.startswith("blocks.0.contours.") for k in model.state_dict())
+        missing = model.load_state_dict(plain.state_dict(), strict=False)
+        assert not missing.unexpected_keys and all("contours" in k for k in missing.missing_keys)
+        with torch.no_grad():
+            out = model(feats, spk)
+            if mode == "added":  # zero-initialized: the generator starts as the default one, bit for bit
+                assert torch.equal(out, plain(feats, spk))
+            else:  # pitch and loudness removed from the input and the contour path is still zero: no dependence
+                other = feats.clone()
+                other[:, 12] = other[:, 12] * 1.3
+                other[:, 13] = other[:, 13] * 0.5 + 0.01
+                assert torch.equal(out, model(other, spk))
+        torch.manual_seed(5)
+        for m in model.blocks:
+            for c in m.contours:
+                torch.nn.init.normal_(c.weight, std=0.05)
+        other = feats.clone()
+        other[:, 12] = other[:, 12] * 1.3
+        with torch.no_grad():
+            assert not torch.equal(model(feats, spk), model(other, spk))  # now the contour acts
+    with pytest.raises(ValueError):
+        build(cond_contour="bad")
+    with pytest.raises(ValueError):
+        build(cond_contour="added", cond_type="adaln_zero")
+    with pytest.raises(ValueError):
+        build(cond_contour="added", contour_smooth=4)
+
+
+def test_contour_is_a_five_frame_moving_average():
+    model = build(cond_contour="added")
+    torch.manual_seed(5)
+    for m in model.blocks:
+        for c in m.contours:
+            torch.nn.init.normal_(c.weight, std=0.05)
+    feats = make_features(frames=40)
+    spk = torch.randn(2, 64, generator=torch.Generator().manual_seed(2))
+    with torch.no_grad():
+        full = model(feats, spk)
+        # the contour is a moving average of 5 frames, so check the same operation directly:
+        x = model.frontend(feats).x[:, [12, 13]]
+        pad = 2
+        sm = torch.nn.functional.avg_pool1d(torch.nn.functional.pad(x, (pad, pad), mode="replicate"), 5, 1)
+    assert full.shape == (2, 1, 480 * 40) and torch.isfinite(full).all()
+    assert torch.allclose(sm[:, :, 10], x[:, :, 8:13].mean(dim=2), atol=1e-6)
+
+
 GOLDEN_ABS_SUM = 1665.4556884765625
 GOLDEN_SUM = -1665.4556884765625

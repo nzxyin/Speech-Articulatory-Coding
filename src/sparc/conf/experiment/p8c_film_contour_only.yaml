@@ -1,0 +1,30 @@
+# @package _global_
+# Phase 8 conditioning screen (docs/spkemb_conditioning_screen.md): the p5_fv recipe with As p8c_film_contour_added, but pitch and loudness are zeroed in the input convolution's input: they reach the generator only through the modulation.
+# Everything else (data, speaker network, losses, schedule, seed 0, 100k) is identical to p5_fv.
+experiment_name: p8c_film_contour_only
+seed: 0
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+  train_splits:
+    - /data/user_data/xoy/spkemb/phase5/packed/libritts_f/train.clean.100
+    - /data/user_data/xoy/spkemb/phase5/packed/libritts_f/train.clean.360
+    - /data/user_data/xoy/spkemb/phase5/packed/libritts_f/train.other.500
+    - /data/user_data/xoy/spkemb/phase5/packed/globe_f/globe.train
+    - /data/user_data/xoy/spkemb/phase5/packed/vctk.train
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  n_refs: [1, 8]
+  rel_f0:
+    enabled: true
+vocoder:
+  generator:
+    pitch_mode: log_relative
+    cond_contour: only

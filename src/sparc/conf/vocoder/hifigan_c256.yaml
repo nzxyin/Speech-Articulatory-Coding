@@ -14,5 +14,7 @@ generator:
   kernel_size: 7
   negative_slope: 0.1
   output_negative_slope: 0.01
-  cond_type: film          # film | adaln_zero (Phase 8 conditioning study; film is the original behaviour)
+  cond_type: film          # film | adaln_zero | film_gate (Phase 8 conditioning screen; film is the original behaviour)
   cond_sites: residual     # residual | all (all adds a zero-initialized modulation after the input conv and every upsampling stage)
+  cond_contour: none       # none | added | only (frame pitch and loudness drive a time-varying FiLM in every residual unit; only: also removed from the input)
+  contour_smooth: 5        # moving-average length (frames) of the contour channels

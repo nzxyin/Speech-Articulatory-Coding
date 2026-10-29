@@ -52,7 +52,7 @@ class FiLMLayerNorm(nn.Module):
         return self.film(x, cond, channel_dim=-1)
 
 
-COND_TYPES = ("film", "adaln_zero")
+COND_TYPES = ("film", "adaln_zero", "film_gate")
 
 
 class AdaLNZero(nn.Module):
@@ -99,3 +99,32 @@ class AdaLNZeroSite(nn.Module):
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         h, gate = self.ada(x, cond)
         return x + gate * h
+
+
+class GatedFiLM(nn.Module):
+    """FiLM plus a zero-initialized per-channel gate (Phase 8 conditioning screen, arm ``film_gate``).
+
+    Returns ``(film(x), gate [B, C, 1])``; the caller applies the residual update ``x + gate * film(f(x))``. The
+    modulation position (the output of the unit's convolutions) and the absence of a normalization layer are those of
+    :class:`FiLM`; only the gate is new, so a unit starts as the identity (like AdaLN-zero), which the plain FiLM unit
+    does not (its residual branch is on at initialization). Projection in float32 under autocast, as in :class:`FiLM`.
+    """
+
+    def __init__(self, cond_dim: int, channels: int):
+        super().__init__()
+        self.channels = channels
+        self.proj = nn.Linear(cond_dim, 3 * channels)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        dtype = torch.promote_types(self.proj.weight.dtype, torch.float32)
+        with torch.autocast(device_type=cond.device.type, enabled=False):
+            gamma, beta, gate = nn.functional.linear(
+                cond.to(dtype), self.proj.weight.to(dtype), self.proj.bias.to(dtype)
+            ).chunk(3, dim=-1)
+        h = x * (1 + gamma[:, :, None]).to(x.dtype) + beta[:, :, None].to(x.dtype)
+        return h, gate[:, :, None].to(x.dtype)
