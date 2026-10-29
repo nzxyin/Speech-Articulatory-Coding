@@ -900,8 +900,10 @@ class RefConditions:
     atomically) so that shards and arms do not repeat the WavLM / CREPE / inverter passes: the result depends only on the
     audio, the condition, the layer and the gain."""
 
-    def __init__(self, pool, store, layer: str, gain_db: float, device, cache_dir: str | Path | None = None):
+    def __init__(self, pool, store, layer: str, gain_db: float, device, cache_dir: str | Path | None = None,
+                 inverter: str | None = None):
         self.pool, self.store, self.layer, self.gain_db, self.device = pool, store, layer, gain_db, device
+        self.inverter = inverter  # Phase 9: k12 inverter supplying the articulatory channels of reference encodings
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self._enc = None
         self._cache: dict[Any, Any] = {}
@@ -910,7 +912,7 @@ class RefConditions:
         if self._enc is None:
             from sparc.vocoders.eval.clone_pools import FeatureEncoder
 
-            self._enc = FeatureEncoder(self.device)
+            self._enc = FeatureEncoder(self.device, inverter=self.inverter)
         return self._enc
 
     def clean_features(self, ids: Sequence[str]) -> list[np.ndarray]:
@@ -932,7 +934,8 @@ class RefConditions:
     def _disk_path(self, cond: str, ids: Sequence[str]) -> Path | None:
         if self.cache_dir is None:
             return None
-        h = hashlib.sha256(f"{cond}|{self.layer}|{self.gain_db}|{'|'.join(ids)}".encode()).hexdigest()[:32]
+        tag = f"|inv={self.inverter}" if self.inverter else ""  # unchanged key without an inverter
+        h = hashlib.sha256(f"{cond}|{self.layer}|{self.gain_db}|{'|'.join(ids)}{tag}".encode()).hexdigest()[:32]
         return self.cache_dir / cond / f"{h}.npz"
 
     def _encode(self, cond: str, ids: Sequence[str]) -> list[dict[str, np.ndarray]]:
@@ -1142,7 +1145,8 @@ def run_synth(args: argparse.Namespace) -> Path:
                                    "plan_hashes": {p: plan_hash(plans[p]) for p in pools}, "trained_against": trained_against,
                                    "rel_f0": bool(getattr(module, "rel_f0", False))})
     cache_dir = Path(args.refcond_dir) if args.refcond_dir else Path(args.root) / "refcond"
-    conds = {p: RefConditions(pool_objs[p], stores[p], layer, gain_db, device, cache_dir / p) for p in pools}
+    inverter = (cfg.get("inverter") or {}).get("name")  # Phase 9 runs: reference encodings use the run's inverter
+    conds = {p: RefConditions(pool_objs[p], stores[p], layer, gain_db, device, cache_dir / p, inverter=inverter) for p in pools}
     renderer = ItemRenderer(module, stores, conds, gain_db, device)
     mine = [it for i, it in enumerate(items) if i % args.nshards == args.shard]
     start, done, skipped = time.time(), 0, 0

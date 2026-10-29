@@ -71,6 +71,11 @@ speaker:
     loudness: off         # source utterance's loudness level: off | added (code only) | moved (code; the frame loudness
                           # input becomes relative to the utterance level)
 
+# Phase 9: the 12 articulatory channels of the packed features come from a WavLM k12 inverter (features.inverter_pack);
+# evaluation then encodes references and contents with the same inverter. null: SPARC's own layer-9 head (unchanged).
+inverter:
+  name: null       # null | mngu0 | all7
+
 predict:           # `sparc-predict`: the split and conditions come from data.predict_split / data.predict_conditions
   ckpt: null       # null: newest loadable checkpoint of the run
   output_dir: ${run_dir}/predictions

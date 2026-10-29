@@ -17,7 +17,7 @@ import torch
 from torch import nn
 from torch.nn.utils import parametrizations, parametrize
 
-from sparc.vocoders.constants import N_FEATURES, SPEAKER_DIM
+from sparc.vocoders.constants import N_EMA, N_FEATURES, SPEAKER_DIM
 from sparc.vocoders.models.base import Vocoder
 from sparc.vocoders.models.film import COND_TYPES, AdaLNZero, AdaLNZeroSite, FiLM, GatedFiLM
 from sparc.vocoders.models.frontend import FeatureFrontend
@@ -152,6 +152,7 @@ class HiFiGANVocoder(Vocoder):
         cond_sites: str = "residual",
         cond_contour: str = "none",
         contour_smooth: int = 5,
+        ema_denorm: bool = False,
     ):
         super().__init__()
         if cond_contour not in COND_CONTOURS:
@@ -223,9 +224,20 @@ class HiFiGANVocoder(Vocoder):
             site = AdaLNZeroSite if cond_type == "adaln_zero" else FiLM
             self.site_in = site(spk_dim, channels)
             self.site_up = nn.ModuleList(site(spk_dim, channels // 2 ** (i + 1)) for i in range(len(scales)))
+        # Phase 9 (inverter features in a normalized space, e.g. per-speaker z units): a per-channel scale and offset of the
+        # 12 normalized articulatory inputs, linear in the speaker code, zero-initialized (identity at the start). Created
+        # last and only when requested, so the default module and state dict are unchanged.
+        self.ema_denorm = None
+        if ema_denorm:
+            self.ema_denorm = nn.Linear(spk_dim, 2 * N_EMA)
+            nn.init.zeros_(self.ema_denorm.weight)
+            nn.init.zeros_(self.ema_denorm.bias)
 
     def forward(self, features: torch.Tensor, spk: torch.Tensor) -> torch.Tensor:
         x_in = self.frontend(features).x
+        if self.ema_denorm is not None:
+            scale, offset = self.ema_denorm(spk.to(x_in.dtype)).chunk(2, dim=-1)  # [B, 12] each
+            x_in = torch.cat([x_in[:, :N_EMA] * (1.0 + scale[..., None]) + offset[..., None], x_in[:, N_EMA:]], dim=1)
         contour = None
         if self.cond_contour != "none":
             contour = x_in[:, list(CONTOUR_CHANNELS)]

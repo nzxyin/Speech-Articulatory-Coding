@@ -45,7 +45,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from sparc.vocoders.constants import LOUDNESS_CHANNEL, PERIODICITY_CHANNEL, SAMPLE_RATE
+from sparc.vocoders.constants import LOUDNESS_CHANNEL, N_EMA, PERIODICITY_CHANNEL, SAMPLE_RATE
 from sparc.vocoders.features.spk_phase6 import P6_LAYERS, compose_input, pool_inputs
 
 logger = logging.getLogger(__name__)
@@ -411,7 +411,7 @@ def write_wav24(table: pd.DataFrame, kind: str, out_dir: Path) -> pd.DataFrame:
 class FeatureEncoder:
     """Cache-identical SPARC features plus all-layer pooled WavLM statistics of one 24 kHz waveform."""
 
-    def __init__(self, device="auto", dither: bool = True):
+    def __init__(self, device="auto", dither: bool = True, inverter: str | None = None):
         import torch
         from omegaconf import OmegaConf
 
@@ -424,6 +424,11 @@ class FeatureEncoder:
         cfg.extractor.dither = bool(dither)
         self.extractor = SparcFeatureExtractor(cfg, self.device)
         self.wavlm = load_wavlm(self.device)
+        self.inverter = None  # Phase 9: a WavLM k12 inverter ('mngu0' | 'all7') supplies the 12 articulatory channels
+        if inverter:
+            from sparc.vocoders.features.k12_inverter import K12Inverter
+
+            self.inverter = K12Inverter(inverter, self.device)
 
     def encode(self, wav24: np.ndarray, seed: int) -> dict[str, np.ndarray]:
         """``feats [T, 15]``, ``loud_raw``, ``spk_l0``, ``spk_l6``, ``spk_wsum``, ``peak24``, ``n24`` and the pooled
@@ -431,6 +436,10 @@ class FeatureEncoder:
         from sparc.vocoders.features.spk_layers import hidden_states, pooled_stats
 
         out = self.extractor.extract(np.ascontiguousarray(wav24, dtype=np.float32), seed)
+        if self.inverter is not None:
+            feats = np.array(out["feats"], dtype=np.float32, copy=True)
+            feats[:, :N_EMA] = self.inverter.channels24(np.ascontiguousarray(wav24, dtype=np.float32))
+            out = {**out, "feats": feats}
         hidden = hidden_states(self.wavlm, wav24, self.device)
         mean, std = pooled_stats(hidden, out["feats"][:, PERIODICITY_CHANNEL])
         keep = ("feats", "loud_raw", "spk_l0", "spk_l6", "spk_wsum", "peak24", "n24", "T")
@@ -456,7 +465,10 @@ def speaker_vector(enc: dict[str, np.ndarray], layer: str) -> np.ndarray:
     raise ValueError(f"unsupported speaker layer {layer!r}")
 
 
-def extract_pool(spec: PoolSpec, root: str | Path, shard: int = 0, nshards: int = 1, device="auto", limit: int | None = None) -> int:
+def extract_pool(
+    spec: PoolSpec, root: str | Path, shard: int = 0, nshards: int = 1, device="auto", limit: int | None = None,
+    inverter: str | None = None,
+) -> int:
     """Encodes the utterances of this shard that have no ``utt/<id>.npz`` yet; returns how many were written."""
     from sparc.vocoders.eval.io import write_npz
 
@@ -465,7 +477,7 @@ def extract_pool(spec: PoolSpec, root: str | Path, shard: int = 0, nshards: int 
     todo = [u for u in ids if not (pool.directory / "utt" / f"{u}.npz").is_file()]
     if not todo:
         return 0
-    enc = FeatureEncoder(device)
+    enc = FeatureEncoder(device, inverter=inverter)
     paths = pool.table.set_index("id")["wav_path"]
     import soundfile as sf
 
@@ -575,12 +587,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             s.add_argument("--nshards", type=int, default=1)
             s.add_argument("--limit", type=int, default=None)
             s.add_argument("--device", default="auto")
+            s.add_argument("--inverter", default=None, choices=("mngu0", "all7"),
+                           help="Phase 9: articulatory channels from this k12 inverter (use a separate --root)")
     a = p.parse_args(argv)
     spec = POOL_SPECS[a.pool]
     if a.cmd == "list":
         prepare_table(spec, a.root, a.seed)
     elif a.cmd == "extract":
-        extract_pool(spec, a.root, a.shard, a.nshards, a.device, a.limit)
+        extract_pool(spec, a.root, a.shard, a.nshards, a.device, a.limit, a.inverter)
     else:
         pack_pool(spec, a.root)
 
