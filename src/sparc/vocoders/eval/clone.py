@@ -1130,6 +1130,9 @@ def run_synth(args: argparse.Namespace) -> Path:
           "cond": it.cond, "same_gender": it.same_gender, "dur_bin": it.dur_bin, "dur_s": it.dur_s, "wav": it.key + ".wav", **it.meta}
          for it in items]
     )
+    from sparc.vocoders.eval.clone_pools import check_pool_inverter
+
+    check_pool_inverter((cfg.get("inverter") or {}).get("name"), pools, args.root, args.cache_root)
     pool_objs = {p: Pool(p, args.root, args.cache_root) for p in pools}
     stores = {p: pool_objs[p].store(layer) for p in pools}
     for p in pools:

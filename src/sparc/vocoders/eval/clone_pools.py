@@ -150,6 +150,54 @@ def pool_dir(root: str | Path, name: str) -> Path:
     return Path(root) / "pools" / name
 
 
+ROOT_TAG = "pool_inverter.json"  # Phase 9: which inverter produced the articulatory channels of a pool root (absent = layer 9)
+
+
+def read_root_tag(root: str | Path) -> str | None:
+    """Inverter named by ``<root>/pool_inverter.json`` (``mngu0`` / ``all7``); ``None`` when there is no tag (layer-9 default)."""
+    import json
+
+    path = Path(root) / ROOT_TAG
+    return (json.loads(path.read_text()).get("inverter") or None) if path.is_file() else None
+
+
+def write_root_tag(root: str | Path, inverter: str) -> None:
+    import json
+
+    path = Path(root) / ROOT_TAG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"inverter": inverter}) + "\n")
+
+
+def packed_dir_tag(directory: str | Path) -> str | None:
+    """Inverter mode recorded by ``inverter_pack merge`` in a packed split (``inverter.json``); ``None`` = layer 9."""
+    import json
+
+    path = Path(directory) / "inverter.json"
+    return (json.loads(path.read_text()).get("mode") or None) if path.is_file() else None
+
+
+def check_pool_inverter(run_inverter: str | None, pools: Sequence[str], root: str | Path, cache_root: str | Path | None = None) -> None:
+    """Raises ``ValueError`` when the content features of a pool were made by another inverter than the run's.
+
+    Non-packed pools (VCTK, GLOBE) take the tag of the pool root; packed pools (LibriTTS-R) take the tag of their packed
+    split under the cache root. No tag means the layer-9 default, and a run without ``inverter.name`` means the same."""
+    from sparc.vocoders.eval.io import packed_dir
+
+    problems = []
+    for name in pools:
+        pool = Pool(name, root, cache_root)
+        if pool.spec.kind == "packed":
+            where = packed_dir(pool.cache_root, pool.spec.split)
+            tag = packed_dir_tag(where)
+        else:
+            where, tag = Path(root) / ROOT_TAG, read_root_tag(root)
+        if tag != run_inverter:
+            problems.append(f"{name}: features from inverter {tag or 'layer-9 default'} ({where}), run uses {run_inverter or 'layer-9 default'}")
+    if problems:
+        raise ValueError("pool / run inverter mismatch; use a pool root and cache root built with this inverter:\n  " + "\n  ".join(problems))
+
+
 def cache_root_default() -> Path:
     sv = os.environ.get("SV_ROOT", "/data/user_data/xoy/sparc-vocoders")
     return Path(os.environ.get("SPARC_VOC_CACHE", f"{sv}/cache"))
@@ -473,6 +521,13 @@ def extract_pool(
     from sparc.vocoders.eval.io import write_npz
 
     pool = Pool(spec, root)
+    tag = read_root_tag(root)
+    if tag != inverter:
+        pools_dir = Path(root) / "pools"
+        existing = pools_dir.is_dir() and any(pools_dir.glob("*/utt/*.npz"))
+        if tag is not None or inverter is None or existing:
+            raise ValueError(f"{root}: root is tagged {tag or 'layer-9 default'} (or holds untagged features), extraction asks for {inverter or 'layer-9 default'}")
+        write_root_tag(root, inverter)
     ids = list(pool.table["id"])[shard::nshards][:limit]
     todo = [u for u in ids if not (pool.directory / "utt" / f"{u}.npz").is_file()]
     if not todo:

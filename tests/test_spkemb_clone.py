@@ -925,3 +925,23 @@ def test_acceptance_is_not_available_without_a_threshold():
     assert nan_thr["ecapa/accept"].isna().all() and nan_thr["ecapa/sim_target"].notna().all()
     ok_thr = clone.item_table(*args, {"fake": {"ecapa": 0.5}}, {"fake": plan})
     assert (ok_thr["ecapa/accept"] == 1.0).all()
+
+
+def test_pool_inverter_guard(tmp_path):
+    """Phase 9: synth refuses pools whose features come from another inverter than the run's; untagged = layer 9."""
+    root = tmp_path / "root"
+    cache = tmp_path / "cache"
+    (cache / "packed" / "test.clean").mkdir(parents=True)
+    pools = ["vctk", "libritts"]
+    clone_pools.check_pool_inverter(None, pools, root, cache)  # layer-9 run, untagged pools: unchanged behaviour
+    with pytest.raises(ValueError, match="mismatch"):
+        clone_pools.check_pool_inverter("mngu0", pools, root, cache)  # k12 run on layer-9 pools
+    clone_pools.write_root_tag(root, "mngu0")
+    with pytest.raises(ValueError, match="libritts"):  # root tagged, packed LibriTTS-R cache still layer 9
+        clone_pools.check_pool_inverter("mngu0", pools, root, cache)
+    (cache / "packed" / "test.clean" / "inverter.json").write_text('{"mode": "mngu0"}')
+    clone_pools.check_pool_inverter("mngu0", pools, root, cache)
+    with pytest.raises(ValueError, match="mismatch"):
+        clone_pools.check_pool_inverter("all7", pools, root, cache)  # other inverter
+    with pytest.raises(ValueError, match="mismatch"):
+        clone_pools.check_pool_inverter(None, pools, root, cache)  # layer-9 run on k12 pools
