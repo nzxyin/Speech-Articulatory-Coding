@@ -520,6 +520,49 @@ credited to segment pooling only if it also beats E3 on the primary measure; oth
 width. Descriptive, not part of the rule: own-utterance vs other-utterance reference similarity (content leakage) and
 cloning with 1 s and 2 s reference slices. An arm that advances goes to 400k with two seeds, as in Phase 4.
 
+## Phase 8: is the out-of-domain gap voice or channel, and is fitted-code similarity real? (pre-registered 2026-10-29)
+
+Written before any Phase 8 number exists. Evidence and designs: `spkemb-phase3` `docs/spkemb_ood_recommendations.md`
+section 3 (reviewed), `docs/spkemb_ood_gap.md`, `docs/spkemb_validation_protocol.md`. All choices are made on the
+validation splits (LibriTTS-R dev-clean, VCTK validation half, GLOBE real-speaker dev pool `globe_spk`); test splits
+(LibriTTS-R test-clean, VCTK test half, GLOBE test speakers) are run once for the chosen settings. Model: the filtered
+LibriTTS-R + GLOBE + VCTK HiFi-GAN run (`p5_fv`, 100k). No vocoder training in this phase.
+
+**8.1 Channel ceiling and input path (own-speaker items; no training).**
+- Conditions: (i) the real target recording passed through a separate mel-input vocoder (if one is available from the
+  vocoder comparison; otherwise band-limited and loudness-matched to the training data); (ii) own-speaker resynthesis
+  with the target's own content features but F0 and loudness from another utterance of the same speaker; (iii) content
+  features from a different-speaker utterance with the target's F0 range and the target speaker's code (how much the
+  content path carries speaker identity).
+- Selection on validation: the channel variant and control variant; test reports the chosen ones.
+- Rule (VCTK validation half): the gap is mainly channel if the channel-ceiling similarity is <= 0.85 of ground truth,
+  mainly voice if >= 0.95, mixed in between. The content path limits the gap only if condition (iii) differs from
+  standard by >= 0.25 of the remaining gap with the interval excluding 0 while (ii) does not.
+
+**8.2 Constrained speaker-code fitting (no training).**
+- Arms: standard code; ECAPA-loss code fit with an L2 penalty toward the standard code; the same fit with a naturalness
+  term on the output (distance of the fitted output's pooled WavLM features or mel statistics to the standard output on
+  the same content); the unconstrained fit as reference. Codes are fitted on the speaker's other utterances only.
+- Verifiers: ECAPA in the loss; selection on CAM++ only; WeSpeaker ResNet34 and, if one with documented non-VoxCeleb
+  training data is available, a third verifier are held out from loss and selection and used only for test reporting.
+- Selection (validation): penalty, naturalness weight, steps and learning rate by CAM++ similarity subject to UTMOS drop
+  <= 0.05 and WER <= +0.5 points.
+- Test once. Advances if: VCTK closure (fraction of the standard-to-ground-truth gap closed) has a lower bound >= 0.25
+  on each held-out verifier, UTMOS drop <= 0.1 in every pool, WER <= +0.5 points, LibriTTS-R own-speaker drop <= 0.01,
+  and swap similarity to the source rises <= 0.02. If a guard fails on test, it is recorded as a failure (no re-tuning).
+  GLOBE is descriptive. Without 8.3 the result is "verifier-measured", not perceptual.
+- Also fixed in this phase: acceptance on the 1-reference GLOBE test pool (threshold undefined with one reference).
+
+**8.3 Listening test (prepared here, run with human listeners only after user approval).**
+- Arms: standard code vs the 8.2 setting chosen on validation, with a real recording of a different utterance of the
+  target speaker as reference; items fixed before listening (VCTK test half; GLOBE descriptive; LibriTTS-R as control).
+- Measures: blind similarity to the reference, naturalness, and preference. A pilot (~5 listeners) sizes the main test
+  for 80 % power at a preference rate of 0.60 vs 0.50 (listener and speaker as random effects); the listener number and
+  the naturalness margin are written into this section before the main test.
+- Rule: the verifier gain counts as audible only if the similarity-preference interval excludes 0.5 and naturalness is
+  not rated lower by more than the pre-set margin; otherwise it is treated as verifier-specific and encoder distillation
+  of fitted codes is not pursued.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
