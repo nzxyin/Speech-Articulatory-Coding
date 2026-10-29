@@ -74,3 +74,14 @@ Phase 5 winner. Side vectors: `/data/user_data/xoy/spkemb/phase6/` (`features/sp
   different periodicity settings (#13).
 - The existing training module is not preemption-safe, counts both optimizers in `global_step`, and fails under plain
   DDP (#15). Its learning-rate schedule (#10) and MSD pooling (#9) also have bugs.
+
+## Periodicity as a vocoder input (2026-10-29, `docs/vocoder_periodicity_analysis.md`)
+
+- Adding periodicity to the original SPARC vocoder inputs (EMA + pitch + loudness) gives a small, consistent gain in
+  domain (HiFi-GAN, 100k steps, one seed, LibriTTS-R test-clean): UTMOS +0.05, mel L1 -1.7%, voiced/unvoiced decision
+  error 7.4% -> 4.5%, HNR error -0.17 dB; WER and speaker similarity not clearly changed. The gain is largest for voiced
+  fricatives, vowels and voicing onsets/offsets, smallest for voiceless fricatives and silence. Out of domain (VCTK) only
+  the voicing measures keep the gain.
+- The trained model uses it mostly as a frame-precise voicing gate: replacing it by a constant is catastrophic (UTMOS
+  -0.43), by a voiced/unvoiced mask nearly harmless, by a 9-frame moving average costs about twice the mask.
+- Ablation run `experiment=periodicity_none_100k` (`models/hifigan_inputs.py`, `FeatureFrontend(drop_periodicity=True)`).
