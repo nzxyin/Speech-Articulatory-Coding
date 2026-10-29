@@ -878,7 +878,36 @@ similarity to the target, LibriTTS / VCTK / GLOBE (CAM++ on VCTK in parentheses)
   is a wider speaker-network input (or single-seed variation of the reference on VCTK), not the pooling.
 - Conclusion: keep the layer-6 periodicity-weighted mean. Pooling is not where the remaining cloning gap is; the open
   problems are the GLOBE naturalness and own-speaker guards that came with diverse data and the combination recipe
-  (Phases 4-5).
+  (Phases 4-5). Correction (2026-10-29 review): both pooling arms do give small VCTK-only gains with CIs excluding 0
+  (CAM++ +0.021 / +0.025), below the margin; "no transfer" is too strong.
+
+### Validation-only selection (user rule, 2026-10-28)
+Choices among ablations / arms / hyperparameters use validation splits; test splits only report the chosen ones
+(`spkemb-phase3` `docs/spkemb_validation_protocol.md`, `docs/spkemb_validation_splits.json`). Cloning: validation =
+LibriTTS-R dev-clean, VCTK half (20 of the 40 evaluation speakers), GLOBE dev real speakers (`globe_spk`, 400); test =
+test-clean, the other VCTK half, GLOBE test real speakers (`globe_spk_test`, 400 speakers with 1 reference, swaps only).
+Split scoring recalibrates acceptance and top-1 within the split. Earlier arm decisions (Phases 1-6) were made on test
+pools; Phase 7 is a single pre-registered comparison.
+
+### Speaker embedding Phase 7 and the out-of-domain investigation (2026-10-28 to 10-29)
+GLOBE has real speakers: Common Voice 21 `client_id` joins 100 % onto GLOBE v3 by clip filename (metadata in
+`/data/user_data/xoy/common_voice_21_en_meta/`; keep the hash opaque). Filtered GLOBE train: 13,362 speakers.
+- Phase 7 (`docs/spkemb_phase7_globe_speakers.md`): the filtered + VCTK recipe with GLOBE references drawn from the same
+  real speaker instead of the utterance itself: no effect (gains within +-0.009 on every pool and verifier, CIs span 0).
+- Out-of-domain proxy screen, selected on validation (`docs/spkemb_ood_screen.md`): BiGRU -> conv head before pooling
+  -0.028, frozen speaker-verification embedding alone -0.070 (with the layer-6 mean 0.000), per-corpus centering
+  -0.033; only channel augmentation passes (+0.006, from GLOBE alone), not confirmed on VCTK test.
+- Gap diagnosis (`docs/spkemb_ood_gap.md`): own-speaker resynthesis reaches ~0.66-0.75 of ground-truth similarity on VCTK /
+  GLOBE (LibriTTS ~1.0). Fitting the speaker code on the reconstruction loss gives nothing (the loss is nearly flat in
+  the code). Fitting it on ECAPA similarity (settings chosen on validation with CAM++ and WeSpeaker, so these are not
+  independent judges) raises VCTK to 0.78-0.81 of ground truth (ECAPA itself 0.97: partial verifier overfit), at UTMOS
+  -0.08 to -0.18 on test; GLOBE (8 items, circular references) descriptive only. The generator is strongly code-sensitive
+  (another speaker's code: -0.4). Not yet separated: voice vs channel (ground truth is the original recording).
+- Recommendations (`docs/spkemb_ood_recommendations.md`, reviewed): (1) channel-ceiling and input-path controls; (2)
+  constrained code fitting with a naturalness term, selected on CAM++ only, judged by WeSpeaker and a non-VoxCeleb
+  verifier; (3) listening test of that fit; (4) training scale / data diversity (the only large effects so far);
+  (5) speaker loss with real GLOBE labels; encoder distillation, conditioning changes, SV-embedding input and channel
+  augmentation last.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
