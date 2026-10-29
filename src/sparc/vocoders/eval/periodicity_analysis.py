@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 ROOT = Path("/data/user_data/xoy/sparc-vocoders-periodicity")
 REF_RUN = "/data/user_data/xoy/sparc-vocoders/runs/ablation_100k/hifigan"
 ABL_RUN = "/data/user_data/xoy/spkemb/phase3/runs/periodicity_none_100k/hifigan"
+SEED1_RUN = "/data/user_data/xoy/spkemb/phase3/runs/p4_b0_s1/hifigan"  # the ablation_100k recipe with training seed 1
 PHASE4 = "/data/user_data/xoy/spkemb/phase4"
 SPLITS_FILE = Path(__file__).resolve().parents[4] / "docs" / "spkemb_validation_splits.json"
 GAIN_DB = -3.0
@@ -56,10 +57,11 @@ SPLITS = {
     "vctk_test": ("vctk", "VCTK test half", "test (out of domain)"),
 }
 LIBRI_SPLIT = {"dev": "dev.clean", "test": "test.clean"}
-SYSTEM_RUN = {"ref": REF_RUN, "none": ABL_RUN, "probe_const": REF_RUN, "probe_binary": REF_RUN, "probe_smooth": REF_RUN}
+SYSTEM_RUN = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "probe_const": REF_RUN, "probe_binary": REF_RUN, "probe_smooth": REF_RUN}
 SYSTEM_LABEL = {
     "gt": "recording",
     "ref": "fork input set (+ periodicity)",
+    "ref_s1": "fork input set, training seed 1 (noise reference)",
     "none": "original SPARC input set (EMA + pitch + loudness)",
     "probe_const": "reference, periodicity = training mean",
     "probe_binary": "reference, periodicity = voiced/unvoiced mask",
@@ -68,13 +70,17 @@ SYSTEM_LABEL = {
 SMOOTH_FRAMES = 9
 PER_UTT = 15  # utterances per speaker
 DUR_RANGE = (2.0, 12.0)
-CLASSES = ("vowels", "voiced_fricatives", "voiceless_fricatives", "stop_closure", "stop_burst", "affricates", "nasals",
-           "approximants", "silence", "voicing_onset_offset", "voicing_onset", "voicing_offset")
+CLASSES = ("vowels", "voiced_fricatives", "voiceless_fricatives", "h", "stop_closure", "stop_burst", "affricates", "nasals",
+           "approximants", "silence", "voicing_onset_offset", "voicing_onset", "voicing_offset", "change_pyin", "change_phone",
+           "phone_voiced", "sonorants", "phone_voiceless")
 CLASS_LABEL = {
     "vowels": "vowels", "voiced_fricatives": "voiced fricatives", "voiceless_fricatives": "voiceless fricatives",
     "stop_closure": "stops, closure", "stop_burst": "stops, burst", "affricates": "affricates", "nasals": "nasals",
-    "approximants": "approximants / liquids", "silence": "silence", "voicing_onset_offset": "within 30 ms of a voicing change",
-    "voicing_onset": "within 30 ms of a voicing onset", "voicing_offset": "within 30 ms of a voicing offset",
+    "approximants": "approximants / liquids", "silence": "silence", "voicing_onset_offset": "within 30 ms of an input-tracker voicing change",
+    "voicing_onset": "within 30 ms of an input-tracker voicing onset", "voicing_offset": "within 30 ms of an input-tracker voicing offset",
+    "h": "h (separate)", "change_pyin": "within 30 ms of a pYIN voicing change (recording)",
+    "change_phone": "within 30 ms of a voiced/voiceless phone boundary", "phone_voiced": "voiced phones (all)",
+    "sonorants": "sonorants (vowels, nasals, approximants)", "phone_voiceless": "voiceless phones (voiceless stops and fricatives except h, tʃ)",
     "all": "all frames",
 }
 BOOT = 10000
@@ -452,6 +458,56 @@ def run_metrics(args: argparse.Namespace) -> None:
             print(f"metrics {system} {split}: done in {time.time() - t0:.0f} s", flush=True)
 
 
+# ------------------------------------------------------------------------------------------------ independent voicing (pYIN)
+
+PYIN_SR = 16000
+PYIN_FRAME = 1024
+PYIN_FMIN, PYIN_FMAX = 65.0, 600.0
+
+
+def pyin_track(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """pYIN (librosa) voicing and F0 of a 24 kHz wav on the 50 Hz grid of the analysis (frame ``t`` centred at
+    ``(t + 0.5) * 20 ms``): the audio is resampled to 16 kHz and its first 10 ms dropped, so librosa's centred frames of hop
+    320 samples fall on that grid. A tracker independent of CREPE (the one whose periodicity is the vocoder's input)."""
+    import librosa
+    import soundfile as sf
+    from scipy.signal import resample_poly
+
+    x, rate = sf.read(path, dtype="float32")
+    assert rate == SAMPLE_RATE, rate
+    n = len(x) // HOP
+    y = resample_poly(x, PYIN_SR // 8000, SAMPLE_RATE // 8000).astype(np.float32)[PYIN_SR // 100 :]
+    f0, voiced, _ = librosa.pyin(y, fmin=PYIN_FMIN, fmax=PYIN_FMAX, sr=PYIN_SR, frame_length=PYIN_FRAME, hop_length=PYIN_SR // 50, center=True)
+    voiced = pad_to(voiced.astype(np.float64), n)
+    f0 = pad_to(np.nan_to_num(f0, nan=0.0), n)
+    voiced = np.where(np.isfinite(voiced), voiced, 0.0)
+    return voiced.astype(np.int8), f0.astype(np.float32)
+
+
+def run_pyin(args: argparse.Namespace) -> None:
+    from multiprocessing import Pool
+
+    subset = load_subset()
+    for split in args.splits.split(","):
+        items = subset[split]["items"]
+        for system in args.systems.split(","):
+            out = ROOT / "pyin" / split / f"{system}.npz"
+            if out.exists() and not args.overwrite:
+                print(f"pyin {system} {split}: exists", flush=True)
+                continue
+            t0 = time.time()
+            paths = [str(audio_path(system, split, it["id"])) for it in items]
+            with Pool(args.workers) as pool:
+                res = pool.map(pyin_track, paths, chunksize=4)
+            arrays = {}
+            for it, (v, f) in zip(items, res):
+                arrays[f"{it['id']}/voiced"], arrays[f"{it['id']}/f0"] = v, f
+            out.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(str(out) + ".tmp.npz", **arrays)
+            os.replace(str(out) + ".tmp.npz", out)
+            print(f"pyin {system} {split}: {len(items)} utterances in {time.time() - t0:.0f} s", flush=True)
+
+
 # ------------------------------------------------------------------------------------------------ alignments and classes
 
 VOWEL_CHARS = set("aeiouyæɑɒɔəɐɚɛɜɝɪʊʌʉøœɯɨɵɤɞɘɛ")
@@ -470,7 +526,7 @@ STOP_MIN_CLOSURE_S = 0.02
 def phone_class(p: str) -> str | None:
     """Sound class of an ``english_mfa`` (IPA) phone label; ``None`` for spoken-noise / unknown labels.
 
-    Diacritics and length / aspiration / palatalization marks are ignored (syllabic nasals and liquids count as nasals and
+    ``h`` is its own class (``"h"``), not a voiceless fricative. Diacritics and length / aspiration / palatalization marks are ignored (syllabic nasals and liquids count as nasals and
     approximants). Diphthongs (``aj, aw, ej, ɔj, əw``) are vowels; ``tʃ, dʒ`` are affricates; the flap ``ɾ`` is an
     approximant / liquid.
     """
@@ -484,11 +540,35 @@ def phone_class(p: str) -> str | None:
     if s in AFFRICATES:
         return "affricates"
     c0 = s[0]
+    if c0 == "h":
+        return "h"  # kept apart from the voiceless fricatives: /h/ is often breathy-voiced between vowels
     for chars, name in ((VOWEL_CHARS, "vowels"), (NASAL_CHARS, "nasals"), (STOP_CHARS, "stops"), (VFRIC_CHARS, "voiced_fricatives"),
                         (UFRIC_CHARS, "voiceless_fricatives"), (APPROX_CHARS, "approximants")):
         if c0 in chars:
             return name
     return None
+
+
+VOICED_STOP_CHARS = set("bdɡgɟɖɢ")
+VOICELESS_STOP_CHARS = set("ptkcʈq")  # the glottal stop (ʔ) has no voicing value and is left out of the phone-based sets
+VOICED_AFFRICATES = {"dʒ", "dz", "dʑ"}
+
+
+def phone_voicing(p: str) -> str | None:
+    """Phonological voicing of an ``english_mfa`` label: ``"voiced"`` (vowels, nasals, approximants, voiced fricatives, voiced
+    stops, dʒ), ``"voiceless"`` (voiceless stops, voiceless fricatives except h, tʃ), ``"silence"``, or ``None`` (h, the glottal
+    stop, spoken noise, unmapped labels)."""
+    cls = phone_class(p)
+    if cls == "silence":
+        return "silence"
+    if cls is None or cls == "h":
+        return None
+    s = "".join(c for c in unicodedata.normalize("NFD", p) if not unicodedata.combining(c) and c not in "ʰʲʷˠˤːˑ")
+    if cls == "affricates":
+        return "voiced" if s in VOICED_AFFRICATES else "voiceless"
+    if cls == "stops":
+        return "voiced" if s[0] in VOICED_STOP_CHARS else "voiceless" if s[0] in VOICELESS_STOP_CHARS else None
+    return "voiceless" if cls == "voiceless_fricatives" else "voiced"
 
 
 def parse_textgrid_phones(path: Path) -> list[tuple[float, float, str]]:
@@ -525,12 +605,32 @@ def smooth_runs(v: np.ndarray, min_len: int) -> np.ndarray:
         out[a:b] = out[a - 1]
 
 
-def class_masks(phones: Sequence[tuple[float, float, str]], n: int, voiced_g: np.ndarray) -> tuple[dict[str, np.ndarray], dict]:
+def add_transitions(masks: dict[str, np.ndarray], v: np.ndarray, names: Sequence[str | None]) -> None:
+    """Marks the 4 frames around every change of the voicing track ``v`` (1 voiced, 0 unvoiced, NaN unavailable; runs under
+    ``MIN_RUN_FRAMES`` absorbed first) in ``masks[names[0]]``, and onsets / offsets in ``masks[names[1]]`` / ``masks[names[2]]`` when named."""
+    n = len(v)
+    v = smooth_runs(np.asarray(v, dtype=float), MIN_RUN_FRAMES)
+    for t in range(1, n):
+        if np.isfinite(v[t]) and np.isfinite(v[t - 1]) and v[t] != v[t - 1]:
+            lo, hi = max(0, t - 2), min(n, t + 2)
+            masks[names[0]][lo:hi] = True
+            kind = names[1] if v[t] > 0 else names[2]
+            if kind:
+                masks[kind][lo:hi] = True
+
+
+def class_masks(
+    phones: Sequence[tuple[float, float, str]], n: int, voiced_g: np.ndarray, voiced_py: np.ndarray | None = None
+) -> tuple[dict[str, np.ndarray], dict]:
     """Boolean frame masks per class on the 50 Hz grid (frame ``t`` is at ``(t + 0.5) * 20 ms``), and label bookkeeping.
 
     Stops: the final 40 ms of a stop interval are ``stop_burst``, the rest ``stop_closure`` (a stop shorter than 60 ms
-    is all burst). Voicing transitions come from the voicing of the recording's re-extraction: frames whose centre is within
-    30 ms of a change between voiced and unvoiced (4 frames around it); ``voiced_g`` is NaN where unavailable.
+    is all burst). Three kinds of voicing-change frames (4 frames, all within 30 ms of the change): ``voicing_onset_offset``
+    (+ ``_onset`` / ``_offset``) from the voicing of the recording's re-extraction (the input tracker; ``voiced_g``, NaN where
+    unavailable), ``change_pyin`` from the pYIN voicing of the recording (``voiced_py``, optional) and ``change_phone``
+    from the boundaries of consecutive phone intervals whose voicing (:func:`phone_voicing`, silence counted as voiceless)
+    differs; an interval without a voicing value (h, glottal stop, spoken noise) breaks the adjacency. Phone-voicing
+    sets: ``phone_voiced``, ``sonorants`` (vowels, nasals, approximants) and ``phone_voiceless``.
     """
     centre = (np.arange(n) + 0.5) * (HOP / SAMPLE_RATE)
     masks = {c: np.zeros(n, dtype=bool) for c in CLASSES}
@@ -550,12 +650,26 @@ def class_masks(phones: Sequence[tuple[float, float, str]], n: int, voiced_g: np
             masks["stop_closure"] |= inside & ~burst
         else:
             masks[cls] |= inside
-    v = smooth_runs(np.asarray(voiced_g, dtype=float), MIN_RUN_FRAMES)
-    for t in range(1, n):
-        if np.isfinite(v[t]) and np.isfinite(v[t - 1]) and v[t] != v[t - 1]:
-            lo, hi = max(0, t - 2), min(n, t + 2)
-            masks["voicing_onset_offset"][lo:hi] = True
-            masks["voicing_onset" if v[t] > 0 else "voicing_offset"][lo:hi] = True
+        voicing = phone_voicing(p)
+        if voicing == "voiced":
+            masks["phone_voiced"] |= inside
+            if cls in ("vowels", "nasals", "approximants"):
+                masks["sonorants"] |= inside
+        elif voicing == "voiceless":
+            masks["phone_voiceless"] |= inside
+    add_transitions(masks, np.asarray(voiced_g, dtype=float), ("voicing_onset_offset", "voicing_onset", "voicing_offset"))
+    if voiced_py is not None:
+        add_transitions(masks, np.asarray(voiced_py, dtype=float), ("change_pyin", None, None))
+    prev_voicing, prev_end = None, None
+    for s, e, p in phones:
+        voicing = phone_voicing(p)
+        if voicing is None:
+            prev_voicing = None
+            continue
+        voiced = voicing == "voiced"
+        if prev_voicing is not None and prev_voicing != voiced and abs(s - prev_end) < 1e-6:
+            masks["change_phone"] |= np.abs(centre - s) <= 0.0301
+        prev_voicing, prev_end = voiced, e
     return masks, info
 
 
@@ -569,6 +683,14 @@ def frame_stats(mask: np.ndarray, a: dict[str, np.ndarray], g: dict[str, np.ndar
 
     out = {"n": float(mask.sum())}
     out["mel_l1"] = mean(a["mel"][mask]) if "mel" in a else nan
+    okp = mask & np.isfinite(a["per"])
+    out["in_voiced"] = float((a["per"][okp] > 0).mean()) if okp.any() else nan  # own output: input-tracker voiced fraction
+    py = a.get("py")
+    okq = mask & np.isfinite(py) if py is not None else np.zeros_like(mask)
+    out["py_voiced"] = float(py[okq].mean()) if okq.any() else nan  # own output: pYIN voiced fraction
+    out["py_unvoiced"], out["in_unvoiced"] = 1.0 - out["py_voiced"], 1.0 - out["in_voiced"]
+    both = okp & okq
+    out["trk_agree"] = float(((a["per"][both] > 0) == (py[both] > 0.5)).mean()) if both.any() else nan  # the two trackers on this audio
     if g is not None:
         hb = a["hb"] - g["hb"]
         hn = a["hnr"] - g["hnr"]
@@ -580,6 +702,12 @@ def frame_stats(mask: np.ndarray, a: dict[str, np.ndarray], g: dict[str, np.ndar
         out["vde"] = float((vs[ok] != vg[ok]).mean()) if ok.any() else nan
         out["per_mae"] = mean(np.abs(a["per"] - g["per"])[mask])
         out["voiced_gt"] = float(vg[ok].mean()) if ok.any() else nan
+        out["vagree_in"] = 1.0 - out["vde"] if ok.any() else nan  # voicing agreement with the input tracker
+        if py is not None and g.get("py") is not None:
+            okb = mask & np.isfinite(py) & np.isfinite(g["py"])
+            out["py_agree"] = float((py[okb] == g["py"][okb]).mean()) if okb.any() else nan
+        else:
+            out["py_agree"] = nan
         both = ok & vs & vg & (a["f0"] > 0) & (g["f0"] > 0)
         cents = 1200.0 * np.log2(a["f0"][both] / g["f0"][both])
         out["f0_abs"] = float(np.abs(cents).mean()) if both.any() else nan
@@ -591,7 +719,14 @@ def frame_stats(mask: np.ndarray, a: dict[str, np.ndarray], g: dict[str, np.ndar
 def load_frames(split: str, system: str, ids: Sequence[str]) -> dict[str, dict[str, np.ndarray]]:
     z = np.load(ROOT / "frames" / split / f"{system}.npz")
     keys = ("hb", "hnr", "per", "f0", "mel")
-    return {uid: {k: z[f"{uid}/{k}"].astype(np.float64) for k in keys if f"{uid}/{k}" in z.files} for uid in ids}
+    out = {uid: {k: z[f"{uid}/{k}"].astype(np.float64) for k in keys if f"{uid}/{k}" in z.files} for uid in ids}
+    pyin = ROOT / "pyin" / split / f"{system}.npz"
+    if pyin.exists():
+        zp = np.load(pyin)
+        for uid in ids:
+            n = len(out[uid]["hb"])
+            out[uid]["py"] = pad_to(zp[f"{uid}/voiced"].astype(np.float64), n)
+    return out
 
 
 def frame_table(split: str, systems: Sequence[str]) -> tuple[pd.DataFrame, dict]:
@@ -608,7 +743,7 @@ def frame_table(split: str, systems: Sequence[str]) -> tuple[pd.DataFrame, dict]
         if not tg.exists():
             continue
         cover["aligned"] += 1
-        m, info = class_masks(parse_textgrid_phones(tg), n, np.where(np.isfinite(gt[uid]["per"]), gt[uid]["per"] > 0, np.nan))
+        m, info = class_masks(parse_textgrid_phones(tg), n, np.where(np.isfinite(gt[uid]["per"]), gt[uid]["per"] > 0, np.nan), gt[uid].get("py"))
         masks[uid] = m
         for k in ("labelled", "unknown", "unmapped"):
             cover[k] += info[k]
@@ -677,12 +812,15 @@ GLOBAL_METRICS = [  # column, label, digits, kind
     ("sim_campplus", "CAM++ similarity to recording", 4, "mean"),
 ]
 FRAME_GLOBAL = [  # from the 'all' class of the frame table
-    ("vde", "voiced/unvoiced decision error (fraction of frames)", 4), ("f0_rmse", "F0 RMSE on frames voiced in both (cents)", 2),
+    ("vagree_in", "voicing agreement with the input tracker (CREPE periodicity > 0; fraction of frames)", 4),
+    ("py_agree", "voicing agreement with pYIN (independent tracker; fraction of frames)", 4), ("f0_rmse", "F0 RMSE on frames voiced in both (cents)", 2),
     ("per_mae", "periodicity MAE", 4), ("hnr_abs", "HNR error, mean absolute dB", 3), ("hnr_bias", "HNR error, mean dB (output - recording)", 3),
     ("hb_abs", "4-12 kHz log-energy error, mean absolute dB", 3), ("hb_bias", "4-12 kHz log-energy error, mean dB", 3),
 ]
 CLASS_METRICS = [("mel_l1", "mel L1", 4), ("hb_abs", "4-12 kHz log-energy error, mean absolute dB", 3), ("hb_bias", "4-12 kHz log-energy error, mean dB (output - recording)", 3),
-                 ("hnr_abs", "HNR error, mean absolute dB", 3), ("hnr_bias", "HNR error, mean dB (output - recording)", 3), ("vde", "voicing decision error", 4),
+                 ("hnr_abs", "HNR error, mean absolute dB", 3), ("hnr_bias", "HNR error, mean dB (output - recording)", 3),
+                 ("vagree_in", "voicing agreement with the input tracker", 4), ("py_agree", "voicing agreement with pYIN", 4),
+                 ("py_voiced", "fraction of frames pYIN calls voiced (own output)", 4), ("in_voiced", "fraction of frames the input tracker calls voiced (own output)", 4),
                  ("f0_abs", "F0 error on both-voiced frames, mean absolute cents", 2)]
 COMPARE = ("none", "probe_const", "probe_binary", "probe_smooth")
 
@@ -708,10 +846,96 @@ def fmt_ci(r: dict, digits: int, pct: bool = False) -> str:
     return f"{r['diff'] * s:+.{digits}f} [{r['lo'] * s:+.{digits}f}, {r['hi'] * s:+.{digits}f}]{sig}"
 
 
+PHONE_COLUMNS = [  # (class, column, label)
+    ("phone_voiced", "py_voiced", "pYIN voiced, in voiced phones"), ("sonorants", "py_voiced", "pYIN voiced, in sonorants"),
+    ("phone_voiceless", "py_unvoiced", "pYIN unvoiced, in voiceless phones"), ("phone_voiced", "in_voiced", "input tracker voiced, in voiced phones"),
+    ("phone_voiceless", "in_unvoiced", "input tracker unvoiced, in voiceless phones"), ("all", "trk_agree", "pYIN and input tracker agree (own audio)"),
+]
+
+
+def phone_voicing_section(frame_df: pd.DataFrame, systems: Sequence[str], rec: dict) -> list[str]:
+    """Phone-based voicing: how often a tracker calls frames of voiced phones voiced and of voiceless phones unvoiced, per system,
+    with the difference from the recording (paired over utterances, speaker-level bootstrap)."""
+    lines = ["### Phone-based voicing (forced-alignment labels as the reference)", "",
+             "Fraction of frames of voiced phones (vowels, nasals, approximants, voiced fricatives, voiced stops, dʒ) that a tracker calls "
+             "voiced, and of voiceless phones (voiceless stops and fricatives except h, tʃ) that it calls unvoiced. Cell: mean over "
+             "speakers; in brackets the difference from the recording's own value with its interval.", "",
+             "| system | " + " | ".join(label for _, _, label in PHONE_COLUMNS) + " |", "|" + "---|" * (1 + len(PHONE_COLUMNS))]
+    for system in systems:
+        cells = []
+        for cls, col, _ in PHONE_COLUMNS:
+            sub = frame_df[(frame_df["system"] == system) & (frame_df["class"] == cls)]
+            gt = frame_df[(frame_df["system"] == "gt") & (frame_df["class"] == cls)]
+            mean = speaker_means(sub, col).mean()
+            if system == "gt":
+                cells.append(fmt(mean, 4))
+                continue
+            r = paired(sub, gt, col)
+            rec[(f"phone/{cls}/{col}", system)] = r
+            cells.append(f"{fmt(mean, 4)} ({fmt_ci(r, 4)})")
+        lines.append("| " + " | ".join([SYSTEM_LABEL[system], *cells]) + " |")
+    return lines + [""]
+
+
+def seed_verdict(spread: dict, d0: dict, d1: dict) -> str:
+    """Does the ablation difference exceed the seed-to-seed spread? Yes when the ablation differs from both fork-model seeds
+    with a CI excluding 0 on the same side and the smaller of the two differences is larger than the seed difference."""
+    if not all(np.isfinite(r["diff"]) for r in (spread, d0, d1)):
+        return "n/a"
+
+    def sig(r: dict) -> bool:
+        return r["lo"] > 0 or r["hi"] < 0
+
+    if not (sig(d0) and sig(d1) and np.sign(d0["diff"]) == np.sign(d1["diff"])):
+        return "no (CI spans 0 against a seed)"
+    return "yes" if min(abs(d0["diff"]), abs(d1["diff"])) > abs(spread["diff"]) else "no (within the seed spread)"
+
+
+def seed_section(split: str, glob: dict, frame_df: pd.DataFrame, rec: dict) -> list[str]:
+    """Tables comparing the original-input-set effect with the seed spread of the fork recipe (``ref`` seed 0 vs ``ref_s1``)."""
+    head = "| {} | seed-0 fork model | seed 1 minus seed 0 (seed spread) | original minus seed 0 | original minus seed 1 | exceeds the seed spread |"
+    sep = "|---|---|---|---|---|---|"
+    lines = ["### Seed spread against the original-input-set difference", "",
+             "Seed spread = fork model trained with seed 1 minus seed 0 (same 100k recipe, `p4_b0_s1`). The difference exceeds the "
+             "spread when it differs from both seeds with an interval excluding 0 on the same side and the smaller of the two "
+             "differences is larger in size than the spread. One seed pair: the spread itself is an estimate of the noise, not a bound.", ""]
+
+    def row(name, a_ref, spread, d0, d1, digits, key, pct=False):
+        rec[(key, "seed_spread")], rec[(key, "none_minus_seed0")], rec[(key, "none_minus_seed1")] = spread, d0, d1
+        return "| " + " | ".join([name, fmt(a_ref, digits, pct), fmt_ci(spread, digits, pct), fmt_ci(d0, digits, pct), fmt_ci(d1, digits, pct), seed_verdict(spread, d0, d1)]) + " |"
+
+    lines += ["#### Global metrics", "", head.format("metric"), sep]
+    for col, name, digits, kind_ in GLOBAL_METRICS:
+        if kind_ in ("wer", "cer"):
+            num, den = ("word_errors", "word_ref_len") if kind_ == "wer" else ("char_errors", "char_ref_len")
+            sp, d0, d1 = (paired_ratio(glob[a], glob[b], num, den) for a, b in (("ref_s1", "ref"), ("none", "ref"), ("none", "ref_s1")))
+            lines.append(row(name, glob["ref"][num].sum() / glob["ref"][den].sum(), sp, d0, d1, digits, col, True))
+        else:
+            sp, d0, d1 = (paired(glob[a], glob[b], col) for a, b in (("ref_s1", "ref"), ("none", "ref"), ("none", "ref_s1")))
+            lines.append(row(name, glob["ref"][col].mean(), sp, d0, d1, digits, col))
+    allf = frame_df[frame_df["class"] == "all"].copy()
+    allf["f0_rmse"] = np.sqrt(allf["f0_sq"])
+    sub = {s: allf[allf["system"] == s] for s in ("ref", "ref_s1", "none")}
+    for col, name, digits in FRAME_GLOBAL:
+        sp, d0, d1 = (paired(sub[a], sub[b], col) for a, b in (("ref_s1", "ref"), ("none", "ref"), ("none", "ref_s1")))
+        lines.append(row(name, speaker_means(sub["ref"], col).mean(), sp, d0, d1, digits, col))
+    lines.append("")
+    for col, name, digits in CLASS_METRICS:
+        lines += [f"#### {name}, per sound class", "", head.format("class"), sep]
+        for c in ("all", *CLASSES):
+            sub = {s: frame_df[(frame_df["system"] == s) & (frame_df["class"] == c)] for s in ("ref", "ref_s1", "none")}
+            if sub["ref"].empty:
+                continue
+            sp, d0, d1 = (paired(sub[a], sub[b], col) for a, b in (("ref_s1", "ref"), ("none", "ref"), ("none", "ref_s1")))
+            lines.append(row(CLASS_LABEL[c], speaker_means(sub["ref"], col).mean(), sp, d0, d1, digits, f"{c}/{col}"))
+        lines.append("")
+    return lines
+
+
 def run_summarize(args: argparse.Namespace) -> None:
     setup_env()
     subset = load_subset()
-    available = {sp: [s for s in ("gt", "ref", "none", "probe_const", "probe_binary", "probe_smooth") if (ROOT / "metrics" / sp / f"{s}.parquet").exists()] for sp in SPLITS}
+    available = {sp: [s for s in ("gt", "ref", "ref_s1", "none", "probe_const", "probe_binary", "probe_smooth") if (ROOT / "metrics" / sp / f"{s}.parquet").exists()] for sp in SPLITS}
     lines = ["# Periodicity analysis: all tables", "", "Speaker-level paired bootstrap, 10,000 resamples, 95% intervals; `*` marks an interval that excludes 0.",
              "Differences are system minus the reference (fork input set, with periodicity).", ""]
     results: dict = {}
@@ -761,6 +985,7 @@ def run_summarize(args: argparse.Namespace) -> None:
                 row.append(fmt_ci(r, digits))
             lines.append("| " + " | ".join(row) + " |")
         lines += [""]
+        lines += phone_voicing_section(frame_df, systems, rec)
         lines += [f"Alignment coverage ({label}): {cover['aligned']}/{cover['utterances']} utterances aligned; {cover['labelled']}/{cover['frames']} frames "
                   f"({100 * cover['labelled'] / max(cover['frames'], 1):.1f} %) in a sound class (spoken-noise labels {cover['unknown']}, unmapped {cover['unmapped']}); "
                   "frames per class: " + ", ".join(f"{CLASS_LABEL[c]} {n}" for c, n in cover["per_class"].items()), ""]
@@ -778,6 +1003,8 @@ def run_summarize(args: argparse.Namespace) -> None:
                     row.append(fmt_ci(r, digits))
                 lines.append("| " + " | ".join(row) + " |")
             lines.append("")
+        if "ref_s1" in systems:
+            lines += seed_section(split, glob, frame_df, rec)
         results[split] = {f"{k[0]}|{k[1]}": v for k, v in rec.items()}
         results[split]["coverage"] = cover
     (ROOT / "summary").mkdir(exist_ok=True)
@@ -804,16 +1031,18 @@ def run_cfgdiff(args: argparse.Namespace) -> None:
     from sparc.vocoders.training.callbacks import list_step_checkpoints
 
     cfgs = {}
-    for name, run in (("ref", REF_RUN), ("none", ABL_RUN)):
+    runs = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN}
+    first, second = args.pair.split(",")
+    for name, run in ((first, runs[first]), (second, runs[second])):
         step, path = list_step_checkpoints(Path(run) / "ckpt")[-1]
         state = torch.load(path, map_location="cpu", weights_only=False)
         cfgs[name] = flatten(state["hyper_parameters"]["cfg"])
         print(name, path, "g_step", int(state["vocoder_counters"]["g_step"]))
-    keys = sorted(set(cfgs["ref"]) | set(cfgs["none"]))
-    diff = [(k, cfgs["ref"].get(k, "<absent>"), cfgs["none"].get(k, "<absent>")) for k in keys if cfgs["ref"].get(k, "<absent>") != cfgs["none"].get(k, "<absent>")]
+    keys = sorted(set(cfgs[first]) | set(cfgs[second]))
+    diff = [(k, cfgs[first].get(k, "<absent>"), cfgs[second].get(k, "<absent>")) for k in keys if cfgs[first].get(k, "<absent>") != cfgs[second].get(k, "<absent>")]
     print(f"{len(keys)} config keys, {len(diff)} differ:")
     for k, a, b in diff:
-        print(f"  {k}: ref={a!r} none={b!r}")
+        print(f"  {k}: {first}={a!r} {second}={b!r}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -831,9 +1060,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     m.add_argument("--splits", default=",".join(SPLITS))
     m.add_argument("--overwrite", action="store_true")
     sub.add_parser("summarize")
-    sub.add_parser("cfgdiff")
+    c = sub.add_parser("cfgdiff")
+    c.add_argument("--pair", default="ref,none", help="two of ref, ref_s1, none (config keys that differ between their checkpoints)")
+    y = sub.add_parser("pyin")
+    y.add_argument("--systems", default="gt,ref,ref_s1,none,probe_const,probe_binary,probe_smooth")
+    y.add_argument("--splits", default=",".join(SPLITS))
+    y.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", "8")))
+    y.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
-    {"prepare": run_prepare, "synth": run_synth, "metrics": run_metrics, "summarize": run_summarize, "cfgdiff": run_cfgdiff}[a.cmd](a)
+    {"prepare": run_prepare, "synth": run_synth, "metrics": run_metrics, "summarize": run_summarize, "cfgdiff": run_cfgdiff, "pyin": run_pyin}[a.cmd](a)
 
 
 if __name__ == "__main__":

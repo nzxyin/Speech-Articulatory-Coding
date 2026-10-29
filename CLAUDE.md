@@ -75,13 +75,19 @@ Phase 5 winner. Side vectors: `/data/user_data/xoy/spkemb/phase6/` (`features/sp
 - The existing training module is not preemption-safe, counts both optimizers in `global_step`, and fails under plain
   DDP (#15). Its learning-rate schedule (#10) and MSD pooling (#9) also have bugs.
 
-## Periodicity as a vocoder input (2026-10-29, `docs/vocoder_periodicity_analysis.md`)
+## Periodicity as a vocoder input (2026-10-29, revised after review, `docs/vocoder_periodicity_analysis.md`)
 
-- Adding periodicity to the original SPARC vocoder inputs (EMA + pitch + loudness) gives a small, consistent gain in
-  domain (HiFi-GAN, 100k steps, one seed, LibriTTS-R test-clean): UTMOS +0.05, mel L1 -1.7%, voiced/unvoiced decision
-  error 7.4% -> 4.5%, HNR error -0.17 dB; WER and speaker similarity not clearly changed. The gain is largest for voiced
-  fricatives, vowels and voicing onsets/offsets, smallest for voiceless fricatives and silence. Out of domain (VCTK) only
-  the voicing measures keep the gain.
-- The trained model uses it mostly as a frame-precise voicing gate: replacing it by a constant is catastrophic (UTMOS
-  -0.43), by a voiced/unvoiced mask nearly harmless, by a 9-frame moving average costs about twice the mask.
+- Adding periodicity to the original SPARC vocoder inputs (EMA + pitch + loudness) gives a small gain in domain (HiFi-GAN,
+  100k steps, LibriTTS-R test-clean; fork model seed 0 and seed 1, one ablation run): mel L1 -1.7%, PESQ +0.10, HNR error
+  -0.17 dB, UTMOS +0.05, all above the seed-0/seed-1 spread. WER, CER, F0 error and speaker similarity are within the seed
+  spread (the two fork seeds differ by 0.013 ECAPA similarity, more than the ablation). Out of domain (VCTK) the harmonic and
+  voicing measures keep the gain, UTMOS and mel L1 over all frames do not.
+- Voicing: agreement with the vocoder's own input tracker (CREPE) falls by 2.9 points without periodicity, but that
+  measure is circular; with pYIN it falls by 0.85 points [0.5, 1.3] (vowels, approximants, voicing changes), and judged by
+  phone labels the model without periodicity voices voiced phones slightly more often (+0.8 points) and voiceless phones
+  unvoiced about as often. The earlier "frame-precise voiced/unvoiced gate" reading is not supported as stated.
+- Probes on the model trained with periodicity: replacing it by a constant is catastrophic (UTMOS -0.43), by a
+  voiced/unvoiced mask nearly harmless, by a 9-frame moving average costs about twice the mask. This shows reliance of that
+  model, not the mechanism and not what training with the channel gains. "Nothing measurable hurts" rests on one ablation
+  run and one VCTK subset. Per-class results have no multiplicity correction.
 - Ablation run `experiment=periodicity_none_100k` (`models/hifigan_inputs.py`, `FeatureFrontend(drop_periodicity=True)`).

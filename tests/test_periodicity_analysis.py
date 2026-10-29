@@ -15,13 +15,38 @@ def test_phone_classes():
         "p": "stops", "kʰ": "stops", "dʲ": "stops", "ɡ": "stops", "ʔ": "stops",
         "tʃ": "affricates", "dʒ": "affricates",
         "z": "voiced_fricatives", "ð": "voiced_fricatives", "v": "voiced_fricatives",
-        "s": "voiceless_fricatives", "ʃ": "voiceless_fricatives", "f": "voiceless_fricatives", "h": "voiceless_fricatives",
+        "s": "voiceless_fricatives", "ʃ": "voiceless_fricatives", "f": "voiceless_fricatives", "h": "h",
         "l": "approximants", "ɫ": "approximants", "ɹ": "approximants", "j": "approximants", "w": "approximants", "ɾ": "approximants",
         "": "silence", "sil": "silence", "sp": "silence",
         "spn": None,
     }
     for phone, cls in expected.items():
         assert pa.phone_class(phone) == cls, phone
+
+
+def test_phone_voicing():
+    expected = {"a": "voiced", "n": "voiced", "l": "voiced", "z": "voiced", "b": "voiced", "ɡ": "voiced", "dʒ": "voiced",
+                "p": "voiceless", "kʰ": "voiceless", "s": "voiceless", "θ": "voiceless", "tʃ": "voiceless",
+                "": "silence", "sp": "silence", "h": None, "ʔ": None, "spn": None}
+    for phone, v in expected.items():
+        assert pa.phone_voicing(phone) == v, phone
+
+
+def test_phone_sets_and_boundaries():
+    n = 50
+    # silence, voiced vowel, voiceless s, h (breaks adjacency), voiced n, spn
+    phones = [(0.0, 0.2, ""), (0.2, 0.4, "a"), (0.4, 0.6, "s"), (0.6, 0.7, "h"), (0.7, 0.8, "n"), (0.8, 1.0, "spn")]
+    py = np.zeros(n)
+    py[10:20] = 1.0
+    m, _ = pa.class_masks(phones, n, np.zeros(n), py)
+    assert np.array_equal(np.flatnonzero(m["phone_voiced"]), np.r_[10:20, 35:40])
+    assert np.array_equal(np.flatnonzero(m["sonorants"]), np.r_[10:20, 35:40])
+    assert np.array_equal(np.flatnonzero(m["phone_voiceless"]), np.arange(20, 30))
+    assert np.array_equal(np.flatnonzero(m["h"]), np.arange(30, 35))
+    # boundaries: silence | a at 200 ms (frames 8..11), a | s at 400 ms (frames 18..21); s | h and h | n are not boundaries
+    assert np.array_equal(np.flatnonzero(m["change_phone"]), np.r_[8:12, 18:22])
+    # pYIN changes at frames 10 (onset) and 20 (offset)
+    assert np.array_equal(np.flatnonzero(m["change_pyin"]), np.r_[8:12, 18:22])
 
 
 def test_class_masks_stops_and_transitions():
