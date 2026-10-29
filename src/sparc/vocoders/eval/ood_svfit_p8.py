@@ -458,6 +458,12 @@ def advance_rule(pools: dict[str, Any], swaps: dict[str, Any], arm: str, judges:
     rise = {p: {m: r["models"][m]["src"]["diff"]["mean"] for m in JUDGES} for p, r in swaps.items()}
     out["swap_source_rise"] = rise
     out["checks"]["swap_source_similarity_rise_<=0.02"] = bool(swaps) and all(x <= lim["source_rise"] for p in rise.values() for x in p.values())
+    # The same quality guards on the swap items of every pool (added to the evaluation after the first summary; it can only add failures).
+    sw_drop = {p: r["utmos"]["std"] - r["utmos"]["fit"] for p, r in swaps.items()}
+    sw_wer = {p: r["wer"]["fit"] - r["wer"]["std"] for p, r in swaps.items()}
+    out["swap_utmos_drop"], out["swap_wer_up"] = sw_drop, sw_wer
+    out["checks"]["utmos_drop_<=0.1_swap_pools"] = bool(swaps) and all(d <= lim["utmos_drop"] for d in sw_drop.values())
+    out["checks"]["wer_<=+0.5_swap_pools"] = bool(swaps) and all(w <= lim["wer_points"] for w in sw_wer.values())
     main = [k for k in out["checks"] if not k.endswith("CAM++_too")]
     out["advances"] = all(out["checks"][k] for k in main)
     return out
@@ -498,7 +504,10 @@ def render_markdown(choice: dict[str, Any], pools: dict[str, Any], swaps: dict[s
         lines += ["## Advance rule", "", f"Judged setting: {rule['arm']}. Advances: **{rule['advances']}**.", "", "| check | pass |", "|---|---|"]
         lines += [f"| {k} | {v} |" for k, v in rule["checks"].items()]
         lines += ["", "VCTK closure: " + ", ".join(f"{MODEL_NAMES[m]} {fmt(rule['vctk_closure'][m])}" for m in MODELS)]
-        lines += ["UTMOS drop per pool: " + json.dumps({k: round(v, 3) for k, v in rule["utmos_drop"].items()}), "WER rise per pool: " + json.dumps({k: round(v, 2) for k, v in rule["wer_up"].items()}),
+        lines += ["UTMOS drop per pool (own-speaker items): " + json.dumps({k: round(v, 3) for k, v in rule["utmos_drop"].items()}),
+                  "WER rise per pool (own-speaker items): " + json.dumps({k: round(v, 2) for k, v in rule["wer_up"].items()}),
+                  "UTMOS drop per pool (swap items): " + json.dumps({k: round(v, 3) for k, v in rule["swap_utmos_drop"].items()}),
+                  "WER rise per pool (swap items): " + json.dumps({k: round(v, 2) for k, v in rule["swap_wer_up"].items()}),
                   "LibriTTS own-speaker drop: " + json.dumps({k: round(v, 4) for k, v in rule["libritts_own_drop"].items()}),
                   "Swap source-similarity rise: " + json.dumps({p: {m: round(x, 4) for m, x in d.items()} for p, d in rule["swap_source_rise"].items()}), ""]
     return "\n".join(lines) + "\n"

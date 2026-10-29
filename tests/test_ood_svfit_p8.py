@@ -96,7 +96,7 @@ def _own_df(gain: float, utmos_drop: float, n: int = 12) -> pd.DataFrame:
 def test_closure_and_rule_pass_and_fail():
     ok = {p: p8.summarize_pool(_own_df(0.16, 0.02), p8.ARMS, 300) for p in ("libritts", "vctk", "globe")}
     assert ok["vctk"]["models"]["wespeaker"]["nat"]["closure"]["mean"] == pytest.approx(0.4, abs=0.02)
-    swap = {p: {"models": {m: {"src": {"diff": {"mean": 0.005}}} for m in p8.MODELS}} for p in ("libritts", "vctk", "globe_spk")}
+    swap = {p: {"models": {m: {"src": {"diff": {"mean": 0.005}}} for m in p8.MODELS}, "utmos": {"std": 3.5, "fit": 3.48}, "wer": {"std": 3.0, "fit": 3.2}} for p in ("libritts", "vctk", "globe_spk")}
     rule = p8.advance_rule(ok, swap, "nat")
     # libritts own-speaker similarity rises in this fixture, so no drop; closure 0.4 with a tight interval
     assert rule["advances"] and rule["checks"]["closure_lower_bound_>=0.25_each_held_out_verifier"]
@@ -104,6 +104,6 @@ def test_closure_and_rule_pass_and_fail():
     assert not p8.advance_rule(bad_utmos, swap, "nat")["advances"]
     weak = {p: p8.summarize_pool(_own_df(0.02, 0.0), p8.ARMS, 300) for p in ("libritts", "vctk", "globe")}
     assert not p8.advance_rule(weak, swap, "nat")["checks"]["closure_lower_bound_>=0.25_each_held_out_verifier"]
-    src_up = {p: {"models": {m: {"src": {"diff": {"mean": 0.05}}} for m in p8.MODELS}} for p in swap}
+    src_up = {p: {"models": {m: {"src": {"diff": {"mean": 0.05}}} for m in p8.MODELS}, "utmos": {"std": 3.5, "fit": 3.48}, "wer": {"std": 3.0, "fit": 3.2}} for p in swap}
     assert not p8.advance_rule(ok, src_up, "nat")["advances"]
     assert math.isfinite(rule["libritts_own_drop"]["wespeaker"])
