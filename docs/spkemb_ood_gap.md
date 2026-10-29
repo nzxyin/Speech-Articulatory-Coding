@@ -191,3 +191,5 @@ VoxCeleb-trained speaker models, so part of the transfer could be shared sensiti
 quality drop is consistent with; the settings sit at grid edges; GLOBE is 8 items; UTMOS and WER are the only guard. Conclusion: the code space
 carries substantial headroom (the encoder and its inference are a bottleneck, not only the generator), but a code fitted per speaker with the
 verifier in the loop does not reach ground truth on VCTK, so the generator or its other inputs still limit part of the gap there.
+
+**Correction (2026-10-29).** CAM++ and WeSpeaker are not independent of the fit's settings: the validation selection maximized their mean, so they are selection criteria that are outside the fitting loss, not untouched judges (all three are also VoxCeleb-trained). Read "held-out" above as "not in the loss". The GLOBE closure is descriptive (8 items, fitted references inside the scoring set). The reading that the generator limits the remaining VCTK gap is not isolated by these runs: the fit is capped by the UTMOS rule, ground truth is on another channel than the vocoder's output, and no copy-synthesis control exists (see `spkemb_ood_recommendations.md`).

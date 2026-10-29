@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Out-of-domain speaker similarity recommendations (`docs/spkemb_ood_recommendations.md`) revised after review: evidence labelled validation-selected or test-judged, verifier-measured wording for the code-fitting gain, Phase 6 gains and data-arm figures cited by arm, existing constrained sweep rows reported, three redesigned next experiments (channel ceiling and input-path controls, constrained fitting with a non-selection verifier, listening test of the validation-chosen fit); correction note in `docs/spkemb_ood_gap.md`.
 - SV-driven code fitting through the frozen generator (`vocoders/eval/ood_svfit.py`, new section in `docs/spkemb_ood_gap.md`): the 64-d speaker code or the speaker network input is fitted to maximize differentiable ECAPA similarity, scored on CAM++ and WeSpeaker ResNet34 (not in the loss) with UTMOS and WER guards; settings chosen on validation speakers, test items run once; plus a code-swap sensitivity check.
 - Out-of-domain gap diagnosis (`vocoders/eval/ood_gap.py`, `docs/spkemb_ood_gap.md`): own-speaker resynthesis with the standard code, an oracle code, and test-time code fitting on the references or on the target utterance (steps and learning rate tuned on a LibriTTS-R dev set), against ground truth, on LibriTTS-R, VCTK and GLOBE subsets; speaker-level bootstrap summaries.
 - Cloning split scoring from the split's own speakers (`clone.rescore_split`, `split_table`): `summarize-split` and
