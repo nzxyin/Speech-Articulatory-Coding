@@ -1,0 +1,274 @@
+<title>Whose Voice Is It?</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: one calm column; each trial is a listening bench (three clips) above a rating sheet. */
+:root {
+  --bg: #f3f5f7; --sheet: #ffffff; --ink: #1d2733; --muted: #5d6b7a; --rule: #d3dae2;
+  --accent: #2f6f8f; --accent-ink: #ffffff; --good: #2e7d4f; --bad: #b3362b;
+  --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171c; --sheet: #1b2229; --ink: #e4e9ee; --muted: #9aa8b5; --rule: #34404b;
+    --accent: #7cb8d6; --accent-ink: #0f1a20; --good: #7cc79a; --bad: #f0a59c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171c; --sheet: #1b2229; --ink: #e4e9ee; --muted: #9aa8b5; --rule: #34404b;
+  --accent: #7cb8d6; --accent-ink: #0f1a20; --good: #7cc79a; --bad: #f0a59c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.55 var(--body); }
+main {
+  max-width: 46rem; margin: 0 auto; display: flex; flex-direction: column; gap: 1rem;
+  padding-block: 1.5rem 3rem;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1 { font-size: 1.6rem; margin: 0; text-wrap: balance; }
+h2 { font-size: 1.1rem; margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 62ch; }
+.sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: .8rem; }
+.label { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+select, button, textarea { font: inherit; color: inherit; }
+select { padding: .45rem .6rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+button { padding: .55rem 1.2rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 700; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, select:focus-visible, input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 2px; }
+#msg { min-height: 1.4em; color: var(--muted); }
+#msg.bad { color: var(--bad); }
+#msg.good { color: var(--good); }
+.progress { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+.bar { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+.clip { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: .25rem .9rem; align-items: center; }
+.clip b { font-size: 1.05rem; }
+.clip audio { width: 100%; }
+.clip .st { grid-column: 2; font-size: .82rem; color: var(--muted); }
+.clip .st.ok { color: var(--good); }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
+.q { display: flex; flex-direction: column; gap: .35rem; }
+.scale { display: flex; gap: .4rem; flex-wrap: wrap; }
+.scale label { position: relative; }
+.scale input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.scale span { display: inline-grid; place-items: center; min-width: 2.4rem; height: 2.4rem; border: 1px solid var(--rule); border-radius: 6px; font-family: var(--mono); }
+.scale input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.anch { font-size: .8rem; color: var(--muted); }
+textarea { width: 100%; height: 7rem; font: .78rem var(--mono); background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: .5rem; }
+@media (max-width: 560px) { .cols { grid-template-columns: minmax(0, 1fr); } .clip { grid-template-columns: minmax(0, 1fr); } .clip .st { grid-column: 1; } }
+@media (prefers-reduced-motion: no-preference) { .bar > i { transition: width .3s ease; } }
+</style>
+
+<main>
+  <header class="row" style="justify-content: space-between">
+    <h1>Whose voice is it?</h1>
+    <span class="label">Pilot listening test</span>
+  </header>
+  <p class="lede">You will hear a real person, then two computer-generated recordings. Your job is to judge which recording sounds more like that same person. About 34 short trials, 20 to 25 minutes. Please use headphones in a quiet room and keep the volume fixed.</p>
+  <p id="msg" role="status"></p>
+
+  <section id="setup" class="sheet">
+    <h2>Start or continue</h2>
+    <p class="anch">Pick the listener number the study host gave you. If you stop part-way, open this page again and you continue where you left off.</p>
+    <div class="row">
+      <label for="listener" class="label">Listener</label>
+      <select id="listener"><option value="">Choose…</option></select>
+      <button id="go" disabled>Continue</button>
+    </div>
+  </section>
+
+  <section id="intro" class="sheet" hidden>
+    <h2>How each trial works</h2>
+    <p>The <b>Reference</b> is a real recording of a person. <b>A</b> and <b>B</b> are synthetic and say a different sentence. Ignore what is said and the recording quality of the Reference; judge <b>who</b> seems to be speaking.</p>
+    <p>Play every clip to the end at least once (replaying is fine). Rate A and B, then choose the one that sounds more like the same person as the Reference.</p>
+    <p class="anch">Similarity: 1 = clearly a different person, 5 = clearly the same person. Naturalness: 1 = very unnatural or distorted, 5 = completely natural.</p>
+    <div class="row"><button id="begin">Begin</button></div>
+  </section>
+
+  <section id="trial" hidden>
+    <div class="sheet">
+      <div class="progress"><h2 id="progress" class="mono"></h2><span id="who" class="label"></span></div>
+      <div class="bar"><i id="barfill"></i></div>
+      <div class="clip"><b>Reference</b><audio id="au_ref" controls preload="auto"></audio><span class="st" id="st_ref"></span></div>
+      <div class="clip"><b>A</b><audio id="au_a" controls preload="auto"></audio><span class="st" id="st_a"></span></div>
+      <div class="clip"><b>B</b><audio id="au_b" controls preload="auto"></audio><span class="st" id="st_b"></span></div>
+    </div>
+    <div class="sheet">
+      <div class="cols">
+        <div class="q"><span class="label">A</span>
+          <span>Similarity to the Reference</span><div class="scale" data-name="sim_a"></div>
+          <span>Naturalness</span><div class="scale" data-name="nat_a"></div></div>
+        <div class="q"><span class="label">B</span>
+          <span>Similarity to the Reference</span><div class="scale" data-name="sim_b"></div>
+          <span>Naturalness</span><div class="scale" data-name="nat_b"></div></div>
+      </div>
+      <div class="q"><span>Which sounds more like the same person as the Reference?</span>
+        <div class="scale" data-name="pref" data-values="A,B"></div></div>
+      <div class="row"><button id="submit">Save and next</button></div>
+    </div>
+  </section>
+
+  <section id="done" class="sheet" hidden>
+    <h2>Finished. Thank you.</h2>
+    <p id="donemsg">Your answers are saved.</p>
+    <div id="fallback" class="q" hidden>
+      <span class="anch">Saving to the study was not possible from this view. Please copy the text below and send it to the study host.</span>
+      <textarea id="exportbox" readonly></textarea>
+      <div class="row"><button id="copy">Copy</button></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var CLIPS = ["ref", "a", "b"];
+  var $ = function (id) { return document.getElementById(id); };
+  var st = { manifest: null, set: null, lid: null, trials: [], responses: {}, started: null, finished: null,
+             idx: -1, plays: {}, listened: {}, shownAt: 0, db: null, ref: null, saveOk: true };
+
+  function msg(t, kind) { var m = $("msg"); m.textContent = t || ""; m.className = kind || ""; }
+  function audioUrl(h) { return (st.manifest.audio_base || "stimuli/") + h + (st.manifest.ext || ".wav"); }
+  function doneCount() { return Object.keys(st.responses).length; }
+  function nextIdx() { for (var i = 0; i < st.trials.length; i++) { if (!st.responses[st.trials[i].trial_id]) return i; } return -1; }
+
+  function exported() {
+    return { schema: 1, set: st.set.set, listener: st.lid, started: st.started, finished: st.finished,
+             user_agent: navigator.userAgent,
+             responses: st.trials.filter(function (t) { return st.responses[t.trial_id]; }).map(function (t) { return st.responses[t.trial_id]; }) };
+  }
+
+  var saving = Promise.resolve();
+  function save() {
+    if (!st.ref) { st.saveOk = false; return saving; }
+    var body = { schema: 1, set: st.set.set, listener: st.lid, started: st.started, finished: st.finished,
+                 user_agent: navigator.userAgent, responses: st.responses };
+    saving = saving.then(function () { return st.ref.set(body); }).then(function () { st.saveOk = true; },
+      function (e) { st.saveOk = false; msg("Your answer could not be saved (" + ((e && e.code) || "error") + "). Ask the study host for access; you can keep going and copy your answers at the end.", "bad"); });
+    return saving;
+  }
+
+  function buildScales() {
+    document.querySelectorAll(".scale").forEach(function (div) {
+      var name = div.getAttribute("data-name");
+      var vals = (div.getAttribute("data-values") || "1,2,3,4,5").split(",");
+      vals.forEach(function (v) {
+        var lab = document.createElement("label");
+        var inp = document.createElement("input");
+        inp.type = "radio"; inp.name = name; inp.value = v; inp.id = name + "_" + v;
+        var sp = document.createElement("span"); sp.textContent = v;
+        lab.appendChild(inp); lab.appendChild(sp); div.appendChild(lab);
+      });
+    });
+  }
+  function val(name) {
+    var r = document.querySelector("input[name=" + name + "]:checked");
+    return r ? (name === "pref" ? r.value : parseInt(r.value, 10)) : null;
+  }
+
+  function showTrial() {
+    st.idx = nextIdx();
+    if (st.idx < 0) { finish(); return; }
+    var t = st.trials[st.idx];
+    $("trial").hidden = false;
+    $("progress").textContent = "Trial " + (st.idx + 1) + " / " + st.trials.length;
+    $("barfill").style.width = (100 * doneCount() / st.trials.length) + "%";
+    st.plays = { ref: 0, a: 0, b: 0 }; st.listened = { ref: false, a: false, b: false };
+    CLIPS.forEach(function (k) {
+      var a = $("au_" + k); a.pause(); a.src = audioUrl(t[k]); a.load();
+      var s = $("st_" + k); s.textContent = "Not played yet"; s.className = "st";
+    });
+    document.querySelectorAll("#trial input[type=radio]").forEach(function (r) { r.checked = false; });
+    st.shownAt = Date.now();
+    window.scrollTo(0, 0);
+  }
+
+  function submit() {
+    var t = st.trials[st.idx];
+    var r = { trial_id: t.trial_id, sim_a: val("sim_a"), sim_b: val("sim_b"), nat_a: val("nat_a"), nat_b: val("nat_b"), pref: val("pref"),
+              plays: st.plays, listened: st.listened, rt_s: Math.round((Date.now() - st.shownAt) / 100) / 10, t: new Date().toISOString() };
+    var errs = [];
+    ["sim_a", "sim_b", "nat_a", "nat_b"].forEach(function (k) { if (!r[k]) errs.push(k.replace("_", " ").replace("sim", "similarity").replace("nat", "naturalness").toUpperCase()); });
+    if (!r.pref) errs.push("your choice of A or B");
+    CLIPS.forEach(function (c) { if (!st.listened[c]) errs.push("play " + (c === "ref" ? "the Reference" : c.toUpperCase()) + " to the end"); });
+    if (errs.length) { msg("Still needed: " + errs.join(", ") + ".", "bad"); return; }
+    st.responses[t.trial_id] = r;
+    if (nextIdx() < 0 && !st.finished) st.finished = new Date().toISOString();
+    msg(st.saveOk ? "" : $("msg").textContent, st.saveOk ? "" : "bad");
+    save();
+    showTrial();
+  }
+
+  function finish() {
+    $("trial").hidden = true; $("done").hidden = false;
+    saving.then(function () {
+      if (st.saveOk) { $("donemsg").textContent = "Your answers are saved. You can close this page."; msg("Saved.", "good"); }
+      else { $("donemsg").textContent = "Your answers could not be saved to the study."; $("fallback").hidden = false; $("exportbox").value = JSON.stringify(exported()); }
+    });
+  }
+
+  function wireAudio() {
+    CLIPS.forEach(function (k) {
+      var a = $("au_" + k);
+      a.addEventListener("play", function () { st.plays[k] += 1; CLIPS.forEach(function (o) { if (o !== k) $("au_" + o).pause(); }); });
+      a.addEventListener("ended", function () { st.listened[k] = true; var s = $("st_" + k); s.textContent = "Played to the end (" + st.plays[k] + "×)"; s.className = "st ok"; });
+      a.addEventListener("error", function () { if (a.getAttribute("src")) msg("A clip did not load. Reload the page; your progress is kept.", "bad"); });
+    });
+  }
+
+  function start(resumeDoc) {
+    var lid = $("listener").value || (resumeDoc && resumeDoc.listener) || "";
+    if (!lid || !st.set.listeners[lid]) { msg("Choose your listener number first.", "bad"); return; }
+    if (resumeDoc && resumeDoc.listener && resumeDoc.listener !== lid) {
+      msg("This account already started as " + resumeDoc.listener + ". Continuing as " + resumeDoc.listener + ".", "");
+      lid = resumeDoc.listener; $("listener").value = lid;
+    }
+    st.lid = lid; st.trials = st.set.listeners[lid];
+    if (resumeDoc && resumeDoc.listener === lid && resumeDoc.responses) {
+      st.responses = resumeDoc.responses; st.started = resumeDoc.started || new Date().toISOString(); st.finished = resumeDoc.finished || null;
+    } else { st.responses = {}; st.started = new Date().toISOString(); }
+    $("who").textContent = "Listener " + lid;
+    $("setup").hidden = true;
+    if (doneCount() > 0) { msg("Welcome back. Continuing from trial " + (doneCount() + 1) + ".", ""); showTrial(); }
+    else { $("intro").hidden = false; }
+  }
+
+  function loadJson(u) { return fetch(u).then(function (r) { if (!r.ok) throw new Error(u + " " + r.status); return r.json(); }); }
+
+  var resume = null;
+  function init() {
+    buildScales(); wireAudio();
+    Promise.all([loadJson("manifest.json"), loadJson("trials/pilot.json")]).then(function (v) {
+      st.manifest = v[0]; st.set = v[1];
+      Object.keys(st.set.listeners).forEach(function (id) { var o = document.createElement("option"); o.value = id; o.textContent = id; $("listener").appendChild(o); });
+      $("go").disabled = false;
+    }).catch(function () { msg("The test files did not load. Reload the page.", "bad"); });
+    $("go").addEventListener("click", function () { start(resume); });
+    $("begin").addEventListener("click", function () { $("intro").hidden = true; showTrial(); });
+    $("submit").addEventListener("click", submit);
+    $("copy").addEventListener("click", function () {
+      var box = $("exportbox");
+      try { navigator.clipboard.writeText(box.value).then(function () { msg("Copied.", "good"); }, function () { box.select(); }); } catch (e) { box.select(); }
+    });
+    if (window.claude && window.claude.use) {
+      Promise.all([window.claude.use("db"), window.claude.use("user")]).then(function (caps) {
+        var db = caps[0], user = caps[1];
+        if (!db || !user) { st.saveOk = false; msg("Sign in to claude.ai so your answers can be saved.", "bad"); return; }
+        return user.id().then(function (uid) {
+          if (!uid) { st.saveOk = false; msg("Sign in to claude.ai so your answers can be saved.", "bad"); return; }
+          st.ref = db.doc("responses/" + uid);
+          return st.ref.get().then(function (snap) {
+            if (snap.exists) { resume = snap.data(); if (resume && resume.listener) { $("listener").value = resume.listener; msg("Welcome back, " + resume.listener + ". Press Continue.", ""); } }
+          });
+        });
+      }).catch(function () { st.saveOk = false; });
+    } else { st.saveOk = false; }
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
+})();
+</script>

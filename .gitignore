@@ -9,3 +9,4 @@ scripts/err
 scripts/out
 scripts/*.sh
 .venv
+artifacts/listening/pub/
