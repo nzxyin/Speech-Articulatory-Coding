@@ -902,3 +902,26 @@ def test_length_condition_skips_leading_digital_silence():
     audio["a"] = np.concatenate([np.full(100, 0.5), np.zeros(40000)]).astype(np.float32)
     rc._encode("len1", ["a", "b"])  # normal case unchanged: the first second as before
     assert np.array_equal(seen[-1], np.concatenate([audio["a"], audio["b"]])[:SAMPLE_RATE])
+
+
+def test_acceptance_is_not_available_without_a_threshold():
+    """A pool with a single reference per speaker has no EER threshold; acceptance must be NaN, not 0."""
+    rng = np.random.default_rng(0)
+    one_ref = {f"s{i}": rng.standard_normal((1, 8)) for i in range(5)}
+    cal = clone.calibration_stats(one_ref)
+    assert np.isnan(cal["eer_threshold"]) and cal["n_same"] == 0
+    plan = clone.build_plan(fake_table(n_speakers=6, per_speaker=24), "fake", n_swap=8, n_own=0, n_curve=0, n_refs=6, min_refs=6)
+    centers = {s: rng.standard_normal(12) * 3 for s in plan["speakers"]}
+    ref_utt = {u: centers[s] + 0.2 * rng.standard_normal(12) for s, r in plan["refs"].items() for u in r}
+    ref_means = {"fake": {"ecapa": {s: clone.mean_unit(np.stack([ref_utt[u] for u in r])) for s, r in plan["refs"].items()}}}
+    gt = {"fake": {"ecapa": {s["content_id"]: centers[s["source"]] for s in plan["swaps"]}}}
+    items = clone.build_items(plan, clone.all_variants(5), ["k5"])
+    manifest = pd.DataFrame([{"key": i.key, "kind": i.kind, "pool": i.pool, "pair_id": i.pair_id, "variant": i.variant, "content_id": i.content_id,
+                              "source": i.source, "target": i.target, "same_gender": i.same_gender, "dur_bin": i.dur_bin, "dur_s": i.dur_s,
+                              "code_ids": i.code_ids} for i in items])
+    emb = np.stack([centers[i.target] for i in items])
+    args = (manifest, {"ecapa": emb}, np.full(len(manifest), 3.5), [(0, 10)] * len(manifest), ref_means, {"fake": {"ecapa": ref_utt}}, gt)
+    nan_thr = clone.item_table(*args, {"fake": {"ecapa": float("nan")}}, {"fake": plan})
+    assert nan_thr["ecapa/accept"].isna().all() and nan_thr["ecapa/sim_target"].notna().all()
+    ok_thr = clone.item_table(*args, {"fake": {"ecapa": 0.5}}, {"fake": plan})
+    assert (ok_thr["ecapa/accept"] == 1.0).all()

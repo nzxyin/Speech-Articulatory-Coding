@@ -534,6 +534,9 @@ def calibration_stats(ref_emb: dict[str, np.ndarray]) -> dict[str, Any]:
     each reference among all speakers, own speaker with leave-one-out mean) and the trial counts.
     """
     spk = [s for s in sorted(ref_emb) if len(ref_emb[s]) >= 2]
+    if not spk:  # one reference per speaker: no same-speaker trial, so no threshold and no calibration
+        nan = math.nan
+        return {"eer_threshold": nan, "eer": nan, "same_mean": nan, "diff_mean": nan, "top1": nan, "n_same": 0, "n_diff": 0}
     full = {s: mean_unit(ref_emb[s]) for s in spk}
     same, diff, hit = [], [], []
     names = list(spk)
@@ -728,7 +731,9 @@ def item_table(
                     if g is not None:
                         cols["sim_same"][r] = cosine_rows(e[r][None], g)[0]
         thr = np.array([thresholds[p][m] for p in rows["pool"]])
-        cols["accept"] = np.where(np.isfinite(cols["sim_target"]), (cols["sim_target"] >= thr).astype(float), np.nan)
+        # A pool whose speakers all have a single reference has no same-speaker trial, hence no EER threshold (NaN):
+        # acceptance is then not available (NaN), not 0 (``x >= nan`` is False).
+        cols["accept"] = np.where(np.isfinite(cols["sim_target"]) & np.isfinite(thr), (cols["sim_target"] >= thr).astype(float), np.nan)
         for k, v in cols.items():
             rows[f"{m}/{k}"] = v
     return rows
