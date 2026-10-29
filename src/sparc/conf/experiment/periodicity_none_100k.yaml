@@ -1,0 +1,19 @@
+# @package _global_
+# Periodicity ablation (docs/vocoder_periodicity_analysis.md): the vocoder comparison's 100k HiFi-GAN reference recipe
+# (experiment ablation_100k) with the periodicity channel removed from the generator input, i.e. the original SPARC input set
+# (12 EMA, pitch, loudness = 14 channels, original order). Same data, speaker network (periodicity-weighted pooling kept),
+# losses, discriminators, schedule and seed as the reference; only the generator's input differs.
+experiment_name: periodicity_none_100k
+seed: 0
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+vocoder:
+  generator:
+    _target_: sparc.vocoders.models.hifigan_inputs.HiFiGANOriginalInputsVocoder
+    in_channels: 14

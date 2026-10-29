@@ -50,16 +50,30 @@ class FeatureFrontend(nn.Module):
     ``(ln(loudness + 1e-4) - mean) / std`` with global constants, so the gain stays visible; periodicity is
     z-scored. With ``voiced_flag=True`` a 16th channel ``1[periodicity > 0]`` is appended. The input tensor is never
     modified. Statistics are buffers, so they are saved with the model.
+
+    ``drop_periodicity=True`` leaves the periodicity channel out of the network input (the original SPARC vocoder input
+    set: 12 EMA, pitch, loudness, in that order, so ``out_channels`` is 14); the raw periodicity is still returned in
+    ``FrontendOut.periodicity`` for models that use it outside the input. It cannot be combined with ``voiced_flag``,
+    which is itself derived from periodicity.
     """
 
-    def __init__(self, stats: dict | str | Path, pitch_mode: str = "log", voiced_flag: bool = False):
+    def __init__(
+        self,
+        stats: dict | str | Path,
+        pitch_mode: str = "log",
+        voiced_flag: bool = False,
+        drop_periodicity: bool = False,
+    ):
         super().__init__()
         if pitch_mode not in PITCH_MODES:
             raise ValueError(f"pitch_mode must be one of {PITCH_MODES}, got {pitch_mode!r}")
+        if drop_periodicity and voiced_flag:
+            raise ValueError("voiced_flag is derived from periodicity and cannot be combined with drop_periodicity")
         stats = load_stats(stats)
         self.pitch_mode = pitch_mode
         self.voiced_flag = voiced_flag
-        self.out_channels = N_FEATURES + int(voiced_flag)
+        self.drop_periodicity = drop_periodicity
+        self.out_channels = N_FEATURES - int(drop_periodicity) + int(voiced_flag)
 
         def buf(name, value, shape):
             self.register_buffer(name, torch.as_tensor(value, dtype=torch.float32).reshape(shape))
@@ -93,7 +107,7 @@ class FeatureFrontend(nn.Module):
         loud_n = (torch.log(loud.clamp_min(0.0) + LOUDNESS_EPS) - self.loud_log_mean) / self.loud_log_std
         per_n = (per - self.per_mean) / self.per_std
 
-        parts = [ema_n, f0_n, loud_n, per_n]
+        parts = [ema_n, f0_n, loud_n] if self.drop_periodicity else [ema_n, f0_n, loud_n, per_n]
         if self.voiced_flag:
             parts.append((per > 0).to(features.dtype))
         return FrontendOut(x=torch.cat(parts, dim=1), f0_hz=f0, periodicity=per, loudness=loud)
