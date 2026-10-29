@@ -1,0 +1,37 @@
+# @package _global_
+# Phase 9, arm 1: p5_fv with the 12 articulatory channels from the WavLM Large k12 + BiGRU -> conv inverter trained on
+# MNGU0 (docs/spkemb_phase9_k12_inverter.md). Same data, recipe and 100k generator steps as p5_fv; only the packed
+# training / validation splits, the normalization statistics and the inverter switch differ.
+# Data: python -m sparc.vocoders.features.inverter_pack extract|merge --inverter mngu0 (packed/mngu0), then `stats`.
+# Statistics: the 12 articulatory means / stds from the three filtered LibriTTS-R training splits (inverter channels);
+# every other field is copied from train_stats.json.
+experiment_name: p9_mngu0
+seed: 0
+stats_path: /data/user_data/xoy/spkemb/phase9/stats/stats_mngu0.json
+inverter:
+  name: mngu0
+train:
+  max_g_steps: 100000
+  mel_warmup_steps: 10000
+  val_every_g_steps: 5000
+  milestone_every_g_steps: 50000
+data:
+  batch_size: 16
+  crop_frames: 64
+  val_split: /data/user_data/xoy/spkemb/phase9/packed/mngu0/dev.clean
+  train_splits:
+    - /data/user_data/xoy/spkemb/phase9/packed/mngu0/libritts_f/train.clean.100
+    - /data/user_data/xoy/spkemb/phase9/packed/mngu0/libritts_f/train.clean.360
+    - /data/user_data/xoy/spkemb/phase9/packed/mngu0/libritts_f/train.other.500
+    - /data/user_data/xoy/spkemb/phase9/packed/mngu0/globe_f/globe.train
+    - /data/user_data/xoy/spkemb/phase9/packed/mngu0/vctk.train
+speaker:
+  type: ffn
+  layer: l6
+  p_cross: 0.5
+  n_refs: [1, 8]
+  rel_f0:
+    enabled: true
+vocoder:
+  generator:
+    pitch_mode: log_relative

@@ -48,3 +48,10 @@ python -m sparc.vocoders.features.inverter_pack stats --splits OUT_train.clean.1
   checks. The vocoder's input convolution has kernel 7 (3 frames each side) and learns any constant lag.
 - Packing tool vs live encoder on 8 (mngu0) / 4 (all7) utterances: channels 0-11 differ by <= 4e-6, channels 12-14 and loud_raw match the packed source
   (<= 5e-7 / 0).
+
+## Arm 1 (MNGU0 inverter) data and smoke run (2026-10-29)
+
+- Extraction: 1857 chunks (474,861 utterances, 129,139,340 frames) for the five `p5_fv` training splits and dev.clean (the validation split of the run), sharded GPU jobs of at most 55 minutes, merged on CPU; all non-articulatory arrays and the index equal the source (checked), all values finite.
+- Statistics: `phase9/stats/stats_mngu0.json`, articulatory mean / std over the three filtered LibriTTS-R training splits (95,895,606 frames, 328,372 utterances); every other field equals `train_stats.json`. The pre-registration says LibriTTS-R training splits; the filtered splits hold 96.9 % of them, so the unfiltered ones were not extracted.
+- Evaluation cache root with the same channels for LibriTTS-R test.clean: `phase9/cache_mngu0/` (use it as `--cache-root` with `inverter.name: mngu0`; the layer-9 pool root must not be reused).
+- Smoke run: `p9_mngu0` for 300 steps (mel warm-up 100), then one swap item through `eval.clone synth` with the live inverter path.
