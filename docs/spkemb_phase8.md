@@ -86,7 +86,12 @@ Swap items (judged setting minus standard; speaker-level bootstrap over targets)
 | VCTK | +0.119 [0.105, 0.132] | +0.124 | -0.011 | -0.018 | 3.63 -> 3.59 | 3.8 -> 4.9 |
 | GLOBE real test speakers (1 reference) | +0.108 [0.095, 0.121] | +0.114 | -0.008 | -0.007 | 2.65 -> 2.55 | 6.8 -> 9.3 |
 
-### Rule outcome: does not advance
+### Rule outcome: advances under the pre-registered rule (verifier-measured); quality costs on swap items
+
+Correction after review (2026-10-29): the pre-registration marks GLOBE as descriptive, and the swap-item guards below
+were added after the test numbers were seen. Applied as written (the GLOBE row excluded as descriptive, no post-hoc
+guards), every check passes, so the constrained fit advances to the listening test. The swap-item WER and UTMOS costs
+are reported as real quality costs, not as rule failures. The gain is verifier-measured until the listening test.
 
 | check | outcome |
 |---|---|
