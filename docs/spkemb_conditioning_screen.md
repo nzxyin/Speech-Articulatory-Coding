@@ -1,7 +1,9 @@
-# Phase 8 conditioning study: how the speaker code and utterance-level features enter the vocoder (draft pre-registration)
+# Phase 8 conditioning study: how the speaker code and utterance-level features enter the vocoder (pre-registration)
 
-Status: implementation, unit tests and 300-step smoke runs done; no 100k run submitted. The screen in section 5 is the
-pre-registration proposal (revised after review, 2026-10-29) and needs the user's go-ahead before training. All choices
+Status: implementation, unit tests and 300-step smoke runs done. The screen in section 5 is the pre-registration
+(revised after two reviews, approved by the user 2026-10-29). It is frozen by the git commit that adds this line to the
+repository, recorded in that commit's message and in the commit log of `docs/spkemb_conditioning_screen.md`; the five 100k
+runs are submitted only after that commit is pushed. All choices
 among arms are made on the validation splits (`docs/spkemb_validation_protocol.md`,
 `docs/spkemb_validation_splits.json`); test splits report the chosen arm once.
 
@@ -140,7 +142,10 @@ Synthesis check through `eval/clone.py synth` (the evaluation path) with the `p8
 (`--pools libritts_dev --variants base`, 8 items from two shards): all 8 waveforms are written at 24 kHz, finite, non-silent
 (peak 0.20-0.24, rms 0.031-0.044). This exercises `StatsCode` / `stats_term` in `ItemRenderer` end to end, including the
 reference pitch-range computation; the audio of a 300-step model is not meaningful, and the loudness statistic is off in this
-arm, so the loudness half of `stats_term` is covered by unit tests only.
+arm, so the loudness half of `stats_term` is covered by unit tests only. The same check on the 300-step smoke checkpoints
+of `p8c_adaln`, `p8c_film_gate`, `p8c_film_contour_added` and `p8c_film_contour_only` (one `libritts_dev` item, variant
+`base`, 24 kHz, 233,760 samples each): finite and non-silent in all four (peak 0.21 / 0.21 / 0.33 / 0.38, rms 0.039 / 0.027 /
+0.035 / 0.034).
 
 ## 5. Proposed screen (pre-registration; not submitted)
 
@@ -155,7 +160,15 @@ Arms (5 in total; each is a one-switch change, and the pairs are chosen so that 
    a position-only or LN-only arm would be a sixth arm; if `adaln` beats `film_gate`, a follow-up can split them).
 3. `p8c_film_f0range`: the references' pitch range in the speaker code. The loudness statistic is **dropped** from the screen: in
    Phase 4 loudness matching at inference gave nothing, the earlier "moved" variant also changed the frame input (two changes at
-   once), and the loudness contour is tested in arms 4 and 5.
+   once), and the loudness contour is tested in arms 4 and 5. **Caveat (second review):** under the decision variant
+   `k5_f0_loud`, the inference already rescales the source's F0 median and range to the target's references, so the generator
+   is shown a contour with the target's range whatever the code says. The code's range term therefore has little left to add
+   under that variant, and arm 3 is close to a null test of the decision rule. The arm is kept because it is cheap and the
+   code route is the one that would also work without a hand-made contour transform. To see whether the range term does
+   anything when the inference does not do the work, a **reported, non-decisive** variant is added for this arm and for
+   `p5_fv`: `k5` (5 references, no F0, loudness or EMA matching; the variant exists in `eval/clone.py`), on the three validation
+   pools, scored with the same split summary. It does not enter the advance rule or the choice of the arm for the test run.
+   For the other arms `k5` is not computed.
 4. `p8c_film_contour_added`: frame pitch and loudness contours also drive a time-varying modulation (input unchanged).
 5. `p8c_film_contour_only`: the same, with the two channels removed from the input. Smoke run stable (section 4). Contrast with
    arm 4 isolates whether the input path is needed for these two features.
@@ -175,12 +188,21 @@ measured against `p5_fv`, so an arm is not required to repair guard failures tha
 balance, NaN checks; AdaLN and gate values near 0 are reported as unused conditioning) is reported, not selected on. Single
 seed per arm; only differences above m count. No test number is used for selection.
 
-Cost, from measured step times: `p5_fv` ran 100k steps at a median 0.315 s/step (8.3 h wall) on its own run; the smoke medians on
-an L40S are 0.31 (f0range), 0.32 (gate), 0.35 (adaln), 0.36 (both contour arms), which gives 8.6, 8.9, 9.7, 9.9 and 9.9 h for
-the five arms: about 47 GPU-hours of training on L40S-class GPUs. The validation-pool synthesis and scoring cost per arm was not
-measured for this setup (it is recorded from the first arm's evaluation jobs); the single test evaluation is one more
-evaluation of the same kind. The runs are restartable (checkpoint every 20 minutes), so wall time is bounded by the
-`slurm-alloc` per-agent GPU cap, not by the 47 hours. Statistics arm 3 uses the evaluation support in `eval/clone.py`
+Own-speaker guard and pools: the validation GLOBE pool (`globe_spk`) has no own-speaker items, so the own-speaker T2/T3 guard is evaluated on LibriTTS-R dev-clean and the VCTK
+validation half only. The test GLOBE pool (`globe_spk_test`, swaps only, one reference per target) has no own-speaker items
+either. For the one-time test run, the decision variant on `globe_spk_test` is `k5_f0_loud`, which with one reference uses that
+single reference (k is capped by the references a speaker has) and matches F0 and loudness to it; `p5_fv` has no outputs on
+`globe_spk_test` yet (its Phase 5 test outputs cover `libritts`, `vctk` and the pseudo-speaker pool `globe`), so they are
+produced in the same test step, with the same variant list. The margin m = 0.0266 was measured as twice the seed-to-seed
+difference on the test pools; the validation pools are smaller (VCTK half: 20 speakers), so its noise is larger there, and
+there is a single seed per arm. The rule is applied as written; a near-threshold outcome is reported as such.
+
+Cost basis: step times are the median adversarial-phase step time over about 200 smoke steps (from step 100, includes the
+validation pass and data loading). The real `p5_fv` 100k run took 8.3 h wall including the cheaper mel warm-up, so
+smoke-based estimates are about 5 % conservative. Estimated wall time per arm: 8.6 (f0range), 8.9 (gate), 9.7 (adaln),
+9.9 h (each contour arm), about 47 GPU-hours of training on L40S-class GPUs for the five arms. The validation-pool synthesis
+and scoring cost per arm was not measured for this setup; the single test evaluation is one more evaluation of the same
+kind. The runs are restartable (checkpoint every 20 minutes). Statistics arm 3 uses the evaluation support in `eval/clone.py`
 (`ItemRenderer`), checked end to end on a smoke checkpoint (section 4). `eval/ood_gap.py`, `ood_svfit*.py` and `ood_channel.py`
 build their own batches and do not pass `utt_loud` / `ref_f0_std`, so Phase 8 code fitting is not available for statistics
 checkpoints.
