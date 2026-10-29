@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Phase 8.3 listening-test preparation (`scripts/spkemb/listening/`, `artifacts/listening/`, `tests/test_listening_design.py`, `docs/spkemb_phase8.md`): fixed item list (34 VCTK, 8 GLOBE, 6 LibriTTS-R control), loudness-normalized blind-named stimuli, counterbalanced trial lists with attention checks, static listening page draft, mixed-model analysis and simulation-based power calculator, tested on simulated responses.
 - Phase 8.2 constrained speaker-code fitting (`vocoders/eval/ood_svfit_p8.py`, `docs/spkemb_phase8.md`, `tests/test_ood_svfit_p8.py`): ECAPA-loss code fit with an L2 penalty toward the standard code and a log-mel-statistics naturalness term, CAM++-only selection on validation pools, WeSpeaker ResNet34 held out, own-speaker and swap test items, pre-registered advance rule; synthesized audio for the listening test saved. Also: acceptance is NaN (not available) instead of 0 for a cloning pool whose speakers all have one reference (`clone.calibration_stats` returns a NaN threshold, `item_table` masks acceptance), with a unit test.
 - Periodicity analysis of the HiFi-GAN articulatory vocoder (`docs/vocoder_periodicity_analysis.md`): `FeatureFrontend(drop_periodicity=True)`
   and `models/hifigan_inputs.py` (HiFi-GAN with the original SPARC input set, 12 EMA + pitch + loudness = 14 channels, no

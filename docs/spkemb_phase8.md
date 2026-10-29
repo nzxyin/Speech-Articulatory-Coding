@@ -124,3 +124,43 @@ recorded, not re-tuned.
 NaN ("not available"), not 0 (`x >= nan` is False, which silently reported 0 % acceptance). Not calibrated from the validation pool
 (`globe_spk`): its speakers have two references and a reference-mean similarity of a different scale than a single reference, so the
 threshold would not transfer. Test `test_acceptance_is_not_available_without_a_threshold`.
+
+## 8.3 Listening test: preparation (2026-10-29; no listeners recruited, nothing published)
+
+Files: `scripts/spkemb/listening/{build_items,design,make_trials,analyze,power,simulate_responses}.py`, page draft
+`artifacts/listening/{index.html,listening.js,test_listening.js}`. Data: `/data/user_data/xoy/spkemb/phase8/listening/`
+(`items.json` private key, `manifest.json` public, `stimuli/`, `loudness.csv`, `trials/`).
+
+**Items, fixed now.** VCTK test half, all 34 own-speaker items (18 speakers; primary); GLOBE 8 pseudo-speaker items (descriptive);
+LibriTTS-R 6 control items (one per speaker, seeded). Each item: a real recording of a different utterance of the speaker
+(reference), the standard-code output, and the 8.2 `nat`-arm output (same content utterance). VCTK and LibriTTS-R references are
+held-out recordings (not among the five the code was fitted on, not the content utterance, 2.5-10 s); GLOBE pseudo-speakers have only
+two references and both were used by the fit, so their reference was in the fit (flagged `ref_in_fit`).
+
+**Loudness.** All stimuli (references and outputs) get one linear gain to -26 LUFS (ITU-R BS.1770-4 K-weighted, gated;
+`torchaudio.functional.loudness`, refined until within 0.01 LU), 16-bit wav at 24 kHz; the measured loudness after scaling is within
+-26.00 to -25.99 LUFS and no stimulus clips (peak <= 0.97). Files are named by a salted hash (`<hash>.wav`), so neither the file name nor
+the manifest reveals the arm.
+
+**Trials.** 34 per listener: 24 VCTK, 4 GLOBE, 2 LibriTTS-R test trials plus 4 attention checks (2 identical pairs, 2 obvious
+mismatches: the same-speaker standard output against a standard output of the opposite gender), about 20-25 minutes. Items are rated
+equally often (+-1) across listeners, the fitted output is A half the time per item and per listener (+-1), order is shuffled and checks sit
+at spread positions after the second trial. Pilot: 5 listeners (seed 1); main: parametrized (`make_trials.py --n-listeners`).
+Per trial: similarity to the reference and naturalness (1-5) for A and B, forced choice of the output more similar to the reference.
+
+**Analysis (`analyze.py`).** Attention checks exclude a listener who fails at least half of the checks. Primary pool VCTK:
+preference by a logistic mixed model with listener and speaker random intercepts (variational Bayes) and a two-way cluster
+bootstrap; ratings by linear mixed models of the within-trial difference (plus a cumulative-link sensitivity and Wilcoxon on listener
+means). The rule uses both preference intervals (both must exclude 0.5) and the naturalness lower bound against a margin
+(`--nat-margin`, placeholder 0.25 points; to be fixed with the listener count before the main test). The analysis was tested on simulated
+responses (careless listeners excluded; a true conditional preference of 0.70 recovered as 0.685 [0.643, 0.724] with 22 kept listeners).
+
+**Power (`power.py`).** Simulation of the actual main design with the real speaker structure, marginal preference rate 0.60 vs 0.50,
+cluster-robust test (type I error 0.04-0.07 in the simulation). With 18 VCTK speakers the speaker variance caps the power: with
+listener sd 0.63 and speaker sd 0.52 (the upper 80 % values of a simulated pilot, illustrative only) 60 listeners reach 80 %, with
+sd 0.37 / 0.44 fewer. The real number comes from the real pilot (`power.py --pilot-analysis`). Listeners cannot make up for few speakers; if
+the pilot shows large speaker variance, more speakers are needed, not more listeners.
+
+**Run.** Page: serve `artifacts/listening/` with `manifest.json`, `trials/<set>.json` and `stimuli/` next to it (or open the page and choose the
+two JSON files), `index.html?set=pilot&listener=L01`; responses export as JSON (`session.export()`, optional `LISTENING_HOOKS`).
+Analysis: `analyze.py --dir <dir> --set pilot --responses '<files>' --out <out>` in `/data/user_data/xoy/venvs/p8-listening`.

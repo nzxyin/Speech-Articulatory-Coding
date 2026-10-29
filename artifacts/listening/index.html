@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Similarity Listening Test</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1c1c1c; --muted: #666; --card: #fff; --line: #d8d8d8; --accent: #1a5fb4; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #16181b; --fg: #e8e8e8; --muted: #9aa0a6; --card: #1f2226; --line: #3a3f45; --accent: #78aeed; --bad: #f2b8b5; }
+  }
+  :root[data-theme="dark"] { --bg: #16181b; --fg: #e8e8e8; --muted: #9aa0a6; --card: #1f2226; --line: #3a3f45; --accent: #78aeed; --bad: #f2b8b5; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin: 0 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 12px 0; }
+  .clip { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; align-items: center; margin: 8px 0; }
+  .clip audio { width: 100%; }
+  .st { grid-column: 2; color: var(--muted); font-size: .85rem; margin-top: -6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .clip { grid-template-columns: 1fr; } .st { grid-column: 1; } }
+  .scale { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .scale label, .pref label { cursor: pointer; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .anch { color: var(--muted); font-size: .85rem; }
+  .pref { display: flex; gap: 12px; margin-top: 6px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #msg { min-height: 1.5em; } #msg.bad { color: var(--bad); }
+  textarea { width: 100%; height: 6em; font: .8rem monospace; background: var(--card); color: var(--fg); border: 1px solid var(--line); }
+  input[type=text] { font: inherit; padding: 6px; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice similarity listening test</h1>
+  <p id="msg"></p>
+
+  <section id="setup" class="card">
+    <h2>Start</h2>
+    <p><label>Listener ID <input id="listener" type="text" size="8" placeholder="L01"></label></p>
+    <details>
+      <summary>Open from disk (if the files cannot be fetched)</summary>
+      <p><label>manifest.json <input id="f_manifest" type="file" accept=".json"></label></p>
+      <p><label>trial file <input id="f_trials" type="file" accept=".json"></label></p>
+    </details>
+    <p><button id="go">Continue</button></p>
+  </section>
+
+  <section id="intro" class="card" hidden>
+    <h2>Instructions</h2>
+    <p>Listener <b id="who"></b>, <span id="ntr"></span> short trials, about 20-25 minutes. Use headphones in a quiet room and keep
+       the volume fixed.</p>
+    <p>Each trial has a <b>Reference</b> (a real recording of a person) and two synthetic recordings, <b>A</b> and <b>B</b>, that say
+       the same sentence, which is a different sentence from the reference. Ignore what is said and the recording quality of the
+       reference. Judge <b>who</b> seems to be speaking.</p>
+    <p>Play every clip to the end at least once. You may replay clips. For each of A and B give two ratings, then choose the one that
+       sounds more like the same person as the Reference.</p>
+    <p class="anch">Similarity: 1 = clearly a different person, 5 = clearly the same person. Naturalness: 1 = very unnatural or
+       distorted, 5 = completely natural.</p>
+    <p><button id="begin">Begin</button></p>
+  </section>
+
+  <section id="trial" hidden>
+    <div class="card">
+      <h2 id="progress"></h2>
+      <div class="clip"><b>Reference</b><audio id="au_ref" controls preload="auto"></audio><span class="st" id="st_ref"></span></div>
+      <div class="clip"><b>A</b><audio id="au_a" controls preload="auto"></audio><span class="st" id="st_a"></span></div>
+      <div class="clip"><b>B</b><audio id="au_b" controls preload="auto"></audio><span class="st" id="st_b"></span></div>
+    </div>
+    <div class="card grid">
+      <div>
+        <h2>A</h2>
+        <div>Similarity to the Reference <span class="anch">(1 different, 5 same person)</span></div>
+        <div class="scale" data-name="sim_a"></div>
+        <div>Naturalness <span class="anch">(1 unnatural, 5 natural)</span></div>
+        <div class="scale" data-name="nat_a"></div>
+      </div>
+      <div>
+        <h2>B</h2>
+        <div>Similarity to the Reference <span class="anch">(1 different, 5 same person)</span></div>
+        <div class="scale" data-name="sim_b"></div>
+        <div>Naturalness <span class="anch">(1 unnatural, 5 natural)</span></div>
+        <div class="scale" data-name="nat_b"></div>
+      </div>
+    </div>
+    <div class="card">
+      <b>Which sounds more like the same person as the Reference?</b>
+      <div class="pref">
+        <label><input type="radio" name="pref" value="A"> A</label>
+        <label><input type="radio" name="pref" value="B"> B</label>
+      </div>
+    </div>
+    <p><button id="submit">Next</button></p>
+  </section>
+
+  <section id="done" class="card" hidden>
+    <h2>Finished, thank you</h2>
+    <p>Your responses are stored in this page. Download them with the button; the study host may also store them automatically.</p>
+    <p><button id="dl">Download responses (JSON)</button></p>
+    <textarea id="exportbox" readonly></textarea>
+  </section>
+</main>
+<script src="listening.js"></script>
+</body>
+</html>
