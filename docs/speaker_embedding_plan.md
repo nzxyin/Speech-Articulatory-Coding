@@ -563,6 +563,29 @@ LibriTTS-R + GLOBE + VCTK HiFi-GAN run (`p5_fv`, 100k). No vocoder training in t
   not rated lower by more than the pre-set margin; otherwise it is treated as verifier-specific and encoder distillation
   of fitted codes is not pursued.
 
+## Standing decision rule for future vocoder screens (user decision 2026-10-30)
+
+Applies to every vocoder screen pre-registered after 2026-10-30 (Phase 9 keeps its own rule). Reason: the Phase 4-9
+rule's primary criterion is the LibriTTS-R (in-domain) gain, with VCTK, GLOBE and CAM++ only needing the same sign, so
+an arm that improves out-of-domain voices but not LibriTTS-R can never advance (conditioning screen: VCTK +0.014 to
++0.026 ECAPA, LibriTTS-R <= +0.011); and every Phase 6 and conditioning arm gained on VCTK, which suggests a weak single
+reference seed there.
+
+- An arm advances on EITHER criterion, on the validation pools:
+  - in-domain: the Phase 4/5 rule unchanged (ECAPA gain on LibriTTS-R dev >= 0.0266 with the CI excluding 0; same sign
+    on VCTK, GLOBE and CAM++);
+  - out-of-domain: the mean ECAPA gain over the VCTK validation half and the GLOBE real-speaker dev pool (`globe_spk`)
+    >= the out-of-domain margin, with the speaker-level CI excluding 0, and CAM++ of the same sign; and LibriTTS-R must
+    not lose more than 0.01 (ECAPA similarity to the target and own-speaker similarity).
+- All Phase 4/5 guards apply under both criteria.
+- Out-of-domain margin = max(2 x |seed-1 minus seed-0 mean ECAPA over the VCTK validation half and `globe_spk`|,
+  0.0266), from two seeds of the reference run (`p5_fv`, `p5_fv_seed1`; written to
+  `/data/user_data/xoy/spkemb/validation/eval/ood_margin.json`). The floor keeps a near-zero seed difference from
+  making the margin meaningless.
+- Report for every arm (descriptive): own-speaker resynthesis similarity as a fraction of ground truth on VCTK and GLOBE
+  (the out-of-domain gap measure).
+- Selection on validation; the chosen arm runs once on the in-domain and out-of-domain test pools.
+
 ## Coordination and compute
 
 Phase 1: ~2-4 GPU-h extraction + CPU analysis. Phase 2: ~4 GPU-h per layer (5 layers). Phase 3: several vocoder
