@@ -909,6 +909,32 @@ GLOBE has real speakers: Common Voice 21 `client_id` joins 100 % onto GLOBE v3 b
   (5) speaker loss with real GLOBE labels; encoder distillation, conditioning changes, SV-embedding input and channel
   augmentation last.
 
+### Speaker embedding Phases 8-9, conditioning screen, periodicity input (2026-10-29 to 10-30)
+All on the filtered LibriTTS-R + GLOBE + VCTK recipe (`p5_fv`, 100k HiFi-GAN), decided on the validation pools with the
+Phase 4/5 rule; docs on `spkemb-phase3`.
+- 8.1 (`docs/spkemb_phase8_channel.md`): real recordings copied through a separate mel vocoder keep 0.995 of ground-truth
+  similarity, so a vocoder channel per se does not lose identity; it is lost on the way through articulatory features +
+  speaker code (the ceiling copies the same recording, so it does not isolate microphone/room). A different speaker's
+  content lowers similarity by 0.45 of the gap: the target's own articulatory/pitch inputs carry part of its identity.
+- 8.2 (`docs/spkemb_phase8.md`): constrained speaker-code fitting (ECAPA loss + L2 + naturalness term; chosen on CAM++)
+  closes 0.33 [0.27, 0.39] of the VCTK gap on WeSpeaker (held out) and passes the pre-registered rule as written
+  (verifier-measured); swap WER +1.05 / +2.48 points (VCTK / GLOBE) and GLOBE UTMOS -0.11 are reported costs. Listening
+  pilot page ready (artifacts/listening), not yet shared with listeners.
+- Conditioning screen (`docs/spkemb_conditioning_screen.md`): AdaLN-zero, FiLM + zero gate, pitch range in the code,
+  pitch/loudness contour as conditioning (kept in or removed from the input): none advances. LibriTTS gains +0.003 to
+  +0.011 (margin 0.0266); every arm gains on VCTK (+0.014 to +0.026 ECAPA); AdaLN-zero fails the VCTK source guard.
+- Periodicity input (`docs/vocoder_periodicity_analysis.md`, reviewed and revised): removing it (original SPARC input
+  set) costs in-domain mel L1 +1.7 %, PESQ -0.10, HNR error +0.17 dB, UTMOS -0.05 (beyond the 100k seed spread) and ~1
+  point of independent-tracker voicing agreement around transitions; no phone-level voicing loss; speaker similarity,
+  WER and F0 within seed noise. Keep it as a cheap quality input; it does not drive identity or intelligibility.
+- Phase 9 (`docs/spkemb_phase9_k12_inverter.md`): vocoder on WavLM k12 + BiGRU->conv inverter features instead of the
+  layer-9 linear head. Single-speaker (MNGU0) ties the reference on cloning (ECAPA -0.001 to -0.009, CIs span 0; fails
+  the VCTK own-speaker guard) but lowers WER (LibriTTS -0.47, VCTK -0.59, GLOBE -2.8 points); multi-speaker (seven EMA
+  speakers, normalized outputs + learned de-normalization from the speaker code) is slightly worse (LibriTTS and GLOBE
+  -0.008, WER +0.8 to +1.0 points). Own-speaker similarity unchanged. The inverter is not the out-of-domain bottleneck.
+- Standing rule for future screens (plan doc, 7a85fac): an arm may advance on an out-of-domain criterion (VCTK + GLOBE),
+  margin from two reference seeds (`p5_fv_seed1` training).
+
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
   WavLM Large k12 (21.3 GFLOPs/s) with LoRA + causal conv ties XLS-R 300M k18 and XLS-R 1B k19 at 48-73% of their
