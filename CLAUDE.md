@@ -933,7 +933,10 @@ Phase 4/5 rule; docs on `spkemb-phase3`.
   speakers, normalized outputs + learned de-normalization from the speaker code) is slightly worse (LibriTTS and GLOBE
   -0.008, WER +0.8 to +1.0 points). Own-speaker similarity unchanged. The inverter is not the out-of-domain bottleneck.
 - Standing rule for future screens (plan doc, 7a85fac): an arm may advance on an out-of-domain criterion (VCTK + GLOBE),
-  margin from two reference seeds (`p5_fv_seed1` training).
+  margin from two reference seeds. Seed 1 of `p5_fv` vs seed 0 (validation): ECAPA +0.004 LibriTTS, +0.005 VCTK, +0.003
+  GLOBE (CIs span 0), so the out-of-domain margin is the 0.0266 floor
+  (`/data/user_data/xoy/spkemb/validation/eval/ood_margin.json`). But CAM++ on VCTK moves +0.029 [0.019, 0.039] between
+  seeds alone: VCTK CAM++ gains of that size (as in Phase 6 and the conditioning screen) are within seed noise.
 
 ### Architecture conclusions (2026-10-12; claims checked against the raw results by an independent two-lens pass)
 - Update (depth sweep, 2026-10-12): for new speakers the recommended depth is deeper than the seen-speaker optimum:
