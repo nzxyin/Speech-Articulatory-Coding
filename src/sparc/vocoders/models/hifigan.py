@@ -153,6 +153,7 @@ class HiFiGANVocoder(Vocoder):
         cond_contour: str = "none",
         contour_smooth: int = 5,
         ema_denorm: bool = False,
+        binary_periodicity: bool = False,
     ):
         super().__init__()
         if cond_contour not in COND_CONTOURS:
@@ -187,7 +188,9 @@ class HiFiGANVocoder(Vocoder):
         if channels % (2 ** len(scales)) != 0:
             raise ValueError(f"channels ({channels}) must be divisible by 2 ** {len(scales)}")
 
-        self.frontend = FeatureFrontend(stats, pitch_mode=pitch_mode, voiced_flag=voiced_flag)
+        self.frontend = FeatureFrontend(
+            stats, pitch_mode=pitch_mode, voiced_flag=voiced_flag, binary_periodicity=binary_periodicity
+        )
         if in_channels != self.frontend.out_channels:
             raise ValueError(f"in_channels={in_channels} but the frontend produces {self.frontend.out_channels}")
         self.num_blocks = len(block_kernels)

@@ -26,6 +26,8 @@ class HiFiGANOriginalInputsVocoder(HiFiGANVocoder):
             raise ValueError(f"the original SPARC input set has 14 channels, got in_channels={in_channels}")
         if kwargs.get("voiced_flag", False):
             raise ValueError("voiced_flag needs periodicity and is not available with the original input set")
+        if kwargs.get("binary_periodicity", False):
+            raise ValueError("binary_periodicity needs periodicity and is not available with the original input set")
         super().__init__(stats, in_channels=15, channels=channels, kernel_size=kernel_size, **kwargs)
         self.frontend = FeatureFrontend(stats, pitch_mode=kwargs.get("pitch_mode", "log"), drop_periodicity=True)
         assert self.frontend.out_channels == in_channels

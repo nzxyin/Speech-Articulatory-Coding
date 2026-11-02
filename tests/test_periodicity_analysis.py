@@ -112,3 +112,37 @@ def test_boot_and_paired():
     b = a.assign(x=[0.0, 0.0, 2.0, 2.0])
     r = pa.paired(a, b, "x")
     assert r["diff"] == pytest.approx(1.0) and r["lo"] == pytest.approx(1.0) and r["hi"] == pytest.approx(1.0) and r["n_speakers"] == 2
+
+
+def _pair(diff, half=0.001):
+    return {"diff": diff, "lo": diff - half, "hi": diff + half, "a": 0.0, "b": 0.0, "n_speakers": 10}
+
+
+def _gate_values(gate_frac_of_gap, guard=0.0):
+    """Every quality metric has a no-periodicity gap of +0.1 against both seeds (seed spread 0.01); the gate sits at
+    ``gate_frac_of_gap`` of that gap away from the reference."""
+    vals = {}
+    for m in pa.GATE_QUALITY:
+        vals[m] = {"none_ref": _pair(0.1), "none_s1": _pair(0.09), "s1_ref": _pair(-0.01), "gate_ref": _pair(0.1 * gate_frac_of_gap)}
+    for cls, col in pa.GATE_GUARDS:
+        vals[f"{cls}/{col}"] = {"none_ref": _pair(-0.02), "none_s1": _pair(-0.02), "s1_ref": _pair(0.002), "gate_ref": _pair(guard)}
+    return vals
+
+
+def test_gate_decision_rule():
+    assert pa.gate_decision(_gate_values(0.2))["suffices"]  # recovers 80 % of the gap
+    assert not pa.gate_decision(_gate_values(0.8))["suffices"]  # recovers 20 %
+    assert pa.gate_decision(_gate_values(0.5))["suffices"]  # exactly half passes
+    assert pa.gate_decision(_gate_values(0.2, guard=-0.002))["suffices"]  # within the seed spread
+    d = pa.gate_decision(_gate_values(0.2, guard=-0.01))
+    assert not d["suffices"] and not d["guards"]["change_pyin/py_agree"]["pass"]
+    assert pa.gate_decision(_gate_values(0.5))["borderline"] == list(pa.GATE_QUALITY)  # at the threshold
+    assert pa.gate_decision(_gate_values(0.2))["borderline"] == []
+    assert pa.gate_decision(_gate_values(0.2, guard=-0.01))["guard_only_failure"]
+    assert not pa.gate_decision(_gate_values(0.8))["guard_only_failure"]
+    v = _gate_values(0.9)
+    for m in pa.GATE_QUALITY:  # a gap inside the seed spread does not enter the rule
+        v[m]["none_ref"] = _pair(0.005)
+        v[m]["none_s1"] = _pair(0.004)
+    d = pa.gate_decision(v)
+    assert not any(r["enters"] for r in d["metrics"].values()) and not d["suffices"]  # nothing to recover: no claim

@@ -359,3 +359,94 @@ python -m sparc.vocoders.eval.periodicity_analysis cfgdiff --pair ref,none  # tr
 Training: `scripts/spkemb/p3_train.sh hifigan periodicity_none_100k` through `slurm-alloc` (`TIME=16:00:00`, restartable),
 log `/data/user_data/xoy/spkemb/phase3/logs/p3t_periodicity_none_100k_10976729.out`; the seed-1 run's log is
 `p3t_p4_b0_s1_10876882.out` in the same directory.
+
+## Binary voicing gate (pre-registered 2026-11-01)
+
+Written before any training of the arm. The analysis above suggests that a binary voiced / unvoiced gate may carry most of
+what the continuous periodicity channel gives (the mask probe, which swaps the channel at inference only, costs UTMOS -0.05
+and mel L1 +0.014 on test-clean; it does not show what training with a gate gives). This section tests that by training.
+
+**Hypothesis.** Replacing the continuous periodicity input by the 0 / 1 voicing flag recovers at least half of what the
+periodicity input brings in-domain (the gap between the original SPARC input set and the fork input set), without losing
+voicing agreement with an independent tracker.
+
+**Arms** (all HiFi-GAN, LibriTTS-R only, 100k generator steps, one training seed per arm unless stated):
+
+| name | what it is | run |
+|---|---|---|
+| reference, seed 0 | fork input set, continuous periodicity (15 channels), `ablation_100k` | `/data/user_data/xoy/sparc-vocoders/runs/ablation_100k/hifigan` |
+| reference, seed 1 | same recipe, training seed 1, `p4_b0_s1`: the noise reference | `/data/user_data/xoy/spkemb/phase3/runs/p4_b0_s1/hifigan` |
+| no periodicity | original SPARC input set (14 channels), `periodicity_none_100k` | `/data/user_data/xoy/spkemb/phase3/runs/periodicity_none_100k/hifigan` |
+| binary voicing gate | the periodicity channel replaced by 1[periodicity > 0] (15 channels, same order), `periodicity_binary_100k`, seed 0 | `/data/user_data/xoy/spkemb/phase3/runs/periodicity_binary_100k/hifigan` |
+
+The gate arm differs from the reference only in the value of the 15th input channel (config diff: `vocoder.generator.binary_periodicity`,
+`experiment_name`, run paths). Code: `FeatureFrontend(binary_periodicity=True)` (`models/frontend.py`), reached through
+`HiFiGANVocoder(binary_periodicity=...)` and the `vocoder.generator.binary_periodicity` key of `conf/vocoder/hifigan.yaml`
+(default false; default models and checkpoints are bit-identical, `tests/test_model_periodicity_binary.py`). Every input of the
+generator (training, validation, synthesis, cloning evaluation) is built by the model's own frontend, so no other path needed
+a change. The reference generator's weights load strictly into the gate model. The speaker network keeps reading the cached
+periodicity weights outside the model.
+
+**Threshold and encoding.** The threshold is fixed by the extractor, not chosen from data; the training-data check below is a sanity check only. The cached periodicity is CREPE periodicity set to 0 below 0.4 (and
+where loudness is below 0.05), so the extractor's own voicing decision is `periodicity > 0`; the cache holds no value in (0, 0.4)
+except for 3e-7 of the frames. tau = 0 in the cache is therefore the 0.4 cut of the tracker that produced the cached F0
+(`VOICING_THRESHOLD = 0.0`, the decision also used by the voiced-F0 statistics, the speaker pooling and the earlier mask probe).
+Sanity check (training data only; it cannot support any cut below 0.4, and pYIN calls more frames voiced than the cache, so a lower cut might fit pYIN better and is untestable) on 300 LibriTTS-R train.clean.100 utterances (2-12 s, 200 speakers, seeded sample; 82,266 frames) against pYIN (same
+settings as above): frame agreement 0.827 for tau = 0 (voiced fraction 0.550 over all 9.50 M frames of the split; pYIN calls
+0.680 of the sample voiced, the cache 0.548), 0.804 at 0.5, 0.771 at 0.6, 0.725 at 0.7, 0.653 at 0.8, 0.495 at 0.9. Agreement falls
+monotonically above the extractor's cut, so no stricter threshold is supported. Among the non-zero periodicity values the quartiles are 0.72 / 0.86 / 0.91 (median 0.857).
+The flag is fed as raw 0 / 1: its std is 0.50, the order of the z-scored channels, and z-scoring with the continuous channel's
+statistics (mean 0.437, std 0.414) would not describe it. The input scale (raw 0 / 1 where the reference feeds a z-scored
+continuous channel) changes together with the information content; the arm tests the flag as fed, and scale sensitivity of the
+first layer is a minor confound that is not separated.
+
+**Metrics, exactly as in the analysis above** (same fixed item subsets, own-utterance resynthesis, same code and speaker-level
+paired bootstrap; `python -m sparc.vocoders.eval.periodicity_analysis gate`): global quality metrics mel L1, multi-resolution STFT
+distance, PESQ (WB), UTMOS; HNR error (mean absolute dB, all frames); voicing agreement with pYIN overall and within 30 ms of a
+pYIN voicing change of the recording. Reported descriptively, not in the rule: WER, CER, ECAPA / CAM++ similarity, F0 error, the
+4-12 kHz error, voicing agreement with the input tracker (it favors continuous-periodicity models), phone-based voicing, every
+per-sound-class table.
+
+**Split.** The decision uses validation data only. The earlier analysis reported test-clean and the VCTK test half as headline
+numbers; the decision here instead uses LibriTTS-R dev-clean (537 utterances, 39 speakers), with the VCTK validation half
+(300 utterances, 20 speakers) reported alongside but not deciding (the models are trained on LibriTTS-R only, so dev-clean is
+the in-domain split). The earlier arms were already scored on dev-clean and the VCTK validation half in the same run as the test
+splits (same code and items), so no re-scoring is needed; the scoring script re-scores any that is missing. The test splits are
+not synthesized or read for the gate arm. Speaker means, 10,000 bootstrap resamples, as above.
+
+**Decision rule, fixed now (one rule).** On dev-clean:
+1. A quality metric (mel L1, STFT distance, PESQ, UTMOS, HNR error) *enters* the rule when the no-periodicity arm differs from the
+   reference by more than the seed spread, by this analysis's own rule (differs from both reference seeds with an interval
+   excluding 0 on the same side, and the smaller difference exceeds |seed 1 - seed 0|). Computed on dev-clean from the existing
+   arms before the gate is trained: all five metrics enter (no periodicity minus reference seed 0: mel L1 +0.0084, STFT
+   +0.0172, PESQ -0.112, UTMOS -0.036, HNR error +0.115 dB; |seed spread| 0.0012, 0.0034, 0.024, 0.009, 0.054).
+2. An entering metric *passes* when the gate recovers at least half of the gap, (none - gate) / (none - reference seed 0) >= 0.5,
+   i.e. the gate is at least as close to the reference as to no periodicity.
+3. Voicing guard: pYIN agreement (overall and around pYIN voicing changes) must not be worse than the reference seed 0 by more
+   than the seed spread: gate - reference >= -|seed 1 - seed 0| (spreads on dev-clean 0.0015 overall and 0.0026 around changes).
+4. The gate *suffices* if every entering metric passes and both guards pass. Otherwise it does not suffice, and no per-metric
+   rescue is used.
+
+5. Borderline and guard-only outcomes, fixed now. An entering metric is *borderline* when the gate's distance from the half-gap
+   threshold, |(gate - reference) - 0.5 (none - reference)|, is within the seed spread of that metric. Any borderline metric
+   makes the verdict "borderline": the rule's pass / fail is still reported but is not evidence for or against the gate, and a
+   second gate seed (`periodicity_binary_100k_seed1`, seed 1 on the same recipe) is then the pre-registered next step, with the
+   same rule applied to the mean of the two gate seeds. If every entering metric passes and only a voicing guard fails, the
+   result is "does not suffice", reported with the intervals; the guard tolerance (one seed pair, 0.0015 / 0.0026) is small and
+   a failure within a few times that is likewise not strong evidence.
+6. Follow-up. Pass: a binary flag is a sufficient periodicity input at 100k in-domain (the continuous channel is not needed for
+   most of its effect); the flag can replace it in later screens without the periodicity extraction path. Fail: the continuous
+   periodicity values (confidence within voiced regions) carry information that a flag does not.
+
+**Noise structure.** The gate arm has the same 15-channel input shape as reference seed 0 and the same seed, so it sees the same
+crops, gains and references and the same global-RNG stream for initialization and dropout; the no-periodicity arm (14 channels)
+and seed 1 do not. The gate-minus-reference difference is therefore probably less noisy than the seed 1 - seed 0 spread and the
+none - reference gap, which biases the recovered fraction toward passing. The gate run uses a fourth code state (the commit
+that adds the option, to be recorded when the run is launched; the training path at default settings is unchanged, see
+`tests/test_model_periodicity_binary.py`).
+
+**Limits, stated in advance.** One training seed for the gate, so its own run-to-run variation is not covered (the seed spread
+comes from one reference pair); a pass means "recovers most of the gap at this resolution", not equivalence. The 0.5 fraction
+is a convention, not a derived bound. Passing on dev-clean says nothing about out-of-domain speech; VCTK validation is reported
+for that. Quantities not in the rule are descriptive and no claim is to be made from them without a new pre-registration.
+Training: `scripts/spkemb/p3_train.sh hifigan periodicity_binary_100k` through `slurm-alloc` as for the no-periodicity arm.

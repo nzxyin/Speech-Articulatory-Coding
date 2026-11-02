@@ -11,6 +11,7 @@ generator:
   spk_dim: 64
   pitch_mode: log
   voiced_flag: false
+  binary_periodicity: false  # true: the periodicity channel is replaced by the 0/1 voicing flag 1[periodicity > 0] (docs/vocoder_periodicity_analysis.md)
   kernel_size: 7
   negative_slope: 0.1
   output_negative_slope: 0.01

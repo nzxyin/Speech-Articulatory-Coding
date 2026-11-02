@@ -44,6 +44,7 @@ ROOT = Path("/data/user_data/xoy/sparc-vocoders-periodicity")
 REF_RUN = "/data/user_data/xoy/sparc-vocoders/runs/ablation_100k/hifigan"
 ABL_RUN = "/data/user_data/xoy/spkemb/phase3/runs/periodicity_none_100k/hifigan"
 SEED1_RUN = "/data/user_data/xoy/spkemb/phase3/runs/p4_b0_s1/hifigan"  # the ablation_100k recipe with training seed 1
+GATE_RUN = "/data/user_data/xoy/spkemb/phase3/runs/periodicity_binary_100k/hifigan"  # binary voicing gate, seed 0
 PHASE4 = "/data/user_data/xoy/spkemb/phase4"
 SPLITS_FILE = Path(__file__).resolve().parents[4] / "docs" / "spkemb_validation_splits.json"
 GAIN_DB = -3.0
@@ -57,12 +58,13 @@ SPLITS = {
     "vctk_test": ("vctk", "VCTK test half", "test (out of domain)"),
 }
 LIBRI_SPLIT = {"dev": "dev.clean", "test": "test.clean"}
-SYSTEM_RUN = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "probe_const": REF_RUN, "probe_binary": REF_RUN, "probe_smooth": REF_RUN}
+SYSTEM_RUN = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "gate": GATE_RUN, "probe_const": REF_RUN, "probe_binary": REF_RUN, "probe_smooth": REF_RUN}
 SYSTEM_LABEL = {
     "gt": "recording",
     "ref": "fork input set (+ periodicity)",
     "ref_s1": "fork input set, training seed 1 (noise reference)",
     "none": "original SPARC input set (EMA + pitch + loudness)",
+    "gate": "binary voicing gate (trained with 1[periodicity > 0])",
     "probe_const": "reference, periodicity = training mean",
     "probe_binary": "reference, periodicity = voiced/unvoiced mask",
     "probe_smooth": "reference, periodicity smoothed (9 frames)",
@@ -822,7 +824,7 @@ CLASS_METRICS = [("mel_l1", "mel L1", 4), ("hb_abs", "4-12 kHz log-energy error,
                  ("vagree_in", "voicing agreement with the input tracker", 4), ("py_agree", "voicing agreement with pYIN", 4),
                  ("py_voiced", "fraction of frames pYIN calls voiced (own output)", 4), ("in_voiced", "fraction of frames the input tracker calls voiced (own output)", 4),
                  ("f0_abs", "F0 error on both-voiced frames, mean absolute cents", 2)]
-COMPARE = ("none", "probe_const", "probe_binary", "probe_smooth")
+COMPARE = ("none", "gate", "probe_const", "probe_binary", "probe_smooth")
 
 
 def load_global(split: str, system: str) -> pd.DataFrame:
@@ -935,7 +937,7 @@ def seed_section(split: str, glob: dict, frame_df: pd.DataFrame, rec: dict) -> l
 def run_summarize(args: argparse.Namespace) -> None:
     setup_env()
     subset = load_subset()
-    available = {sp: [s for s in ("gt", "ref", "ref_s1", "none", "probe_const", "probe_binary", "probe_smooth") if (ROOT / "metrics" / sp / f"{s}.parquet").exists()] for sp in SPLITS}
+    available = {sp: [s for s in ("gt", "ref", "ref_s1", "none", "gate", "probe_const", "probe_binary", "probe_smooth") if (ROOT / "metrics" / sp / f"{s}.parquet").exists()] for sp in SPLITS}
     lines = ["# Periodicity analysis: all tables", "", "Speaker-level paired bootstrap, 10,000 resamples, 95% intervals; `*` marks an interval that excludes 0.",
              "Differences are system minus the reference (fork input set, with periodicity).", ""]
     results: dict = {}
@@ -1031,7 +1033,7 @@ def run_cfgdiff(args: argparse.Namespace) -> None:
     from sparc.vocoders.training.callbacks import list_step_checkpoints
 
     cfgs = {}
-    runs = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN}
+    runs = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "gate": GATE_RUN}
     first, second = args.pair.split(",")
     for name, run in ((first, runs[first]), (second, runs[second])):
         step, path = list_step_checkpoints(Path(run) / "ckpt")[-1]
@@ -1043,6 +1045,100 @@ def run_cfgdiff(args: argparse.Namespace) -> None:
     print(f"{len(keys)} config keys, {len(diff)} differ:")
     for k, a, b in diff:
         print(f"  {k}: {first}={a!r} {second}={b!r}")
+
+
+# ------------------------------------------------------------------------------------------------ binary voicing gate decision
+
+# Pre-registered 2026-11-01 (docs/vocoder_periodicity_analysis.md, "Binary voicing gate"). Decided on the validation splits
+# only; the test splits are not read here.
+GATE_SPLITS = ("dev", "vctk_val")
+GATE_DECIDING_SPLIT = "dev"  # in-domain validation (LibriTTS-R dev-clean); the VCTK validation half is reported, not decisive
+GATE_QUALITY = ("mel_l1", "mrstft", "pesq_wb", "utmos", "hnr_abs")  # in-domain quality (hnr_abs from the frame table, class "all")
+GATE_RECOVERED = 0.5  # the gate must recover at least this fraction of the reference-to-no-periodicity gap
+GATE_GUARDS = (("change_pyin", "py_agree"), ("all", "py_agree"))  # agreement with pYIN around its voicing changes / overall
+
+
+def gate_decision(values: dict) -> dict:
+    """The pre-registered rule on one split. ``values[metric]`` holds ``paired`` outputs for ``none_ref`` (no periodicity minus
+    seed 0), ``gate_ref`` (gate minus seed 0), ``s1_ref`` (seed 1 minus seed 0) and ``none_s1`` (no periodicity minus seed 1).
+
+    * A quality metric enters when the no-periodicity arm differs from the reference beyond the seed spread (``seed_verdict``
+      == "yes", the analysis's own rule). It passes when the gate recovers at least ``GATE_RECOVERED`` of the gap:
+      (none - gate) / (none - ref) >= 0.5, i.e. the gate is at least as close to the reference as to no periodicity.
+    * A guard passes when the gate is not worse than the reference by more than the seed spread:
+      gate - ref >= -|seed 1 - seed 0| (the guard metrics are agreements, higher is better).
+    * The gate "suffices" when at least one metric enters, every entering metric passes and every guard passes.
+    """
+    out: dict = {"metrics": {}, "guards": {}}
+    for m in GATE_QUALITY:
+        v = values[m]
+        enters = seed_verdict(v["s1_ref"], v["none_ref"], v["none_s1"]) == "yes"
+        gap, gd = v["none_ref"]["diff"], v["gate_ref"]["diff"]
+        recovered = float((gap - gd) / gap) if np.isfinite(gap) and np.isfinite(gd) and gap != 0 else float("nan")
+        out["metrics"][m] = {"enters": bool(enters), "none_minus_ref": gap, "gate_minus_ref": gd, "spread": v["s1_ref"]["diff"],
+                             "recovered": recovered, "pass": bool(np.isfinite(recovered) and recovered >= GATE_RECOVERED) if enters else None}
+    for cls, col in GATE_GUARDS:
+        v = values[f"{cls}/{col}"]
+        spread, gd = abs(v["s1_ref"]["diff"]), v["gate_ref"]["diff"]
+        out["guards"][f"{cls}/{col}"] = {"gate_minus_ref": gd, "seed_spread": spread, "pass": bool(np.isfinite(gd) and np.isfinite(spread) and gd >= -spread)}
+    entering = [r["pass"] for r in out["metrics"].values() if r["enters"]]
+    out["suffices"] = bool(entering) and all(entering) and all(r["pass"] for r in out["guards"].values())
+    # a metric is borderline when the gate's distance from the half-gap threshold is within the seed spread: there the verdict
+    # is not evidence either way (one training seed for the gate, one seed pair for the spread)
+    out["borderline"] = [m for m, r in out["metrics"].items() if r["enters"] and np.isfinite(r["gate_minus_ref"]) and np.isfinite(r["spread"])
+                         and abs(r["gate_minus_ref"] - GATE_RECOVERED * r["none_minus_ref"]) <= abs(r["spread"])]
+    guards_ok = all(r["pass"] for r in out["guards"].values())
+    out["guard_only_failure"] = bool(entering) and all(entering) and not guards_ok
+    return out
+
+
+def run_gate(args: argparse.Namespace) -> None:
+    """Applies the pre-registered decision rule for the binary voicing gate on the validation splits and writes
+    ``summary/gate_decision.{json,md}``. Needs metrics, pYIN tracks and alignments of gt, ref, ref_s1, none and gate."""
+    setup_env()
+    systems = ["gt", "ref", "ref_s1", "none", "gate"]
+    results, lines = {}, ["# Binary voicing gate: pre-registered decision (validation splits only)", ""]
+    for split in GATE_SPLITS:
+        glob = {s: load_global(split, s) for s in systems}
+        frame_df, _ = frame_table(split, systems)
+        allf = frame_df[frame_df["class"] == "all"]
+        values: dict = {}
+
+        def table_of(key: str):
+            if key in glob["ref"].columns:
+                return {s: glob[s] for s in systems if s != "gt"}, key
+            if "/" in key:
+                cls, col = key.split("/")
+                return {s: frame_df[(frame_df["system"] == s) & (frame_df["class"] == cls)] for s in systems if s != "gt"}, col
+            return {s: allf[allf["system"] == s] for s in systems if s != "gt"}, key
+
+        keys = list(GATE_QUALITY) + [f"{c}/{k}" for c, k in GATE_GUARDS]
+        for key in keys:
+            src, col = table_of(key)
+            values[key] = {"none_ref": paired(src["none"], src["ref"], col), "gate_ref": paired(src["gate"], src["ref"], col),
+                           "gate_none": paired(src["gate"], src["none"], col), "s1_ref": paired(src["ref_s1"], src["ref"], col),
+                           "none_s1": paired(src["none"], src["ref_s1"], col), "gate_s1": paired(src["gate"], src["ref_s1"], col)}
+        decision = gate_decision(values)
+        results[split] = {"decision": decision, "values": values}
+        tag = " (DECIDING)" if split == GATE_DECIDING_SPLIT else " (reported, not deciding)"
+        lines += [f"## {SPLITS[split][1]}{tag}", "", "| metric | none - ref | gate - ref | seed spread (seed 1 - seed 0) | gate - none | recovered | enters | pass |", "|---|---|---|---|---|---|---|---|"]
+        for m, r in decision["metrics"].items():
+            lines.append(f"| {m} | {fmt_ci(values[m]['none_ref'], 4)} | {fmt_ci(values[m]['gate_ref'], 4)} | {fmt_ci(values[m]['s1_ref'], 4)} | "
+                         f"{fmt_ci(values[m]['gate_none'], 4)} | {r['recovered']:.2f} | {r['enters']} | {r['pass']} |")
+        lines += ["", "| guard (agreement with pYIN) | gate - ref | seed spread | pass |", "|---|---|---|---|"]
+        for g, r in decision["guards"].items():
+            lines.append(f"| {g} | {fmt_ci(values[g]['gate_ref'], 4)} | {r['seed_spread']:.4f} | {r['pass']} |")
+        lines += ["", f"Gate suffices on this split by the rule: **{decision['suffices']}**", ""]
+        if decision["borderline"]:
+            lines += [f"Borderline metrics (within the seed spread of the half-gap threshold; no evidence either way): {', '.join(decision['borderline'])}", ""]
+        if decision["guard_only_failure"]:
+            lines += ["Every entering quality metric passes but a voicing guard fails: reported as does not suffice, with the intervals above.", ""]
+    out = ROOT / "summary"
+    out.mkdir(exist_ok=True)
+    (out / "gate_decision.md").write_text("\n".join(lines) + "\n")
+    (out / "gate_decision.json").write_text(json.dumps(results, indent=1, default=float))
+    print("\n".join(lines))
+    print("DECISION", GATE_DECIDING_SPLIT, results[GATE_DECIDING_SPLIT]["decision"]["suffices"])
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1060,15 +1156,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     m.add_argument("--splits", default=",".join(SPLITS))
     m.add_argument("--overwrite", action="store_true")
     sub.add_parser("summarize")
+    sub.add_parser("gate")
     c = sub.add_parser("cfgdiff")
-    c.add_argument("--pair", default="ref,none", help="two of ref, ref_s1, none (config keys that differ between their checkpoints)")
+    c.add_argument("--pair", default="ref,none", help="two of ref, ref_s1, none, gate (config keys that differ between their checkpoints)")
     y = sub.add_parser("pyin")
-    y.add_argument("--systems", default="gt,ref,ref_s1,none,probe_const,probe_binary,probe_smooth")
+    y.add_argument("--systems", default="gt,ref,ref_s1,none,gate,probe_const,probe_binary,probe_smooth")
     y.add_argument("--splits", default=",".join(SPLITS))
     y.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", "8")))
     y.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
-    {"prepare": run_prepare, "synth": run_synth, "metrics": run_metrics, "summarize": run_summarize, "cfgdiff": run_cfgdiff, "pyin": run_pyin}[a.cmd](a)
+    {"prepare": run_prepare, "synth": run_synth, "metrics": run_metrics, "summarize": run_summarize, "cfgdiff": run_cfgdiff, "pyin": run_pyin, "gate": run_gate}[a.cmd](a)
 
 
 if __name__ == "__main__":
