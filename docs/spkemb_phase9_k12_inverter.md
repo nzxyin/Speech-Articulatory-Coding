@@ -48,3 +48,19 @@ Reference: the `p5_fv` run (layer-9 MNGU0-refit linear head features, same data 
 - Both inverters are bidirectional (offline); the features are low-passed and shifted as each inverter was trained.
 - The inverters' own accuracy on new speakers is known only from the EMA corpora (leave-one-speaker-out), not on
   LibriTTS-R, VCTK or GLOBE voices.
+
+## Seed-1 replication of arm 1 (pre-registered 2026-11-01, before training)
+
+Arm 1 (MNGU0 k12 inverter) tied the reference on cloning but lowered WER on every validation pool with one seed
+(LibriTTS-R dev -0.47, VCTK validation half -0.59, GLOBE dev real speakers -2.80 points; variant `k5_f0_loud`), and
+failed only the VCTK own-speaker guard (ECAPA -0.0116, limit 0.01). A second seed checks whether the WER gain is real.
+
+- Run: `p9_mngu0_seed1` (identical to `p9_mngu0` except seed 1), paired with the reference's second seed `p5_fv_seed1`
+  (already scored on the validation pools). Same pools, variant, scoring and inverter path as seed 0.
+- Primary: WER difference (arm - reference) per validation pool. The WER gain **replicates** if the seed-1 difference is
+  negative in all three pools **and** the mean over the two seed pairs is <= -0.5 points (the WER guard size) in at
+  least two pools.
+- Also reported, not decisive: the full Phase 4/5 and out-of-domain rules for seed 1 (margin 0.0266); whether the VCTK
+  own-speaker guard failure recurs; two-seed means of the ECAPA gains and guards; UTMOS.
+- No test pools are run. If the WER gain replicates, adopting the k12 inverter for the vocoder input is a separate
+  decision (cloning is a tie and the own-speaker guard result decides whether it is safe).
