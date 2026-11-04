@@ -1,7 +1,8 @@
 #!/bin/bash
 # Preemption-safe training of one Phase 3 arm through slurm-alloc (it owns partition, GPUs, --requeue):
 #   slurm-alloc submit --agent sparc-xlsr-ema --restartable --ckpt-signal USR1 --gpus 1 --cpus 8 --mem 64G \
-#     --time 14:00:00 --sbatch "--signal=USR1@120" -- "$PWD/scripts/spkemb/p3_train.sh" hifigan p3_b2 [overrides]
+#     --time 14:00:00 --sbatch "--signal=B:USR1@120" -- "$PWD/scripts/spkemb/p3_train.sh" hifigan p3_b2 [overrides]
+# B: is required: the training python runs inside this batch shell, which forwards the signal (see below).
 # Same logic as scripts/slurm/train_vocoder.sh (resume from the newest checkpoint, DONE marker, requeue when stopped
 # early), but code from this checkout and runs under /data/user_data/$USER/spkemb/phase3/runs.
 set -u
@@ -29,8 +30,21 @@ if [ -s "$RUN/DONE" ]; then echo "already done: $(cat "$RUN/DONE")"; exit 0; fi
 [ -n "${SLURM_JOB_ID:-}" ] && export REQUEUE_CMD="scontrol requeue $SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
-"$PY" -m sparc.cli.train "${ARGS[@]}" trainer.trainer.devices=1 trainer.trainer.num_nodes=1
-rc=$?
+# python runs directly in the batch shell (no srun step), so the stop signal must be sent to this shell
+# (--signal=B:USR1@120) and forwarded: a foreground child would block the trap until it exits, and an untrapped USR1
+# (also sent by `scancel --signal=USR1 --full`) would kill this shell before the checkpoint is written. The training
+# callback (PreemptionCheckpoint) checkpoints at the next step boundary, runs $REQUEUE_CMD and exits 0.
+"$PY" -m sparc.cli.train "${ARGS[@]}" trainer.trainer.devices=1 trainer.trainer.num_nodes=1 &
+PID=$!
+forward() { echo "batch shell got SIG$1 at $(date -Is): forwarding to python ($PID)"; kill -s "$1" "$PID" 2>/dev/null; }
+trap 'forward USR1' USR1
+trap 'forward TERM' TERM
+while :; do
+    wait "$PID"
+    rc=$?
+    kill -0 "$PID" 2>/dev/null || break
+done
+trap - USR1 TERM
 if [ "$rc" -eq 0 ] && grep -q '"finished": true' "$RUN/status.json" 2>/dev/null; then
     date -Is > "$RUN/DONE"
     echo "finished: $(cat "$RUN/DONE")"

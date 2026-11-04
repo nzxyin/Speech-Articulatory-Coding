@@ -193,6 +193,11 @@ All notable changes to this fork. Earlier history is in `git log`.
   committed Slurm scripts default to relative log paths; `cudnn.benchmark` is off by default.
 
 ### Fixed
+- `scripts/spkemb/p3_train.sh` never checkpointed and requeued at the time limit (#33): the training python ran in the
+  batch shell, which `--signal=USR1@120` does not reach, and a foreground child blocks a trap. Python now runs in the
+  background, the shell traps USR1 / TERM and forwards them, and jobs are submitted with `--signal=B:USR1@120`. Tested
+  with a real 8-minute job: signal, checkpoint at step 2,680, `scontrol requeue`, restart on another node resuming from
+  that checkpoint.
 - Evaluation WER: Whisper's text normalizer deleted words in parentheses and brackets, which LibriTTS-R references
   use for spoken parentheticals (40 test-clean texts), so they counted as insertions for every system (absolute WER
   was about 11 % too high). The bracket characters are now removed first; stage `asr_rescore` recomputes stored counts.
