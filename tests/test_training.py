@@ -346,6 +346,20 @@ def test_sigterm_also_checkpoints(tmp_path, stats, monkeypatch):
     assert checkpoint_path(tmp_path / "ckpt", 2).exists()
 
 
+def test_sigterm_does_not_requeue(tmp_path, stats, monkeypatch):
+    marker = tmp_path / "requeued"
+    monkeypatch.setenv("REQUEUE_CMD", f"touch {marker}")
+
+    class TermAt(SignalAt):
+        def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+            if pl_module.g_step == self.step:
+                os.kill(os.getpid(), signal.SIGTERM)
+
+    _, module = train(make_cfg(tmp_path / "run"), stats, TermAt(1))
+    assert module.g_step == 2 and checkpoint_path(tmp_path / "run" / "ckpt", 2).exists()
+    assert not marker.exists()
+
+
 def test_signal_handlers_are_restored(tmp_path, stats):
     before = {s: signal.getsignal(s) for s in (signal.SIGUSR1, signal.SIGTERM)}
     train(make_cfg(tmp_path, max_g_steps=2, mel_warmup=1), stats)

@@ -193,6 +193,11 @@ All notable changes to this fork. Earlier history is in `git log`.
   committed Slurm scripts default to relative log paths; `cudnn.benchmark` is off by default.
 
 ### Fixed
+- A cancelled training job requeued itself: `scancel` sends SIGTERM, which `PreemptionCheckpoint` treated like a
+  preemption (checkpoint + `$REQUEUE_CMD`), and `p3_train.sh` requeued again after any early stop. Only SIGUSR1 (time-limit
+  warning, preemption notice, allocator yield) now requeues, in the callback and in the script; SIGTERM checkpoints and
+  stops. Test `test_sigterm_does_not_requeue`; verified with a real job: time limit -> checkpoint at step 4,677, requeue,
+  resume; cancel -> checkpoint at step 4,780, final state CANCELLED.
 - `scripts/spkemb/p3_train.sh` never checkpointed and requeued at the time limit (#33): the training python ran in the
   batch shell, which `--signal=USR1@120` does not reach, and a foreground child blocks a trap. Python now runs in the
   background, the shell traps USR1 / TERM and forwards them, and jobs are submitted with `--signal=B:USR1@120`. Tested

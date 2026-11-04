@@ -65,9 +65,10 @@ class PreemptionCheckpoint(Callback):
     """Step-boundary checkpoints for preemptible training.
 
     SIGUSR1 and SIGTERM set a flag. At the end of the next training batch (after the full D and G update) all ranks
-    agree on the flag, rank 0 writes ``<ckpt_dir>/step<g_step>.ckpt``, runs the command in ``$REQUEUE_CMD`` if that
-    variable is set (only the sbatch script sets it: an ssh session adopted into a job also carries ``SLURM_JOB_ID``,
-    so requeueing is never implicit) and the run stops. Time-based checkpoints are written every ``every_minutes``,
+    agree on the flag, rank 0 writes ``<ckpt_dir>/step<g_step>.ckpt`` and the run stops. Only after SIGUSR1 does rank 0
+    also run the command in ``$REQUEUE_CMD`` if that variable is set (only the sbatch script sets it: an ssh session
+    adopted into a job also carries ``SLURM_JOB_ID``, so requeueing is never implicit); SIGTERM (``scancel``) never
+    requeues. Time-based checkpoints are written every ``every_minutes``,
     milestones every ``milestone_every`` generator steps; milestones are kept, other files are pruned to the newest
     ``keep_last``. A run that reaches ``max_g_steps`` writes a final checkpoint.
     """
@@ -158,7 +159,9 @@ class PreemptionCheckpoint(Callback):
             rank_zero_info(f"preemption signal received: checkpointing at g_step {step}")
             self._save(trainer, step)
             finished = self.max_g_steps is not None and step >= self.max_g_steps
-            if trainer.is_global_zero and not finished:
+            # Only SIGUSR1 (time-limit warning, preemption notice, allocator yield) asks for a requeue. SIGTERM is what
+            # `scancel` sends: checkpoint and stop, never requeue, or a cancelled job would bring itself back.
+            if trainer.is_global_zero and not finished and self.signal_number == signal.SIGUSR1:
                 self._requeue()
             trainer.should_stop = True
 

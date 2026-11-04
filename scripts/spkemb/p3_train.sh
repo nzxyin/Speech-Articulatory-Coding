@@ -33,11 +33,13 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 # python runs directly in the batch shell (no srun step), so the stop signal must be sent to this shell
 # (--signal=B:USR1@120) and forwarded: a foreground child would block the trap until it exits, and an untrapped USR1
 # (also sent by `scancel --signal=USR1 --full`) would kill this shell before the checkpoint is written. The training
-# callback (PreemptionCheckpoint) checkpoints at the next step boundary, runs $REQUEUE_CMD and exits 0.
+# callback (PreemptionCheckpoint) checkpoints at the next step boundary and exits 0; after USR1 it also runs $REQUEUE_CMD.
+# TERM (scancel) checkpoints and stops without any requeue, so cancelling a job ends it.
 "$PY" -m sparc.cli.train "${ARGS[@]}" trainer.trainer.devices=1 trainer.trainer.num_nodes=1 &
 PID=$!
+GOT_USR1=0
 forward() { echo "batch shell got SIG$1 at $(date -Is): forwarding to python ($PID)"; kill -s "$1" "$PID" 2>/dev/null; }
-trap 'forward USR1' USR1
+trap 'GOT_USR1=1; forward USR1' USR1
 trap 'forward TERM' TERM
 while :; do
     wait "$PID"
@@ -48,7 +50,8 @@ trap - USR1 TERM
 if [ "$rc" -eq 0 ] && grep -q '"finished": true' "$RUN/status.json" 2>/dev/null; then
     date -Is > "$RUN/DONE"
     echo "finished: $(cat "$RUN/DONE")"
-elif [ "$rc" -eq 0 ] && [ -n "${REQUEUE_CMD:-}" ]; then
+elif [ "$rc" -eq 0 ] && [ "$GOT_USR1" -eq 1 ] && [ -n "${REQUEUE_CMD:-}" ]; then
+    # requeue only after the time-limit / yield signal; a TERM (scancel) stop must stay stopped
     echo "stopped before max_g_steps: requeueing"
     eval "$REQUEUE_CMD"
     sleep 300
