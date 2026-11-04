@@ -5,6 +5,12 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Gender-conditioning study of the multi-speaker inverter (`sparc.compression.gender_cond`,
+  `docs/gender_conditioning_prereg.md`, `tests/test_gender_cond.py`): pooled head, head told the speaker's gender
+  (zero-initialized FiLM), per-gender models, count- and corpus-matched mixed-gender controls, random and corpus
+  pseudo-label controls, ridge analogues, and a pre-registered four-valued verdict per gender. Failed seeds are
+  retried and never silently averaged, stored runs are checked against the current spec before reuse, and the A3 control
+  value averages distinct subsets with equal weight.
 - `sparc.compression`: toolkit for studying structural compression of SSL speech encoders (XLS-R 300M/1B/2B,
   WavLM Large) for speech-to-EMA prediction on MNGU0.
   - `mngu0`: the corpus's standard train/validation/test file sets, EMA de-normalized to mm, and EMA/audio
