@@ -146,3 +146,57 @@ def test_gate_decision_rule():
         v[m]["none_s1"] = _pair(0.004)
     d = pa.gate_decision(v)
     assert not any(r["enters"] for r in d["metrics"].values()) and not d["suffices"]  # nothing to recover: no claim
+
+
+def test_average_systems_per_item_mean():
+    import pandas as pd
+
+    a = pd.DataFrame({"id": ["u1", "u2", "u3"], "speaker": ["s", "s", "t"], "system": "gate", "utmos": [4.0, 3.0, np.nan], "hyp": ["x", "y", "z"]})
+    b = pd.DataFrame({"id": ["u3", "u2", "u1"], "speaker": ["t", "s", "s"], "system": "gate_s1", "utmos": [3.0, 5.0, 2.0], "hyp": ["q", "q", "q"]})
+    m = pa.average_systems(a, b, "gate_mean", ["id"]).set_index("id")
+    assert m.loc["u1", "utmos"] == 3.0 and m.loc["u2", "utmos"] == 4.0
+    assert np.isnan(m.loc["u3", "utmos"])  # missing in one seed stays missing
+    assert set(m["system"]) == {"gate_mean"} and m.loc["u1", "hyp"] == "x"
+    fa = pd.DataFrame({"id": ["u1", "u1"], "class": ["all", "vowels"], "speaker": "s", "system": "gate", "mel_l1": [1.0, 2.0]})
+    fb = pd.DataFrame({"id": ["u1"], "class": ["vowels"], "speaker": "s", "system": "gate_s1", "mel_l1": [4.0]})
+    out = pa.average_systems(fa, fb, "gate_mean", ["id", "class"])
+    assert len(out) == 1 and out["mel_l1"].iloc[0] == 3.0  # only rows present in both seeds
+
+
+def _frames(system, vals):
+    import pandas as pd
+
+    return pd.DataFrame([{"system": system, "id": f"u{k}", "speaker": spk, "class": "all", "mel_l1": v} for k, (spk, v) in enumerate(vals)])
+
+
+def test_two_seed_mean_rule():
+    """The rule on the mean of two gate seeds: the mean's gate - ref is the mean of the seeds' differences, and the verdict follows
+    the mean (seed 0 alone passes, seed 1 alone fails, the mean sits on the half-gap threshold)."""
+    spk = ["a", "a", "b", "b", "c", "c", "d", "d"]
+    ref = _frames("ref", [(s, 4.0) for s in spk])
+    s0 = _frames("gate", [(s, 4.02) for s in spk])  # seed 0: gate - ref = +0.02
+    s1 = _frames("gate_s1", [(s, 4.08) for s in spk])  # seed 1: +0.08
+    mean = pa.average_systems(s0, s1, pa.GATE_MEAN, ["id"])
+    d = pa.paired(mean, ref, "mel_l1")
+    assert d["diff"] == pytest.approx(0.05)
+    d0, d1 = pa.paired(s0, ref, "mel_l1"), pa.paired(s1, ref, "mel_l1")
+    assert (d0["diff"] + d1["diff"]) / 2 == pytest.approx(d["diff"])
+
+    def decide(gate_diff):  # no-periodicity gap 0.1, spread 0.01: half-gap threshold 0.05
+        v = _gate_values(0.0)
+        for m in pa.GATE_QUALITY:
+            v[m]["gate_ref"] = _pair(gate_diff)
+        return pa.gate_decision(v)
+
+    assert decide(d0["diff"])["suffices"] and not decide(d1["diff"])["suffices"]
+    dm = decide(d["diff"])
+    assert dm["suffices"] and dm["borderline"] == list(pa.GATE_QUALITY)
+
+
+def test_gate_split_lines_two_seed_columns():
+    v = _gate_values(0.2)
+    for key in v:
+        v[key]["gate_none"] = _pair(-0.05)
+        v[key]["only_gate_ref"], v[key]["only_gate_s1_ref"] = _pair(0.01), _pair(0.03)
+    text = "\n".join(pa.gate_split_lines("dev", v, pa.gate_decision(v), ["gate", "gate_s1"]))
+    assert "mean of the two gate seeds" in text and "training seed 1 - ref" in text and "DECIDING" in text

@@ -45,6 +45,7 @@ REF_RUN = "/data/user_data/xoy/sparc-vocoders/runs/ablation_100k/hifigan"
 ABL_RUN = "/data/user_data/xoy/spkemb/phase3/runs/periodicity_none_100k/hifigan"
 SEED1_RUN = "/data/user_data/xoy/spkemb/phase3/runs/p4_b0_s1/hifigan"  # the ablation_100k recipe with training seed 1
 GATE_RUN = "/data/user_data/xoy/spkemb/phase3/runs/periodicity_binary_100k/hifigan"  # binary voicing gate, seed 0
+GATE_RUN_S1 = "/data/user_data/xoy/spkemb/phase3/runs/periodicity_binary_100k_seed1/hifigan"  # binary voicing gate, seed 1
 PHASE4 = "/data/user_data/xoy/spkemb/phase4"
 SPLITS_FILE = Path(__file__).resolve().parents[4] / "docs" / "spkemb_validation_splits.json"
 GAIN_DB = -3.0
@@ -58,13 +59,14 @@ SPLITS = {
     "vctk_test": ("vctk", "VCTK test half", "test (out of domain)"),
 }
 LIBRI_SPLIT = {"dev": "dev.clean", "test": "test.clean"}
-SYSTEM_RUN = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "gate": GATE_RUN, "probe_const": REF_RUN, "probe_binary": REF_RUN, "probe_smooth": REF_RUN}
+SYSTEM_RUN = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "gate": GATE_RUN, "gate_s1": GATE_RUN_S1, "probe_const": REF_RUN, "probe_binary": REF_RUN, "probe_smooth": REF_RUN}
 SYSTEM_LABEL = {
     "gt": "recording",
     "ref": "fork input set (+ periodicity)",
     "ref_s1": "fork input set, training seed 1 (noise reference)",
     "none": "original SPARC input set (EMA + pitch + loudness)",
     "gate": "binary voicing gate (trained with 1[periodicity > 0])",
+    "gate_s1": "binary voicing gate, training seed 1",
     "probe_const": "reference, periodicity = training mean",
     "probe_binary": "reference, periodicity = voiced/unvoiced mask",
     "probe_smooth": "reference, periodicity smoothed (9 frames)",
@@ -824,7 +826,7 @@ CLASS_METRICS = [("mel_l1", "mel L1", 4), ("hb_abs", "4-12 kHz log-energy error,
                  ("vagree_in", "voicing agreement with the input tracker", 4), ("py_agree", "voicing agreement with pYIN", 4),
                  ("py_voiced", "fraction of frames pYIN calls voiced (own output)", 4), ("in_voiced", "fraction of frames the input tracker calls voiced (own output)", 4),
                  ("f0_abs", "F0 error on both-voiced frames, mean absolute cents", 2)]
-COMPARE = ("none", "gate", "probe_const", "probe_binary", "probe_smooth")
+COMPARE = ("none", "gate", "gate_s1", "probe_const", "probe_binary", "probe_smooth")
 
 
 def load_global(split: str, system: str) -> pd.DataFrame:
@@ -937,7 +939,7 @@ def seed_section(split: str, glob: dict, frame_df: pd.DataFrame, rec: dict) -> l
 def run_summarize(args: argparse.Namespace) -> None:
     setup_env()
     subset = load_subset()
-    available = {sp: [s for s in ("gt", "ref", "ref_s1", "none", "gate", "probe_const", "probe_binary", "probe_smooth") if (ROOT / "metrics" / sp / f"{s}.parquet").exists()] for sp in SPLITS}
+    available = {sp: [s for s in ("gt", "ref", "ref_s1", "none", "gate", "gate_s1", "probe_const", "probe_binary", "probe_smooth") if (ROOT / "metrics" / sp / f"{s}.parquet").exists()] for sp in SPLITS}
     lines = ["# Periodicity analysis: all tables", "", "Speaker-level paired bootstrap, 10,000 resamples, 95% intervals; `*` marks an interval that excludes 0.",
              "Differences are system minus the reference (fork input set, with periodicity).", ""]
     results: dict = {}
@@ -1033,7 +1035,7 @@ def run_cfgdiff(args: argparse.Namespace) -> None:
     from sparc.vocoders.training.callbacks import list_step_checkpoints
 
     cfgs = {}
-    runs = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "gate": GATE_RUN}
+    runs = {"ref": REF_RUN, "ref_s1": SEED1_RUN, "none": ABL_RUN, "gate": GATE_RUN, "gate_s1": GATE_RUN_S1}
     first, second = args.pair.split(",")
     for name, run in ((first, runs[first]), (second, runs[second])):
         step, path = list_step_checkpoints(Path(run) / "ckpt")[-1]
@@ -1092,53 +1094,131 @@ def gate_decision(values: dict) -> dict:
     return out
 
 
+GATE_MEAN = "gate_mean"  # the per-item mean of the two gate seeds (``gate`` and ``gate_s1``)
+
+
+def average_systems(a: pd.DataFrame, b: pd.DataFrame, name: str, keys: Sequence[str]) -> pd.DataFrame:
+    """Per-item mean of two systems' tables: rows matched on ``keys`` (utterance id, and class for the frame table), every numeric
+    column averaged (a value missing in either seed stays missing), other columns taken from ``a``; ``system`` set to ``name``."""
+    a2, b2 = a.set_index(list(keys)), b.set_index(list(keys))
+    idx = a2.index.intersection(b2.index)
+    out = a2.loc[idx].copy()
+    num = [c for c in a2.columns if pd.api.types.is_numeric_dtype(a2[c]) and c in b2.columns]
+    out[num] = (a2.loc[idx, num].to_numpy(dtype=float) + b2.loc[idx, num].to_numpy(dtype=float)) / 2.0
+    if "system" in out.columns:
+        out["system"] = name
+    return out.reset_index()
+
+
+def gate_values_of(glob: dict, frame_df: pd.DataFrame, gate: str, extra: Sequence[str] = ()) -> dict:
+    """``paired`` outputs per decision metric / guard for the system ``gate`` against ref, none, ref_s1 (and for the systems in ``extra``
+    against ref, as ``<system>_ref``)."""
+    allf = frame_df[frame_df["class"] == "all"]
+    systems = [s for s in glob if s != "gt"]
+
+    def table_of(key: str):
+        if key in glob["ref"].columns:
+            return {s: glob[s] for s in systems}, key
+        if "/" in key:
+            cls, col = key.split("/")
+            return {s: frame_df[(frame_df["system"] == s) & (frame_df["class"] == cls)] for s in systems}, col
+        return {s: allf[allf["system"] == s] for s in systems}, key
+
+    values: dict = {}
+    for key in list(GATE_QUALITY) + [f"{c}/{k}" for c, k in GATE_GUARDS]:
+        src, col = table_of(key)
+        values[key] = {"none_ref": paired(src["none"], src["ref"], col), "gate_ref": paired(src[gate], src["ref"], col),
+                       "gate_none": paired(src[gate], src["none"], col), "s1_ref": paired(src["ref_s1"], src["ref"], col),
+                       "none_s1": paired(src["none"], src["ref_s1"], col), "gate_s1": paired(src[gate], src["ref_s1"], col)}
+        for e in extra:
+            values[key][f"only_{e}_ref"] = paired(src[e], src["ref"], col)
+    return values
+
+
+def gate_split_lines(split: str, values: dict, decision: dict, extra: Sequence[str] = ()) -> list[str]:
+    """Markdown of one split's decision. With ``extra`` (the per-seed gate systems), their gate - ref columns follow the main one."""
+    tag = " (DECIDING)" if split == GATE_DECIDING_SPLIT else " (reported, not deciding)"
+    gate_col = "gate - ref" if not extra else "gate - ref (mean of the two gate seeds)"
+    extra_cols = [f"{SYSTEM_LABEL[e]} - ref" for e in extra]
+    head = ["metric", "none - ref", gate_col, *extra_cols, "seed spread (seed 1 - seed 0)", "gate - none", "recovered", "enters", "pass"]
+    lines = [f"## {SPLITS[split][1]}{tag}", "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for m, r in decision["metrics"].items():
+        v = values[m]
+        cells = [m, fmt_ci(v["none_ref"], 4), fmt_ci(v["gate_ref"], 4), *[fmt_ci(v[f"only_{e}_ref"], 4) for e in extra], fmt_ci(v["s1_ref"], 4),
+                 fmt_ci(v["gate_none"], 4), f"{r['recovered']:.2f}", str(r["enters"]), str(r["pass"])]
+        lines.append("| " + " | ".join(cells) + " |")
+    g_head = ["guard (agreement with pYIN)", gate_col, *extra_cols, "seed spread", "pass"]
+    lines += ["", "| " + " | ".join(g_head) + " |", "|" + "---|" * len(g_head)]
+    for g, r in decision["guards"].items():
+        cells = [g, fmt_ci(values[g]["gate_ref"], 4), *[fmt_ci(values[g][f"only_{e}_ref"], 4) for e in extra], f"{r['seed_spread']:.4f}", str(r["pass"])]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines += ["", f"Gate suffices on this split by the rule: **{decision['suffices']}**", ""]
+    if decision["borderline"]:
+        lines += [f"Borderline metrics (within the seed spread of the half-gap threshold; no evidence either way): {', '.join(decision['borderline'])}", ""]
+    if decision["guard_only_failure"]:
+        lines += ["Every entering quality metric passes but a voicing guard fails: reported as does not suffice, with the intervals above.", ""]
+    return lines
+
+
 def run_gate(args: argparse.Namespace) -> None:
     """Applies the pre-registered decision rule for the binary voicing gate on the validation splits and writes
-    ``summary/gate_decision.{json,md}``. Needs metrics, pYIN tracks and alignments of gt, ref, ref_s1, none and gate."""
+    ``summary/gate_decision.{json,md}``. Needs metrics, pYIN tracks and alignments of gt, ref, ref_s1, none and gate. When the
+    outputs of ``gate_s1`` (second gate seed) exist as well, also writes ``summary/gate_decision_2seed.{json,md}``
+    (:func:`run_gate_2seed`)."""
     setup_env()
     systems = ["gt", "ref", "ref_s1", "none", "gate"]
     results, lines = {}, ["# Binary voicing gate: pre-registered decision (validation splits only)", ""]
     for split in GATE_SPLITS:
         glob = {s: load_global(split, s) for s in systems}
         frame_df, _ = frame_table(split, systems)
-        allf = frame_df[frame_df["class"] == "all"]
-        values: dict = {}
-
-        def table_of(key: str):
-            if key in glob["ref"].columns:
-                return {s: glob[s] for s in systems if s != "gt"}, key
-            if "/" in key:
-                cls, col = key.split("/")
-                return {s: frame_df[(frame_df["system"] == s) & (frame_df["class"] == cls)] for s in systems if s != "gt"}, col
-            return {s: allf[allf["system"] == s] for s in systems if s != "gt"}, key
-
-        keys = list(GATE_QUALITY) + [f"{c}/{k}" for c, k in GATE_GUARDS]
-        for key in keys:
-            src, col = table_of(key)
-            values[key] = {"none_ref": paired(src["none"], src["ref"], col), "gate_ref": paired(src["gate"], src["ref"], col),
-                           "gate_none": paired(src["gate"], src["none"], col), "s1_ref": paired(src["ref_s1"], src["ref"], col),
-                           "none_s1": paired(src["none"], src["ref_s1"], col), "gate_s1": paired(src["gate"], src["ref_s1"], col)}
+        values = gate_values_of(glob, frame_df, "gate")
         decision = gate_decision(values)
         results[split] = {"decision": decision, "values": values}
-        tag = " (DECIDING)" if split == GATE_DECIDING_SPLIT else " (reported, not deciding)"
-        lines += [f"## {SPLITS[split][1]}{tag}", "", "| metric | none - ref | gate - ref | seed spread (seed 1 - seed 0) | gate - none | recovered | enters | pass |", "|---|---|---|---|---|---|---|---|"]
-        for m, r in decision["metrics"].items():
-            lines.append(f"| {m} | {fmt_ci(values[m]['none_ref'], 4)} | {fmt_ci(values[m]['gate_ref'], 4)} | {fmt_ci(values[m]['s1_ref'], 4)} | "
-                         f"{fmt_ci(values[m]['gate_none'], 4)} | {r['recovered']:.2f} | {r['enters']} | {r['pass']} |")
-        lines += ["", "| guard (agreement with pYIN) | gate - ref | seed spread | pass |", "|---|---|---|---|"]
-        for g, r in decision["guards"].items():
-            lines.append(f"| {g} | {fmt_ci(values[g]['gate_ref'], 4)} | {r['seed_spread']:.4f} | {r['pass']} |")
-        lines += ["", f"Gate suffices on this split by the rule: **{decision['suffices']}**", ""]
-        if decision["borderline"]:
-            lines += [f"Borderline metrics (within the seed spread of the half-gap threshold; no evidence either way): {', '.join(decision['borderline'])}", ""]
-        if decision["guard_only_failure"]:
-            lines += ["Every entering quality metric passes but a voicing guard fails: reported as does not suffice, with the intervals above.", ""]
+        lines += gate_split_lines(split, values, decision)
     out = ROOT / "summary"
     out.mkdir(exist_ok=True)
     (out / "gate_decision.md").write_text("\n".join(lines) + "\n")
     (out / "gate_decision.json").write_text(json.dumps(results, indent=1, default=float))
     print("\n".join(lines))
     print("DECISION", GATE_DECIDING_SPLIT, results[GATE_DECIDING_SPLIT]["decision"]["suffices"])
+    if all((ROOT / "metrics" / sp / "gate_s1.parquet").exists() and (ROOT / "pyin" / sp / "gate_s1.npz").exists() for sp in GATE_SPLITS):
+        run_gate_2seed(args)
+
+
+GATE_2SEED_NOTE = (
+    "The pre-registered rule (item 5: borderline seed 0, then a second gate seed) applied to the mean of the two gate seeds. Readings: "
+    "(1) the mean is taken per item (utterance, and class for the frame statistics) over every numeric column of the two gate "
+    "seeds' tables, before the paired speaker-level bootstrap against reference seed 0; WER and CER are averaged as per-utterance "
+    "ratios (as in the seed-0 table), and an utterance missing a value in either seed drops out. "
+    "(2) Entering metrics, the seed spread (reference seed 1 minus seed 0), the half-gap recovery threshold, the borderline "
+    "definition (distance of the mean gate from the half-gap threshold within the seed spread) and the pYIN guards are those of the "
+    "seed-0 decision, unchanged. (3) A borderline verdict on the mean is reported as written; there is no further step. "
+    "(4) Each seed's own gate - ref is listed beside the mean."
+)
+
+
+def run_gate_2seed(args: argparse.Namespace) -> None:
+    """The decision rule on the per-item mean of ``gate`` and ``gate_s1``; writes ``summary/gate_decision_2seed.{json,md}``."""
+    setup_env()
+    systems = ["gt", "ref", "ref_s1", "none", "gate", "gate_s1"]
+    extra = ["gate", "gate_s1"]
+    results, lines = {}, ["# Binary voicing gate: pre-registered decision on the mean of two gate seeds (validation splits only)", "", GATE_2SEED_NOTE, ""]
+    for split in GATE_SPLITS:
+        glob = {s: load_global(split, s) for s in systems}
+        frame_df, _ = frame_table(split, systems)
+        glob[GATE_MEAN] = average_systems(glob["gate"], glob["gate_s1"], GATE_MEAN, ["id"])
+        mean_rows = average_systems(frame_df[frame_df["system"] == "gate"], frame_df[frame_df["system"] == "gate_s1"], GATE_MEAN, ["id", "class"])
+        frame_df = pd.concat([frame_df, mean_rows], ignore_index=True)
+        values = gate_values_of(glob, frame_df, GATE_MEAN, extra)
+        decision = gate_decision(values)
+        results[split] = {"decision": decision, "values": values}
+        lines += gate_split_lines(split, values, decision, extra)
+    out = ROOT / "summary"
+    out.mkdir(exist_ok=True)
+    (out / "gate_decision_2seed.md").write_text("\n".join(lines) + "\n")
+    (out / "gate_decision_2seed.json").write_text(json.dumps(results, indent=1, default=float))
+    print("\n".join(lines))
+    print("DECISION 2SEED", GATE_DECIDING_SPLIT, results[GATE_DECIDING_SPLIT]["decision"]["suffices"])
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1158,9 +1238,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     sub.add_parser("summarize")
     sub.add_parser("gate")
     c = sub.add_parser("cfgdiff")
-    c.add_argument("--pair", default="ref,none", help="two of ref, ref_s1, none, gate (config keys that differ between their checkpoints)")
+    c.add_argument("--pair", default="ref,none", help="two of ref, ref_s1, none, gate, gate_s1 (config keys that differ between their checkpoints)")
     y = sub.add_parser("pyin")
-    y.add_argument("--systems", default="gt,ref,ref_s1,none,gate,probe_const,probe_binary,probe_smooth")
+    y.add_argument("--systems", default="gt,ref,ref_s1,none,gate,gate_s1,probe_const,probe_binary,probe_smooth")
     y.add_argument("--splits", default=",".join(SPLITS))
     y.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", "8")))
     y.add_argument("--overwrite", action="store_true")

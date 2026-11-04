@@ -5,6 +5,7 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Second voicing-gate seed in `periodicity_analysis.py`: system `gate_s1` (run `periodicity_binary_100k_seed1`, step 100000; handled like `gate` in `synth`, `metrics`, `pyin`, `cfgdiff`; validation splits only). When its outputs exist, the `gate` subcommand also applies the unchanged pre-registered rule to the per-item mean of the two gate seeds (`average_systems`, `run_gate_2seed`) and writes `summary/gate_decision_2seed.{md,json}` with each seed's own gate - ref beside the mean; the seed-0 files are produced as before (the decision code was refactored into `gate_values_of` / `gate_split_lines`, output byte-identical). Tests in `tests/test_periodicity_analysis.py`.
 - Experiment configs `p5_fv_main` / `p5_fv_main_seed1`: filtered LibriTTS-R + GLOBE + VCTK (Phase 5 arm fv) at 400k
   generator steps, seeds 0 and 1, paired with `p4_mrg_main{,_seed1}` and `main{,_seed1}`.
 - Experiment config `p9_mngu0_seed1` (Phase 9 arm 1, seed 1) and its pre-registered WER replication rule in

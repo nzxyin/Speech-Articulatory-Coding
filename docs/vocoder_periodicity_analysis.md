@@ -434,6 +434,8 @@ not synthesized or read for the gate arm. Speaker means, 10,000 bootstrap resamp
    same rule applied to the mean of the two gate seeds. If every entering metric passes and only a voicing guard fails, the
    result is "does not suffice", reported with the intervals; the guard tolerance (one seed pair, 0.0015 / 0.0026) is small and
    a failure within a few times that is likewise not strong evidence.
+
+   2026-11-04: the seed-0 result was borderline, so the second gate seed (`periodicity_binary_100k_seed1`) was submitted for training. Its scoring (system `gate_s1`, `summary/gate_decision_2seed.{md,json}`, per-item mean of the two gate seeds, rule unchanged) is prepared in `periodicity_analysis.py`.
 6. Follow-up. Pass: a binary flag is a sufficient periodicity input at 100k in-domain (the continuous channel is not needed for
    most of its effect); the flag can replace it in later screens without the periodicity extraction path. Fail: the continuous
    periodicity values (confidence within voiced regions) carry information that a flag does not.
