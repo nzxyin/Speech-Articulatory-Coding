@@ -11,6 +11,12 @@ recomputed without a host synchronization.
 
 Options (decision D8): ``A`` runs the backbone at 50 Hz (n_fft 1920, hop 480), ``B`` at 100 Hz (960, 240) and ``C`` at
 200 Hz (480, 120). With ``same`` padding the output has exactly ``480 T`` samples.
+
+``head="wavenext"`` replaces the iSTFT head by the WaveNeXt head (Okamoto et al., ASRU 2023): two linear layers predict
+the ``hop`` waveform samples of each backbone frame directly. Structure as in nzxyin/vocoder-compare
+(``vocbench.models.heads.WaveNeXtHead``, after the wetdog reimplementation): Linear(dim -> n_fft + 2) -> Linear(n_fft + 2
+-> hop, no bias), frames concatenated, output clipped to [-1, 1]. With ``same`` frames (frame ``l`` covers samples
+``[l hop, (l + 1) hop)``) no trim is needed.
 """
 
 import math
@@ -83,6 +89,31 @@ class ISTFTHead(nn.Module):
             mag = torch.exp(log_mag.clamp(max=self.log_mag_clip))
             spec = torch.complex(mag * torch.cos(phase), mag * torch.sin(phase))
             return self.istft(spec)
+
+
+class WaveNeXtHead(nn.Module):
+    """Predicts ``hop_length`` samples per frame from ``[B, T, dim]`` with two linear layers (float32, autocast off)."""
+
+    def __init__(self, dim: int, n_fft: int, hop_length: int, clip: bool = True):
+        super().__init__()
+        self.hop_length = hop_length
+        self.clip = clip
+        self.linear_1 = nn.Linear(dim, n_fft + 2)
+        self.linear_2 = nn.Linear(n_fft + 2, hop_length, bias=False)
+
+    def init_weights(self) -> None:
+        """WaveNeXt initialisation: both weights ``trunc_normal_(std=0.02)``, the first bias keeps its default."""
+        nn.init.trunc_normal_(self.linear_1.weight, std=0.02)
+        nn.init.trunc_normal_(self.linear_2.weight, std=0.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            frames = self.linear_2(self.linear_1(x.float()))  # [B, T, hop]
+            wav = frames.reshape(x.shape[0], -1)  # [B, T * hop]
+            return wav.clamp(-1.0, 1.0) if self.clip else wav
+
+
+HEADS = ("istft", "wavenext")
 
 
 class ConvNeXtBlock(nn.Module):
@@ -158,7 +189,8 @@ class VocosVocoder(Vocoder):
     ``option`` picks the backbone rate: ``A`` (no upsampling), ``B`` (2x) or ``C`` (4x linear interpolation of the
     normalized features). The iSTFT uses ``hop = 480 / upsample`` and ``n_fft = n_fft_per_hop * hop``; magnitudes
     are clipped at ``mag_clip_ratio * n_fft``, the sum of the Hann window and so an upper bound on any bin of a
-    full-scale signal.
+    full-scale signal. ``head="wavenext"`` uses :class:`WaveNeXtHead` with the same ``hop`` and ``n_fft`` (width
+    ``n_fft + 2``); ``wave_clip`` clips its output to [-1, 1].
     """
 
     def __init__(
@@ -175,8 +207,12 @@ class VocosVocoder(Vocoder):
         mag_clip_ratio: float = 0.5,
         pitch_mode: str = "log",
         voiced_flag: bool = False,
+        head: str = "istft",
+        wave_clip: bool = True,
     ):
         super().__init__()
+        if head not in HEADS:
+            raise ValueError(f"head must be one of {HEADS}, got {head!r}")
         if option not in OPTION_UPSAMPLE:
             raise ValueError(f"option must be one of {tuple(OPTION_UPSAMPLE)}, got {option!r}")
         if spk_dim != self.spk_dim:
@@ -196,7 +232,11 @@ class VocosVocoder(Vocoder):
             kernel_size,
             layer_scale_init_value,
         )
-        self.head = ISTFTHead(dim, n_fft_per_hop * hop, hop, mag_clip_ratio)
+        if head == "istft":
+            self.head = ISTFTHead(dim, n_fft_per_hop * hop, hop, mag_clip_ratio)
+        else:
+            self.head = WaveNeXtHead(dim, n_fft_per_hop * hop, hop, wave_clip)
+            self.head.init_weights()
 
     def forward(self, features: torch.Tensor, spk: torch.Tensor) -> torch.Tensor:
         expected = (features.shape[0], self.spk_dim)

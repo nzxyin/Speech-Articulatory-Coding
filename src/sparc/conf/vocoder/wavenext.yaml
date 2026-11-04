@@ -1,0 +1,20 @@
+# WaveNeXt: the Vocos option-B backbone (100 Hz, ConvNeXt, FiLM) with the WaveNeXt head instead of the iSTFT head:
+# Linear(512 -> 962) -> Linear(962 -> 240) samples per frame, clipped to [-1, 1]. Same parameter count as Vocos to
+# within the head (about 13.9 M). Choice follows nzxyin/vocoder-compare (WaveNeXt head on the real backbone: best
+# in-domain PESQ at Vocos's cost).
+name: wavenext
+generator:
+  _target_: sparc.vocoders.models.vocos.VocosVocoder
+  option: B
+  dim: 512
+  intermediate_dim: 1536
+  num_layers: 8
+  spk_dim: 64
+  kernel_size: 7
+  layer_scale_init_value: null   # null: 1 / num_layers
+  n_fft_per_hop: 4
+  mag_clip_ratio: 0.5            # unused by the WaveNeXt head
+  pitch_mode: log
+  voiced_flag: false
+  head: wavenext
+  wave_clip: true

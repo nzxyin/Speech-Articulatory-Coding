@@ -77,6 +77,9 @@ All notable changes to this fork. Earlier history is in `git log`.
   export files). `load_exported` accepts only the three vocoder classes of the package; `load_feature_extractor` and
   `extraction_to_inputs` build model inputs from a waveform. Tests in `tests/test_export.py`.
 - Direct dependency `safetensors`.
+- WaveNeXt vocoder: `VocosVocoder(head="wavenext")` replaces the iSTFT head by the WaveNeXt head (two linear layers
+  predicting the samples of each frame, after nzxyin/vocoder-compare); config `vocoder=wavenext`, evaluation set
+  `eval_systems=wavenext`; tests in `tests/test_model_vocos.py`.
 
 ### Changed
 - `uv.lock` is now committed (removed from `.gitignore`).

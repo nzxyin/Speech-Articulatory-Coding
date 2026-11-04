@@ -316,3 +316,54 @@ def test_backward_finite_under_bf16_autocast():
     wav.float().square().mean().backward()
     assert wav.dtype == torch.float32
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+# ---------------------------------------------------------------- WaveNeXt head (head="wavenext")
+
+
+@pytest.mark.parametrize("option", ["A", "B", "C"])
+@pytest.mark.parametrize("frames", [1, 7, 64])
+def test_wavenext_output_length_and_range(option, frames):
+    model = small_model(option, head="wavenext")
+    with torch.no_grad():
+        wav = model(make_features(2, frames), torch.randn(2, 64))
+    assert wav.shape == (2, 1, frames * HOP)
+    assert wav.abs().max() <= 1.0
+
+
+def test_wavenext_config_and_parameter_count():
+    cfg = OmegaConf.load(CONF_DIR / "wavenext.yaml")
+    assert cfg.name == "wavenext"
+    model = instantiate(cfg.generator, stats=make_stats())
+    assert model.option == "B" and type(model.head).__name__ == "WaveNeXtHead"
+    # Vocos B plus the second linear layer of the WaveNeXt head (962 x 240, no bias)
+    assert sum(p.numel() for p in model.parameters()) == PARAMS_FULL["B"] + 962 * 240
+    with torch.no_grad():
+        assert model.eval()(make_features(1, 3), torch.randn(1, 64)).shape == (1, 1, 3 * HOP)
+
+
+def test_wavenext_frames_are_contiguous_sample_blocks():
+    """Backbone frame l produces output samples [l hop, (l + 1) hop): changing one frame's head input changes only them."""
+    from sparc.vocoders.models.vocos import WaveNeXtHead
+
+    torch.manual_seed(0)
+    head = WaveNeXtHead(dim=16, n_fft=40, hop_length=10, clip=False).eval()
+    x = torch.randn(1, 5, 16)
+    y = x.clone()
+    y[0, 2] += 1.0
+    with torch.no_grad():
+        d = (head(y) - head(x)).abs()[0]
+    changed = torch.nonzero(d > 0).flatten()
+    assert changed.min() >= 20 and changed.max() < 30
+
+
+def test_wavenext_head_float32_under_bf16_autocast():
+    model = small_model("B", head="wavenext")
+    with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+        wav = model(make_features(1, 4), torch.randn(1, 64))
+    assert wav.dtype == torch.float32
+
+
+def test_invalid_head_rejected():
+    with pytest.raises(ValueError, match="head"):
+        VocosVocoder(make_stats(), head="mdct", **SMALL)

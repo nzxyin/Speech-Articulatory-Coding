@@ -1,0 +1,85 @@
+# @package eval
+# WaveNeXt set (`eval_systems=wavenext`): the Vocos backbone with the WaveNeXt head (vocoder=wavenext, experiments main and
+# main_seed1, 400k steps, seeds 0 and 1) next to both Vocos seeds and both HiFi-GAN seeds and the gt reference. The 400k systems keep their
+# names, so their results are reused from the main and seeds evaluations (read only). Writes tables/<split>/wavenext/.
+table_name: wavenext
+aggregate:
+  reference_systems: []
+  # (a, b) = a minus b.
+  pairs:
+    - [wavenext, vocos]
+    - [wavenext, vocos_s1]
+    - [vocos_s1, vocos]
+    - [wavenext, hifigan]
+    - [wavenext, hifigan_s1]
+    - [hifigan, vocos]
+    - [wavenext_s1, vocos_s1]
+    - [wavenext_s1, wavenext]
+    - [wavenext_s1, hifigan_s1]
+systems:
+  gt:
+    kind: gt
+    sr: 24000
+    conditions: [T1]
+    head: refit
+    label: ground truth
+  hifigan:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN
+  hifigan_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: hifigan
+    ckpt: null
+    overrides: []
+    label: HiFi-GAN (seed 1)
+  vocos:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos
+  vocos_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: vocos
+    ckpt: null
+    overrides: []
+    label: Vocos (seed 1)
+  wavenext:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main
+    vocoder: wavenext
+    ckpt: null
+    overrides: []
+    label: WaveNeXt
+  wavenext_s1:
+    kind: vocoder
+    sr: 24000
+    conditions: [T1, T2, T3]
+    head: refit
+    experiment: main_seed1
+    vocoder: wavenext
+    ckpt: null
+    overrides: []
+    label: WaveNeXt (seed 1)
