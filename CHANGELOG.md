@@ -5,6 +5,12 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Whisper encoder probing (`docs/whisper_probe_plan.md`): `sparc.compression.whisper_encoders` (checkpoint registry for
+  whisper-large-v3, whisper-medium, whisper-medium-en; padded 30 s log-mel input; prefix encoder equal to `hidden_states[k]`;
+  idealized real-frame forward for cost accounting), `whisper_extract` (same cache layout as `extract`, real frames sliced before
+  the 10 Hz low-pass, float32 fallback for a layer that overflows float16, resumable), `whisper_compute` (padded and idealized
+  FLOPs per prefix, latency, activation memory), `depth_sweep` accepts the three names, `--shifts` and `--wide` (results to
+  `<model>_wide*.json`) and reports a second frontier axis for Whisper; `tests/test_whisper_probe.py`.
 - Concordance correlation (CCC) as a candidate AAI metric (`docs/ccc_metric_plan.md`): `sparc.compression.ccc` (per-utterance,
   per-speaker and speaker-centered variants from sufficient statistics, exact correlation x scale x location decomposition,
   exact gain application), `sparc.compression.ccc_analysis` / `ccc_report` (Q1-Q6 on the cached leave-one-speaker-out

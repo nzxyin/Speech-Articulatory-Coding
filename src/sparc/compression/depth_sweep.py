@@ -28,33 +28,38 @@ from .probe import load_targets, probe_layer
 
 OUT = datasets.XLSR_EMA / "analysis_depth"
 SHIFTS = (-2, -1, 0, 1, 2, 3)
-MODELS = ("wavlm-large", "xlsr-300m", "xlsr-1b", "w2v2-large")
-FIXED = {"wavlm-large": 7, "xlsr-300m": 18, "xlsr-1b": 10, "w2v2-large": 18}  # depths used in LOSO option A
+WIDE_SHIFTS = tuple(range(-4, 6))  # Whisper re-sweep when the first-pass grid is clipped (docs/whisper_probe_plan.md)
+MODELS = ("wavlm-large", "xlsr-300m", "xlsr-1b", "w2v2-large", "whisper-large-v3", "whisper-medium", "whisper-medium-en")
+FIXED = {"wavlm-large": 7, "xlsr-300m": 18, "xlsr-1b": 10, "w2v2-large": 18}  # depths used in LOSO option A (none for Whisper)
 
 
-def gflops(model):
+def gflops(model, key="gflops_per_audio_s"):
     prof = json.loads((datasets.XLSR_EMA / "features" / model / "compute_prefix.json").read_text())
-    return {p["layers"][-1]: p["gflops_per_audio_s"] for p in prof["prefixes"]}
+    return {p["layers"][-1]: p[key] for p in prof["prefixes"]}
 
 
-def load_all(model):
-    """Merged results of the main file and any part files (parallel layer-range jobs write separate files)."""
+def load_all(model, variant=""):
+    """Merged results of the main file and any part files (parallel layer-range jobs write separate files).
+    variant "_wide": the wide-shift-grid results (<model>_wide.json, <model>_wide_part<tag>.json), kept apart."""
     res = {}
-    for f in sorted(OUT.glob(f"{model}*.json")):
-        if f.stem == model or f.stem.startswith(f"{model}_part"):
+    base = f"{model}{variant}"
+    for f in sorted(OUT.glob(f"{base}*.json")):
+        if f.stem == base or f.stem.startswith(f"{base}_part"):
             res.update(json.loads(f.read_text()))
     return res
 
 
-def run(model, layers=None, device=None, tag=None):
+def run(model, layers=None, device=None, tag=None, shifts=None, variant=""):
+    shifts = tuple(shifts) if shifts else SHIFTS
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     d = datasets.features_root("ema_multi") / model
     index = json.loads((d / "index.json").read_text())
     meta = json.loads((d / "meta.json").read_text())
     layers = layers if layers is not None else range(1, meta["num_layers"] + 1)
     OUT.mkdir(parents=True, exist_ok=True)
-    out_f = OUT / (f"{model}_part{tag}.json" if tag else f"{model}.json")
-    done = load_all(model)
+    base = f"{model}{variant}"
+    out_f = OUT / (f"{base}_part{tag}.json" if tag else f"{base}.json")
+    done = load_all(model, variant)
     res = json.loads(out_f.read_text()) if out_f.exists() else {}
     folds = {}
     for h in datasets.ALL_SPEAKERS:
@@ -73,7 +78,7 @@ def run(model, layers=None, device=None, tag=None):
             if key in res:
                 continue
             sp = {"train": splits["train"], "valid": splits["valid"], "test": splits["test"], "test_unseen": splits["test_unseen"]}
-            r, _, _ = probe_layer(feats, index, utts, sp, device, n_boot=0, ds=ds, shifts=SHIFTS)
+            r, _, _ = probe_layer(feats, index, utts, sp, device, n_boot=0, ds=ds, shifts=shifts)
             res[key] = {"shift": r["shift"], "alpha": r["alpha"], "valid_rmse_z": r["valid"]["rmse_z"],
                         "valid_pcc": r["valid"]["pcc"],
                         "seen": {m: r["test"][m] for m in ("rmse_z", "pcc")},
@@ -90,12 +95,20 @@ def summary():
          "Held-out speaker test, rmse_z / PCC in its z units, mean over the 7 folds. GFLOPs per second of audio for the "
          "encoder prefix (FlopCounterMode, 4 s reference). Pareto = not beaten on both rmse_z and FLOPs by a "
          "shallower-or-equal-cost depth of any encoder.\n"]
-    pts = []
+    pts, pts_ideal = [], []
     for model in MODELS:
         res = load_all(model)
         if not res:
             continue
-        fl = gflops(model)
+        try:
+            fl = gflops(model)
+        except FileNotFoundError:
+            L.append(f"\n## {model}\n\nNo compute profile yet (features/{model}/compute_prefix.json missing); rerun summary once it exists.\n")
+            continue
+        try:  # Whisper only: attention on the real frames (cost lower bound the checkpoint cannot deliver)
+            fl_ideal = gflops(model, "gflops_per_audio_s_ideal")
+        except KeyError:
+            fl_ideal = None
         ks = sorted({int(x.split("/")[0]) for x in res if all(f"{x.split('/')[0]}/{h}" in res for h in datasets.ALL_SPEAKERS)})
         L.append(f"\n## {model}\n")
         L.append("| k | GFLOPs/s | held-out rmse_z | held-out PCC | seen rmse_z | seen PCC | shifts chosen |")
@@ -105,7 +118,9 @@ def summary():
             ur = np.mean([r["unseen"]["rmse_z"] for r in rs])
             up = np.mean([r["unseen"]["pcc"] for r in rs])
             pts.append((model, k, fl[k], ur, up))
-            mark = " (LOSO A)" if k == FIXED[model] else ""
+            if fl_ideal:
+                pts_ideal.append((model, k, fl_ideal[k], ur, up))
+            mark = " (LOSO A)" if k == FIXED.get(model) else ""
             L.append(f"| {k}{mark} | {fl[k]:.1f} | {ur:.4f} | {up:.4f} | {np.mean([r['seen']['rmse_z'] for r in rs]):.4f} | "
                      f"{np.mean([r['seen']['pcc'] for r in rs]):.4f} | {sorted({r['shift'] for r in rs})} |")
         # nested depth selection per fold
@@ -130,7 +145,7 @@ def summary():
         L.append(f"Cross-fold held-out rmse_z {np.mean([u['rmse_z'] for _, _, u in cross]):.4f}, "
                  f"PCC {np.mean([u['pcc'] for _, _, u in cross]):.4f}; mean GFLOPs/s "
                  f"{np.mean([fl[k] for _, k, _ in cross]):.1f}")
-        kf = FIXED[model]
+        kf = FIXED.get(model)
         if kf in ks:
             rs = [res[f"{kf}/{h}"]["unseen"] for h in datasets.ALL_SPEAKERS]
             L.append(f"Fixed LOSO-A depth k={kf}: held-out rmse_z {np.mean([u['rmse_z'] for u in rs]):.4f}, "
@@ -144,6 +159,19 @@ def summary():
         if r < best:
             best = r
             L.append(f"| {m} | {k} | {f:.1f} | {r:.4f} | {p:.4f} |")
+    if pts_ideal:
+        # The main frontier above uses the actual cost: Whisper's 30 s padded forward (fixed per utterance) divided by the
+        # 4 s reference. This second table gives Whisper the idealized cost (attention over the real frames only, which
+        # the stock checkpoint cannot deliver); the other encoders are unchanged.
+        L.append("\n## Frontier, Whisper at idealized cost (real frames only; not attainable with the stock checkpoint)\n")
+        L.append("| encoder | k | GFLOPs/s | rmse_z | PCC |")
+        L.append("|---|---|---|---|---|")
+        ideal_names = {m for m, *_ in pts_ideal}
+        best = np.inf
+        for m, k, f, r, p in sorted([x for x in pts if x[0] not in ideal_names] + pts_ideal, key=lambda x: (x[2], x[3])):
+            if r < best:
+                best = r
+                L.append(f"| {m} | {k} | {f:.1f} | {r:.4f} | {p:.4f} |")
     (OUT / "summary.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
 
@@ -154,9 +182,14 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--layers", type=int, nargs="*", default=None)
     ap.add_argument("--tag", default=None, help="write to <model>_part<tag>.json (parallel layer ranges)")
+    ap.add_argument("--shifts", type=int, nargs="*", default=None, help="shift grid (default -2..3), results to <model>_custom*.json")
+    ap.add_argument("--wide", action="store_true", help="shift grid -4..5, results to <model>_wide*.json")
     args = ap.parse_args()
     if args.cmd == "run":
-        run(args.model, args.layers, tag=args.tag)
+        if args.wide and args.shifts:
+            ap.error("--wide and --shifts are exclusive")
+        run(args.model, args.layers, tag=args.tag, shifts=WIDE_SHIFTS if args.wide else args.shifts,
+            variant="_wide" if args.wide else ("_custom" if args.shifts else ""))
     else:
         summary()
 
