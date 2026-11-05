@@ -964,6 +964,20 @@ Phase 4/5 rule; docs on `spkemb-phase3`.
   validation pool again (-0.34 / -0.79 / -1.02 points; two-seed mean -0.40 / -0.69 / -1.91), so the WER gain replicates by
   the rule; cloning ties (ECAPA -0.006 to +0.0004); it again lowers own-speaker similarity (seed 1: held-out CAM++
   -0.014 LibriTTS, -0.026 VCTK; seed 0: ECAPA -0.012 VCTK), failing that guard in both seeds.
+- Filtered + VCTK at 400k (`p5_fv_main`, seeds 0 / 1, 2026-11-05; validation pools, variant k5_f0_loud, paired by seed).
+  ECAPA to target / acceptance / UTMOS, LibriTTS dev / VCTK val / GLOBE dev, mean of the two seeds:
+  | model | LibriTTS | VCTK | GLOBE |
+  |---|---|---|---|
+  | existing speaker network, 400k | 0.657 / 76 % / 3.81 | 0.410 / 4 % / 3.48 | 0.312 / 34 % / 3.00 |
+  | LibriTTS-R + GLOBE combination, 400k (unfiltered, no VCTK) | 0.715 / 90 % / 4.00 | 0.502 / 18 % / 3.85 | 0.436 / 74 % / 2.86 |
+  | filtered LibriTTS-R + GLOBE + VCTK, 400k | 0.721 / 90 % / 4.02 | 0.517 / 22 % / 3.84 | 0.431 / 74 % / 2.95 |
+  vs the existing network (both seeds): ECAPA +0.063 / +0.107 / +0.115 to +0.120 (CIs exclude 0, CAM++ agrees), WER
+  -0.2 to -0.4 / -3.3 to -4.3 / -9.2 to -10.5 points, UTMOS +0.20 / +0.35 / -0.01 to -0.05 (the GLOBE naturalness guard
+  now passes; the unfiltered combination lost ~0.13 there). Two guards still fail narrowly in both seeds: LibriTTS
+  own-speaker ECAPA -0.014 / -0.015 (limit 0.01) and GLOBE similarity to the source +0.021 / +0.023 (limit 0.02), so by the
+  rule it does not advance; the out-of-domain gain (~0.11) is 4x the margin. vs the unfiltered combination: LibriTTS +0.005
+  to +0.006 and VCTK +0.015 to +0.019 ECAPA (CIs exclude 0), GLOBE -0.003 to -0.006, GLOBE UTMOS +0.07 / +0.11. Filtering +
+  VCTK keeps the combination's cloning, adds a little on VCTK and recovers most of the GLOBE naturalness loss.
 - Standing rule for future screens (plan doc, 7a85fac): an arm may advance on an out-of-domain criterion (VCTK + GLOBE),
   margin from two reference seeds. Seed 1 of `p5_fv` vs seed 0 (validation): ECAPA +0.004 LibriTTS, +0.005 VCTK, +0.003
   GLOBE (CIs span 0), so the out-of-domain margin is the 0.0266 floor
