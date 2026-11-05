@@ -126,8 +126,9 @@ def head_preds(model, layer, head_name, fold, device=None):
 # ---------------------------------------------------------------- per-utterance statistics and metrics
 
 def utt_stats(P, Y):
-    """Per-utterance sufficient statistics: sse (U, 12), centered sse, frame counts, error means, PCC (U, 12)."""
-    sse, csse, n, emean, pcc, psum, psq, ysum, ysq = [], [], [], [], [], [], [], [], []
+    """Per-utterance sufficient statistics: sse (U, 12), centered sse, frame counts, error means, PCC (U, 12), and the
+    raw sums (p, p^2, y, y^2, p*y) from which PCC and the concordance correlation follow (see ccc.py)."""
+    sse, csse, n, emean, pcc, psum, psq, ysum, ysq, pysum = [], [], [], [], [], [], [], [], [], []
     for p, y in zip(P, Y):
         e = p - y
         sse.append((e ** 2).sum(0))
@@ -138,9 +139,10 @@ def utt_stats(P, Y):
         c = ((p - p.mean(0)) * (y - y.mean(0))).mean(0) / np.where((ps > 1e-8) & (ysd > 1e-8), ps * ysd, np.nan)
         pcc.append(c)
         psum.append(p.sum(0)); psq.append((p ** 2).sum(0)); ysum.append(y.sum(0)); ysq.append((y ** 2).sum(0))
+        pysum.append((p * y).sum(0))
     A = lambda v: np.array(v, dtype=np.float64)
     return {"sse": A(sse), "csse": A(csse), "n": A(n), "emean": A(emean), "pcc": A(pcc),
-            "psum": A(psum), "psq": A(psq), "ysum": A(ysum), "ysq": A(ysq)}
+            "psum": A(psum), "psq": A(psq), "ysum": A(ysum), "ysq": A(ysq), "pysum": A(pysum)}
 
 
 def metrics_from(st, idx=None):

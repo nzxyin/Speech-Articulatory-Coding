@@ -5,6 +5,11 @@ All notable changes to this fork. Earlier history is in `git log`.
 ## Unreleased
 
 ### Added
+- Concordance correlation (CCC) as a candidate AAI metric (`docs/ccc_metric_plan.md`): `sparc.compression.ccc` (per-utterance,
+  per-speaker and speaker-centered variants from sufficient statistics, exact correlation x scale x location decomposition,
+  exact gain application), `sparc.compression.ccc_analysis` / `ccc_report` (Q1-Q6 on the cached leave-one-speaker-out
+  predictions, outputs in `analysis_ccc/`), `tests/test_ccc.py`. `rigor.utt_stats` also returns the `pysum` statistic. Write-up and recommendation (CCC as a companion
+  beside rmse_z and PCC, not the primary metric): `docs/ccc_metric_analysis.md`.
 - Gender-conditioning study of the multi-speaker inverter (`sparc.compression.gender_cond`,
   `docs/gender_conditioning_prereg.md`, `tests/test_gender_cond.py`): pooled head, head told the speaker's gender
   (zero-initialized FiLM), per-gender models, count- and corpus-matched mixed-gender controls, random and corpus
