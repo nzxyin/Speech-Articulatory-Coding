@@ -683,6 +683,25 @@ under `adapt/wavlm-large/prefix12_..._gruconv_k9_nosm_m0.0002_s{0,1,2}`). 3 seed
   USC F1 0.463 / 0.902, F5 0.436 / 0.902, M1 0.613 / 0.864, M3 0.574 / 0.847; EMA_5EMO jn 0.667 / 0.726, jr 0.540 /
   0.740, kf 0.555 / 0.756. Not a held-out number; LOSO above is the new-speaker estimate.
 
+### Concordance correlation (CCC) as the AAI metric (2026-11-05; plan `docs/ccc_metric_plan.md`, analysis `docs/ccc_metric_analysis.md`)
+`ccc.py`, `ccc_analysis.py` (`/data/user_data/xoy/xlsr_ema/analysis_ccc/summary.md`), on the cached LOSO held-out predictions
+of 25 real arms (probes, LoRA, frozen heads, blends; four encoders) plus 21 gain-edited arms; independently recomputed.
+- CCC = PCC x scale factor x location factor. Real arms: CCC/PCC 0.78-0.84 (sd 0.014); mean scale factor 0.94, location
+  factor 0.83 (per-utterance offsets are the larger loss). PCC alone explains 61 % of CCC's variance across real arms.
+- Rankings (25 real arms, Kendall tau of per-utterance CCC): vs rmse_z 0.39 [0.18, 0.72], vs PCC 0.63, per-utterance vs
+  per-speaker CCC 0.81. Within probes / frozen heads / LoRA 0.7-1.0.
+- Opposite gain preferences: rmse_z is best with outputs shrunk (gain ~0.7-0.8), CCC with gain ~1.1-1.2; PCC is gain-
+  invariant. Under CCC the LoRA + probe blend beats rmse_z-shrunk LoRA by +0.081 (7/7), but that is CCC penalizing the
+  damped comparator (std ratio 0.53); against a calibrated LoRA the blend gains +0.009 to +0.013 (its PCC gain).
+- Discriminability on the contrasts: PCC best (CCC higher / lower / tie on 4 / 33 / 2), rmse_z worst; detectable effect
+  in units of arm spread CCC 0.55, PCC 0.49, rmse_z 2.05. Head-vs-probe ties under rmse_z become wins under CCC and PCC
+  (BiMamba, BiGRU->conv); P2 weakens (+0.017 CCC, 6/7); nothing among real contrasts reverses.
+- Downstream: 8 multi-head SPARC systems are ordered identically against WER by CCC, rmse_z and PCC (Spearman ~1); the
+  only amplitude control (std ratio 0.82) is uninformative. Whether output amplitude matters for resynthesis is untested.
+- Pre-registered rule outcome: companion, not primary (fails "at least as discriminating as PCC"). Keep rmse_z and PCC as
+  headline metrics, report CCC with its scale and location factors; a vocoder amplitude sweep (std ratio 0.5-1.2) is the
+  experiment that would decide whether CCC's scale penalty is the right target for SPARC.
+
 ### Gender conditioning of the multi-speaker inverter (2026-11-04; pre-registered `docs/gender_conditioning_prereg.md`)
 `gender_cond.py` (`/data/user_data/xoy/xlsr_ema/analysis_gender/summary.md`); frozen WavLM k12 + BiGRU->conv, LOSO, 3 seeds,
 lr on training-speaker validation. Genders: M usc_M1, usc_M3, 5emo_kf; F usc_F1, usc_F5, 5emo_jn, 5emo_jr (USC from speaker
