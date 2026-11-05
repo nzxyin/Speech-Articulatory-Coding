@@ -683,6 +683,29 @@ under `adapt/wavlm-large/prefix12_..._gruconv_k9_nosm_m0.0002_s{0,1,2}`). 3 seed
   USC F1 0.463 / 0.902, F5 0.436 / 0.902, M1 0.613 / 0.864, M3 0.574 / 0.847; EMA_5EMO jn 0.667 / 0.726, jr 0.540 /
   0.740, kf 0.555 / 0.756. Not a held-out number; LOSO above is the new-speaker estimate.
 
+### Gender conditioning of the multi-speaker inverter (2026-11-04; pre-registered `docs/gender_conditioning_prereg.md`)
+`gender_cond.py` (`/data/user_data/xoy/xlsr_ema/analysis_gender/summary.md`); frozen WavLM k12 + BiGRU->conv, LOSO, 3 seeds,
+lr on training-speaker validation. Genders: M usc_M1, usc_M3, 5emo_kf; F usc_F1, usc_F5, 5emo_jn, 5emo_jr (USC from speaker
+IDs; 5EMO README: one male, jn = F1; kf vs jr by median F0, 112 vs 218 Hz). A0 rerun reproduces the head screen (0.7650 / 0.7094,
+per seed within 1.4e-4). Numbers independently recomputed from the raw runs; wording checked by an adversarial review.
+- One pooled model told the gender (zero-init FiLM on a 2-entry table, oracle label): pre-registered verdict inconclusive for
+  both genders, not shown to help. Folds won vs the pooled model 0/3 M, 0/4 F (1 F fold lost: usc_F1, -0.020 rmse_z,
+  -0.014 PCC). Mean held-out rmse_z change M -0.032 (worse in 3/3 folds, beyond the seed-noise scale; usc_M3 -0.060, 5emo_kf
+  -0.031), F -0.007 (within noise); gender-mean PCC -0.001 / -0.003. 7-fold sign-flip p 0.094 (worse). It wins no fold
+  against random two-group speaker labels, and the rule fires on 0/8 random groupings (a conservative screen; tau_pcc 0.013
+  makes fold counts nearly blind to PCC). The label changes predictions a lot (up to 0.09 rmse_z), but the true label is not
+  reliably better than the opposite one (wrong label lower rmse_z in 4/7 folds): no evidence of transferable gender
+  information. Reading: inconclusive, leaning slightly harmful for male held-out speakers; "no effect" is not licensed.
+- Separate male / female models: worse than the 6-speaker pooled model in 7/7 folds (rmse_z M -0.140, F -0.034; PCC
+  -0.048 / -0.031); vs count- and corpus-matched mixed-gender controls M -0.032, F +0.048 rmse_z (F driven by usc_F5),
+  PCC ~0 on average: inconclusive. Ridge: per-gender and gender-interaction probes are worse than the pooled probe for both
+  genders; swapping kf/jr does not change the verdicts.
+- Descriptive, not pre-registered: a corpus label (USC vs 5EMO) instead of gender lowers held-out rmse_z in 6/7 folds
+  (mean ~-0.022; about half also in centered rmse_z), PCC up for the four USC speakers and down 0.025-0.029 for the three
+  5EMO speakers; it beats the gender label in 6/7 folds. Cause (offset, amplitude, recording setup) not identified.
+- For SPARC: do not split or condition the inverter on gender; speaker count / diversity dominates (pooled > per-gender).
+  Limits: 3 M / 4 F folds, gender confounded with corpus, oracle labels.
+
 ### Speaker embedding for resynthesis: layer screen (2026-10-20; plan `docs/speaker_embedding_plan.md`)
 Phase 1 (`spkemb/layers.py`, `/data/user_data/xoy/spkemb/layers/summary.md`): WavLM Large hidden states pooled with
 SPARC's (en+) periodicity weights, 5470 utterances (VCTK 109 x 30, LibriTTS-R dev/test-clean), probes fitted on 126
@@ -927,11 +950,20 @@ Phase 4/5 rule; docs on `spkemb-phase3`.
   set) costs in-domain mel L1 +1.7 %, PESQ -0.10, HNR error +0.17 dB, UTMOS -0.05 (beyond the 100k seed spread) and ~1
   point of independent-tracker voicing agreement around transitions; no phone-level voicing loss; speaker similarity,
   WER and F0 within seed noise. Keep it as a cheap quality input; it does not drive identity or intelligibility.
+  Binary voicing gate (2026-11-04, pre-registered; `periodicity_binary_100k`, 2 seeds; LibriTTS dev-clean decides): a 0/1
+  flag 1[periodicity > 0] in place of the continuous channel recovers 78 % (mel L1), 73 % (STFT), 79 % (PESQ), 70 % (UTMOS)
+  and 85 % (HNR) of the quality lost without periodicity, pYIN voicing guards within the seed spread: "suffices" by the
+  rule, flagged borderline (UTMOS and HNR within seed noise of the 50 % threshold). VCTK validation half (not deciding):
+  quality fine, voicing agreement around changes -0.003 vs a 0.0019 guard. Seed 0 alone was borderline with UTMOS at 34 %.
 - Phase 9 (`docs/spkemb_phase9_k12_inverter.md`): vocoder on WavLM k12 + BiGRU->conv inverter features instead of the
   layer-9 linear head. Single-speaker (MNGU0) ties the reference on cloning (ECAPA -0.001 to -0.009, CIs span 0; fails
   the VCTK own-speaker guard) but lowers WER (LibriTTS -0.47, VCTK -0.59, GLOBE -2.8 points); multi-speaker (seven EMA
   speakers, normalized outputs + learned de-normalization from the speaker code) is slightly worse (LibriTTS and GLOBE
   -0.008, WER +0.8 to +1.0 points). Own-speaker similarity unchanged. The inverter is not the out-of-domain bottleneck.
+  Seed-1 replication of the single-speaker arm (pre-registered 2026-11-01, vs `p5_fv_seed1`): WER lower in every
+  validation pool again (-0.34 / -0.79 / -1.02 points; two-seed mean -0.40 / -0.69 / -1.91), so the WER gain replicates by
+  the rule; cloning ties (ECAPA -0.006 to +0.0004); it again lowers own-speaker similarity (seed 1: held-out CAM++
+  -0.014 LibriTTS, -0.026 VCTK; seed 0: ECAPA -0.012 VCTK), failing that guard in both seeds.
 - Standing rule for future screens (plan doc, 7a85fac): an arm may advance on an out-of-domain criterion (VCTK + GLOBE),
   margin from two reference seeds. Seed 1 of `p5_fv` vs seed 0 (validation): ECAPA +0.004 LibriTTS, +0.005 VCTK, +0.003
   GLOBE (CIs span 0), so the out-of-domain margin is the 0.0266 floor
