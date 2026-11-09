@@ -7,7 +7,11 @@
 
 This is an **unofficial fork** of the official code base for [Coding Speech through Vocal Tract Kinematics](https://arxiv.org/abs/2406.12998), maintained independently at [nzxyin/Speech-Articulatory-Coding](https://github.com/nzxyin/Speech-Articulatory-Coding). It is not affiliated with or endorsed by the original authors. For the official release, see [Berkeley-Speech-Group/Speech-Articulatory-Coding](https://github.com/Berkeley-Speech-Group/Speech-Articulatory-Coding).
 
-This fork modernizes the packaging (Python 3.13+, `uv`-managed environment, `src/` layout) and trims unused code; the model code and checkpoints are unchanged from upstream.
+This fork modernizes the packaging (Python 3.13+, `uv`-managed environment, `src/` layout) and trims unused code; the model code and checkpoints are unchanged from upstream. Its one addition is the [MNGU0 refit of the linear articulatory-inversion head](#linear-aai-head-refit-mngu0).
+
+> **Scope note (2026-11-09).** This fork is kept only for the packaging update and the MNGU0 linear AAI head refit.
+> Later work that grew out of it (speech-to-EMA inversion with WavLM / XLS-R / Whisper encoders, articulatory vocoders,
+> speaker embedding and voice cloning) moved to a separate repository, `nzxyin/articulatory-inversion` (private).
 
 ## Installation
 
